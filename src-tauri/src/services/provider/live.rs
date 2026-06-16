@@ -761,17 +761,11 @@ fn sync_current_provider_for_app_respecting_takeover(
 /// 这确保了配置导入后无效 ID 会自动 fallback 到数据库。
 ///
 pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
-    // Sync providers based on mode
     for app_type in AppType::all() {
-        if app_type.is_additive_mode() {
-            // Additive mode: sync ALL providers
-            sync_all_providers_to_live(state, &app_type)?;
-        } else {
-            // Switch mode: sync only current provider. During proxy takeover,
-            // update the restore backup instead of rewriting the taken-over
-            // live file.
-            sync_current_provider_for_app_respecting_takeover(state, &app_type)?;
-        }
+        // Switch mode: sync only current provider. During proxy takeover,
+        // update the restore backup instead of rewriting the taken-over
+        // live file.
+        sync_current_provider_for_app_respecting_takeover(state, &app_type)?;
     }
 
     // MCP sync
