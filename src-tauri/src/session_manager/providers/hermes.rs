@@ -144,6 +144,11 @@ fn sqlite_row_to_session_meta(row: &Value, db_source: &str) -> Option<SessionMet
         last_active_at: ended_at.or(started_at),
         source_path: Some(source_path),
         resume_command: None,
+        codex_status: None,
+        is_in_session_index: None,
+        file_exists: None,
+        archived: None,
+        needs_repair: None,
     })
 }
 
@@ -223,6 +228,10 @@ pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String>
             role,
             content,
             ts: ts_ms,
+            line_number: None,
+            branch_line_number: None,
+            can_trim: None,
+            can_branch: None,
         });
     }
 
@@ -425,6 +434,11 @@ fn parse_jsonl_session(path: &Path) -> Option<SessionMeta> {
         last_active_at: last_ts.or(first_ts),
         source_path: Some(source_path),
         resume_command: None,
+        codex_status: None,
+        is_in_session_index: None,
+        file_exists: None,
+        archived: None,
+        needs_repair: None,
     })
 }
 
@@ -478,7 +492,15 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
         }
 
         let ts = ts_val.and_then(parse_timestamp_to_ms);
-        messages.push(SessionMessage { role, content, ts });
+        messages.push(SessionMessage {
+            role,
+            content,
+            ts,
+            line_number: None,
+            branch_line_number: None,
+            can_trim: None,
+            can_branch: None,
+        });
     }
 
     Ok(messages)

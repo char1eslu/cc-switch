@@ -25,6 +25,16 @@ pub struct SessionMeta {
     pub source_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_in_session_index: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_exists: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs_repair: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,6 +44,14 @@ pub struct SessionMessage {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_number: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_line_number: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub can_trim: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub can_branch: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -138,6 +156,83 @@ pub fn delete_sessions(requests: &[DeleteSessionRequest]) -> Vec<DeleteSessionOu
     })
 }
 
+pub fn move_session(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+    target_project_dir: &str,
+) -> Result<bool, String> {
+    if provider_id != "codex" {
+        return Err(format!(
+            "Moving sessions is currently supported only for Codex, got {provider_id}"
+        ));
+    }
+
+    validate_target_project_dir(target_project_dir)?;
+    let roots = provider_roots(provider_id)?;
+    move_session_with_roots(
+        provider_id,
+        session_id,
+        Path::new(source_path),
+        target_project_dir,
+        &roots,
+    )
+}
+
+pub fn repair_session(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+) -> Result<codex::CodexOperationReport, String> {
+    if provider_id != "codex" {
+        return Err(format!(
+            "Repair Index is currently supported only for Codex, got {provider_id}"
+        ));
+    }
+    codex::repair_session(Path::new(source_path), session_id)
+}
+
+pub fn trim_session(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+    line_number: usize,
+) -> Result<codex::CodexOperationReport, String> {
+    if provider_id != "codex" {
+        return Err(format!(
+            "Trim is currently supported only for Codex, got {provider_id}"
+        ));
+    }
+    codex::trim_session(Path::new(source_path), session_id, line_number)
+}
+
+pub fn branch_session(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+    line_number: usize,
+) -> Result<codex::CodexOperationReport, String> {
+    if provider_id != "codex" {
+        return Err(format!(
+            "Branch is currently supported only for Codex, got {provider_id}"
+        ));
+    }
+    codex::branch_session(Path::new(source_path), session_id, line_number)
+}
+
+pub fn trash_session(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+) -> Result<codex::CodexOperationReport, String> {
+    if provider_id != "codex" {
+        return Err(format!(
+            "Codex Keeper Trash is currently supported only for Codex, got {provider_id}"
+        ));
+    }
+    codex::trash_session(Path::new(source_path), session_id)
+}
+
 fn delete_session_with_roots(
     provider_id: &str,
     session_id: &str,
@@ -187,6 +282,54 @@ fn delete_session_with_roots(
     ))
 }
 
+fn move_session_with_roots(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &Path,
+    target_project_dir: &str,
+    roots: &[PathBuf],
+) -> Result<bool, String> {
+    let validated_source = canonicalize_existing_path(source_path, "session source")?;
+
+    let mut saw_existing_root = false;
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+
+        saw_existing_root = true;
+        let validated_root = canonicalize_existing_path(root, "session root")?;
+        if validated_source.starts_with(&validated_root) {
+            return match provider_id {
+                "codex" => codex::move_session(
+                    &validated_root,
+                    &validated_source,
+                    session_id,
+                    target_project_dir,
+                ),
+                _ => Err(format!(
+                    "Moving sessions is currently supported only for Codex, got {provider_id}"
+                )),
+            };
+        }
+    }
+
+    if !saw_existing_root {
+        return Err(format!(
+            "Session root not found for provider {provider_id}: {}",
+            roots
+                .first()
+                .map(|root| root.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        ));
+    }
+
+    Err(format!(
+        "Session source path is outside provider roots: {}",
+        source_path.display()
+    ))
+}
+
 fn provider_roots(provider_id: &str) -> Result<Vec<PathBuf>, String> {
     let roots = match provider_id {
         "codex" => codex::session_roots(),
@@ -199,6 +342,19 @@ fn provider_roots(provider_id: &str) -> Result<Vec<PathBuf>, String> {
     };
 
     Ok(roots)
+}
+
+fn validate_target_project_dir(target_project_dir: &str) -> Result<(), String> {
+    let trimmed = target_project_dir.trim();
+    if trimmed.is_empty() {
+        return Err("Target project directory is required".to_string());
+    }
+
+    if !Path::new(trimmed).is_absolute() {
+        return Err("Target project directory must be an absolute path".to_string());
+    }
+
+    Ok(())
 }
 
 fn canonicalize_existing_path(path: &Path, label: &str) -> Result<PathBuf, String> {
@@ -259,6 +415,68 @@ mod tests {
             ),
         )
         .expect("write source");
+    }
+
+    #[test]
+    fn moves_codex_source_path_under_allowed_root() {
+        let codex_home = tempdir().expect("tempdir");
+        let root = codex_home.path().join("sessions");
+        std::fs::create_dir_all(&root).expect("sessions dir");
+        let source = root.join("session.jsonl");
+        write_codex_session(&source, "move-session");
+
+        let moved = move_session_with_roots(
+            "codex",
+            "move-session",
+            &source,
+            "/tmp/new-project",
+            &[root],
+        )
+        .expect("move session");
+
+        assert!(moved);
+
+        let first_line = std::fs::read_to_string(&source)
+            .expect("read source")
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        let value: serde_json::Value = serde_json::from_str(&first_line).expect("json");
+        assert_eq!(
+            value
+                .get("payload")
+                .and_then(|payload| payload.get("cwd"))
+                .and_then(serde_json::Value::as_str),
+            Some("/tmp/new-project")
+        );
+    }
+
+    #[test]
+    fn move_rejects_source_path_outside_provider_root() {
+        let root = tempdir().expect("tempdir");
+        let outside = tempdir().expect("tempdir");
+        let source = outside.path().join("session.jsonl");
+        write_codex_session(&source, "session-1");
+
+        let err = move_session_with_roots(
+            "codex",
+            "session-1",
+            &source,
+            "/tmp/new-project",
+            &[root.path().to_path_buf()],
+        )
+        .expect_err("expected outside-root path to be rejected");
+
+        assert!(err.contains("outside provider roots"));
+    }
+
+    #[test]
+    fn move_rejects_relative_target_project_dir() {
+        let err = validate_target_project_dir("relative/project")
+            .expect_err("expected relative target path to fail");
+
+        assert!(err.contains("absolute path"));
     }
 
     #[test]

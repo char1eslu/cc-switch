@@ -1,5 +1,11 @@
 import { memo, useState } from "react";
-import { ChevronDown, ChevronUp, Copy } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  GitBranch,
+  Scissors,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -25,6 +31,8 @@ interface SessionMessageItemProps {
   isActive: boolean;
   searchQuery?: string;
   onCopy: (content: string) => void;
+  onTrim?: (message: SessionMessage) => void;
+  onBranch?: (message: SessionMessage) => void;
 }
 
 export const SessionMessageItem = memo(function SessionMessageItem({
@@ -32,6 +40,8 @@ export const SessionMessageItem = memo(function SessionMessageItem({
   isActive,
   searchQuery,
   onCopy,
+  onTrim,
+  onBranch,
 }: SessionMessageItemProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -59,23 +69,63 @@ export const SessionMessageItem = memo(function SessionMessageItem({
         isActive && "ring-2 ring-primary ring-offset-2",
       )}
     >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="absolute top-2 right-2 size-6 opacity-0 group-hover:opacity-100 transition-opacity"
-            onClick={() => onCopy(message.content)}
-          >
-            <Copy className="size-3" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          {t("sessionManager.copyMessage", {
-            defaultValue: "复制内容",
-          })}
-        </TooltipContent>
-      </Tooltip>
+      <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        {message.canTrim && onTrim && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                onClick={() => onTrim(message)}
+              >
+                <Scissors className="size-3" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {t("sessionManager.trimFromHere", {
+                defaultValue: "从这里裁剪",
+              })}
+            </TooltipContent>
+          </Tooltip>
+        )}
+        {message.canBranch && onBranch && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                onClick={() => onBranch(message)}
+              >
+                <GitBranch className="size-3" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {t("sessionManager.branchFromHere", {
+                defaultValue: "从这里分支",
+              })}
+            </TooltipContent>
+          </Tooltip>
+        )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6"
+              onClick={() => onCopy(message.content)}
+            >
+              <Copy className="size-3" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {t("sessionManager.copyMessage", {
+              defaultValue: "复制内容",
+            })}
+          </TooltipContent>
+        </Tooltip>
+      </div>
       <div className="flex items-center justify-between text-xs mb-1.5 pr-6">
         <span className={cn("font-semibold", getRoleTone(message.role))}>
           {getRoleLabel(message.role, t)}

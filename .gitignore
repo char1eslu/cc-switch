@@ -29,4 +29,9 @@ copilot-api
 .history
 CODEBUDDY.md
 .github
+!.github/
+.github/*
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/build-macos-ad-hoc.yml
 mainWindow.js

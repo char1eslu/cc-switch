@@ -16,6 +16,10 @@ import {
   FileText,
   X,
   CheckSquare,
+  Wrench,
+  Archive,
+  DatabaseBackup,
+  RotateCcw,
 } from "lucide-react";
 import {
   useDeleteSessionMutation,
@@ -23,7 +27,7 @@ import {
   useSessionsQuery,
 } from "@/lib/query";
 import { sessionsApi } from "@/lib/api";
-import type { SessionMeta } from "@/types";
+import type { SessionMessage, SessionMeta } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -32,10 +36,20 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import {
   Tooltip,
   TooltipContent,
@@ -84,6 +98,22 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [deleteTargets, setDeleteTargets] = useState<SessionMeta[] | null>(
     null,
   );
+  const [moveTarget, setMoveTarget] = useState<SessionMeta | null>(null);
+  const [moveProjectDir, setMoveProjectDir] = useState("");
+  const [isMoving, setIsMoving] = useState(false);
+  const [isRepairing, setIsRepairing] = useState(false);
+  const [isTrashing, setIsTrashing] = useState(false);
+  const [backupDialogOpen, setBackupDialogOpen] = useState(false);
+  const [codexBackups, setCodexBackups] = useState<
+    Awaited<ReturnType<typeof sessionsApi.listCodexBackups>>
+  >([]);
+  const [codexTrashBackups, setCodexTrashBackups] = useState<
+    Awaited<ReturnType<typeof sessionsApi.listCodexBackups>>
+  >([]);
+  const [codexTrashedThreads, setCodexTrashedThreads] = useState<
+    Awaited<ReturnType<typeof sessionsApi.listCodexTrashedThreads>>
+  >([]);
+  const [isLoadingBackups, setIsLoadingBackups] = useState(false);
   const [selectedSessionKeys, setSelectedSessionKeys] = useState<Set<string>>(
     () => new Set(),
   );
@@ -373,6 +403,33 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     [selectedSessions],
   );
 
+  const codexProjectDirs = useMemo(() => {
+    const dirs = new Set<string>();
+    sessions.forEach((session) => {
+      if (session.providerId !== "codex") return;
+      const dir = session.projectDir?.trim();
+      if (dir) {
+        dirs.add(dir);
+      }
+    });
+    return Array.from(dirs).sort((a, b) => a.localeCompare(b));
+  }, [sessions]);
+
+  const moveProjectOptions = useMemo(() => {
+    const current = moveTarget?.projectDir?.trim();
+    return codexProjectDirs.filter((dir) => dir !== current);
+  }, [codexProjectDirs, moveTarget]);
+
+  const trimmedMoveProjectDir = moveProjectDir.trim();
+  const canMoveSelectedSession =
+    selectedSession?.providerId === "codex" &&
+    Boolean(selectedSession.sourcePath);
+  const canConfirmMove =
+    Boolean(moveTarget?.sourcePath) &&
+    trimmedMoveProjectDir.length > 0 &&
+    trimmedMoveProjectDir !== moveTarget?.projectDir?.trim() &&
+    !isMoving;
+
   useEffect(() => {
     if (!selectionMode) return;
 
@@ -435,6 +492,211 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const openBatchDeleteDialog = () => {
     if (selectedDeletableSessions.length === 0) return;
     setDeleteTargets(selectedDeletableSessions);
+  };
+
+  const openMoveDialog = (session: SessionMeta) => {
+    if (session.providerId !== "codex" || !session.sourcePath) return;
+    setMoveTarget(session);
+    setMoveProjectDir("");
+  };
+
+  const closeMoveDialog = () => {
+    if (isMoving) return;
+    setMoveTarget(null);
+    setMoveProjectDir("");
+  };
+
+  const handleMoveConfirm = async () => {
+    if (!moveTarget?.sourcePath || !canConfirmMove) return;
+
+    setIsMoving(true);
+    try {
+      await sessionsApi.move({
+        providerId: moveTarget.providerId,
+        sessionId: moveTarget.sessionId,
+        sourcePath: moveTarget.sourcePath,
+        targetProjectDir: trimmedMoveProjectDir,
+      });
+
+      queryClient.setQueryData<SessionMeta[]>(["sessions"], (current) =>
+        (current ?? []).map((session) =>
+          getSessionKey(session) === getSessionKey(moveTarget)
+            ? { ...session, projectDir: trimmedMoveProjectDir }
+            : session,
+        ),
+      );
+      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+
+      toast.success(
+        t("sessionManager.moveSuccess", {
+          defaultValue: "会话已移动",
+        }),
+      );
+      setMoveTarget(null);
+      setMoveProjectDir("");
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.moveFailed", {
+            defaultValue: "移动会话失败",
+          }),
+      );
+    } finally {
+      setIsMoving(false);
+    }
+  };
+
+  const refreshCodexBackups = useCallback(async () => {
+    setIsLoadingBackups(true);
+    try {
+      const [backups, trashBackups, trashedThreads] = await Promise.all([
+        sessionsApi.listCodexBackups(false),
+        sessionsApi.listCodexBackups(true),
+        sessionsApi.listCodexTrashedThreads(),
+      ]);
+      setCodexBackups(backups);
+      setCodexTrashBackups(trashBackups);
+      setCodexTrashedThreads(trashedThreads);
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.backupLoadFailed", {
+            defaultValue: "加载备份失败",
+          }),
+      );
+    } finally {
+      setIsLoadingBackups(false);
+    }
+  }, [t]);
+
+  const openBackupDialog = () => {
+    setBackupDialogOpen(true);
+    void refreshCodexBackups();
+  };
+
+  const handleRepair = async () => {
+    if (
+      !selectedSession?.sourcePath ||
+      selectedSession.providerId !== "codex"
+    ) {
+      return;
+    }
+    setIsRepairing(true);
+    try {
+      await sessionsApi.repair({
+        providerId: selectedSession.providerId,
+        sessionId: selectedSession.sessionId,
+        sourcePath: selectedSession.sourcePath,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      toast.success(
+        t("sessionManager.repairSuccess", {
+          defaultValue: "索引已修复",
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.repairFailed", {
+            defaultValue: "修复索引失败",
+          }),
+      );
+    } finally {
+      setIsRepairing(false);
+    }
+  };
+
+  const handleTrash = async () => {
+    if (
+      !selectedSession?.sourcePath ||
+      selectedSession.providerId !== "codex"
+    ) {
+      return;
+    }
+    setIsTrashing(true);
+    try {
+      await sessionsApi.trash({
+        providerId: selectedSession.providerId,
+        sessionId: selectedSession.sessionId,
+        sourcePath: selectedSession.sourcePath,
+      });
+      queryClient.removeQueries({
+        queryKey: [
+          "sessionMessages",
+          selectedSession.providerId,
+          selectedSession.sourcePath,
+        ],
+      });
+      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      toast.success(
+        t("sessionManager.trashSuccess", {
+          defaultValue: "会话已移动到 Codex Keeper Trash",
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.trashFailed", {
+            defaultValue: "移动到 Trash 失败",
+          }),
+      );
+    } finally {
+      setIsTrashing(false);
+    }
+  };
+
+  const runCodexMessageOperation = async (
+    message: SessionMessage,
+    operation: "trim" | "branch",
+  ) => {
+    if (
+      !selectedSession?.sourcePath ||
+      selectedSession.providerId !== "codex" ||
+      !message.lineNumber
+    ) {
+      return;
+    }
+
+    try {
+      const payload = {
+        providerId: selectedSession.providerId,
+        sessionId: selectedSession.sessionId,
+        sourcePath: selectedSession.sourcePath,
+        lineNumber:
+          operation === "branch"
+            ? (message.branchLineNumber ?? message.lineNumber)
+            : message.lineNumber,
+      };
+      if (operation === "trim") {
+        await sessionsApi.trim(payload);
+      } else {
+        await sessionsApi.branch(payload);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      await queryClient.invalidateQueries({
+        queryKey: [
+          "sessionMessages",
+          selectedSession.providerId,
+          selectedSession.sourcePath,
+        ],
+      });
+      toast.success(
+        operation === "trim"
+          ? t("sessionManager.trimSuccess", {
+              defaultValue: "会话已裁剪",
+            })
+          : t("sessionManager.branchSuccess", {
+              defaultValue: "分支会话已创建",
+            }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.operationFailed", {
+            defaultValue: "操作失败",
+          }),
+      );
+    }
   };
 
   const exitSelectionMode = () => {
@@ -853,6 +1115,18 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           <h2 className="text-base font-semibold truncate">
                             {formatSessionTitle(selectedSession)}
                           </h2>
+                          {selectedSession.codexStatus && (
+                            <Badge
+                              variant={
+                                selectedSession.needsRepair
+                                  ? "destructive"
+                                  : "secondary"
+                              }
+                              className="text-[10px]"
+                            >
+                              {selectedSession.codexStatus}
+                            </Badge>
+                          )}
                         </div>
 
                         {/* 元信息 */}
@@ -960,6 +1234,125 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                 : t("sessionManager.noResumeCommand", {
                                     defaultValue: "此会话无法恢复",
                                   })}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                        {selectedSession.providerId === "codex" && (
+                          <>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="gap-1.5"
+                                  onClick={() => void handleRepair()}
+                                  disabled={
+                                    !selectedSession.sourcePath || isRepairing
+                                  }
+                                >
+                                  <Wrench className="size-3.5" />
+                                  <span className="hidden sm:inline">
+                                    {selectedSession.needsRepair
+                                      ? t("sessionManager.repairIndex", {
+                                          defaultValue: "修复索引",
+                                        })
+                                      : t("sessionManager.repair", {
+                                          defaultValue: "Repair",
+                                        })}
+                                  </span>
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {t("sessionManager.repairTooltip", {
+                                  defaultValue:
+                                    "修复 Codex session_index 和 SQLite 元数据",
+                                })}
+                              </TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="gap-1.5"
+                                  onClick={openBackupDialog}
+                                >
+                                  <DatabaseBackup className="size-3.5" />
+                                  <span className="hidden sm:inline">
+                                    {t("sessionManager.backups", {
+                                      defaultValue: "备份",
+                                    })}
+                                  </span>
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {t("sessionManager.backupsTooltip", {
+                                  defaultValue:
+                                    "管理 Codex Keeper 备份和 Trash",
+                                })}
+                              </TooltipContent>
+                            </Tooltip>
+                          </>
+                        )}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1.5"
+                              onClick={() =>
+                                selectedSession &&
+                                openMoveDialog(selectedSession)
+                              }
+                              disabled={!canMoveSelectedSession || isMoving}
+                            >
+                              <FolderOpen className="size-3.5" />
+                              <span className="hidden sm:inline">
+                                {isMoving
+                                  ? t("sessionManager.moving", {
+                                      defaultValue: "移动中...",
+                                    })
+                                  : t("sessionManager.move", {
+                                      defaultValue: "移动",
+                                    })}
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {canMoveSelectedSession
+                              ? t("sessionManager.moveTooltip", {
+                                  defaultValue: "将此 Codex 会话移动到其他项目",
+                                })
+                              : t("sessionManager.moveCodexOnlyTooltip", {
+                                  defaultValue: "仅支持移动 Codex 会话",
+                                })}
+                          </TooltipContent>
+                        </Tooltip>
+                        {selectedSession.providerId === "codex" && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="gap-1.5"
+                                onClick={() => void handleTrash()}
+                                disabled={
+                                  !selectedSession.sourcePath || isTrashing
+                                }
+                              >
+                                <Archive className="size-3.5" />
+                                <span className="hidden sm:inline">
+                                  {t("sessionManager.trash", {
+                                    defaultValue: "Trash",
+                                  })}
+                                </span>
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {t("sessionManager.trashTooltip", {
+                                defaultValue:
+                                  "移动到 Codex Keeper Trash，可从备份面板恢复",
+                              })}
                             </TooltipContent>
                           </Tooltip>
                         )}
@@ -1091,6 +1484,24 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                       }
                                       searchQuery={search}
                                       onCopy={handleMessageCopy}
+                                      onTrim={
+                                        isCodexSession
+                                          ? (message) =>
+                                              void runCodexMessageOperation(
+                                                message,
+                                                "trim",
+                                              )
+                                          : undefined
+                                      }
+                                      onBranch={
+                                        isCodexSession
+                                          ? (message) =>
+                                              void runCodexMessageOperation(
+                                                message,
+                                                "branch",
+                                              )
+                                          : undefined
+                                      }
                                     />
                                   </div>
                                 ))}
@@ -1165,6 +1576,385 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           }
         }}
       />
+      <Dialog
+        open={Boolean(moveTarget)}
+        onOpenChange={(open) => !open && closeMoveDialog()}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>
+              {t("sessionManager.moveTitle", {
+                defaultValue: "移动 Codex 会话",
+              })}
+            </DialogTitle>
+            <DialogDescription>
+              {moveTarget
+                ? t("sessionManager.moveDescription", {
+                    defaultValue:
+                      "更新 Codex 本地状态和 JSONL 元数据，把“{{title}}”归到目标项目。",
+                    title: formatSessionTitle(moveTarget),
+                  })
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-4 px-6 py-5">
+            {moveTarget?.projectDir && (
+              <div className="grid gap-1.5">
+                <Label>
+                  {t("sessionManager.currentProject", {
+                    defaultValue: "当前项目",
+                  })}
+                </Label>
+                <div className="rounded-md border bg-muted/50 px-3 py-2 font-mono text-xs break-all">
+                  {moveTarget.projectDir}
+                </div>
+              </div>
+            )}
+
+            {moveProjectOptions.length > 0 && (
+              <div className="grid gap-1.5">
+                <Label>
+                  {t("sessionManager.selectTargetProject", {
+                    defaultValue: "选择已有项目",
+                  })}
+                </Label>
+                <Select onValueChange={setMoveProjectDir}>
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={t(
+                        "sessionManager.selectProjectPlaceholder",
+                        {
+                          defaultValue: "选择一个项目路径",
+                        },
+                      )}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {moveProjectOptions.map((dir) => (
+                      <SelectItem key={dir} value={dir}>
+                        <span className="font-mono text-xs">{dir}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="codex-session-target-project">
+                {t("sessionManager.targetProject", {
+                  defaultValue: "目标项目路径",
+                })}
+              </Label>
+              <Input
+                id="codex-session-target-project"
+                value={moveProjectDir}
+                onChange={(event) => setMoveProjectDir(event.target.value)}
+                placeholder="/absolute/path/to/project"
+                className="font-mono text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("sessionManager.moveSafetyHint", {
+                  defaultValue:
+                    "移动前会备份 Codex state_5.sqlite 和会话 JSONL 文件。",
+                })}
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={closeMoveDialog}
+              disabled={isMoving}
+            >
+              {t("common.cancel", { defaultValue: "取消" })}
+            </Button>
+            <Button
+              onClick={() => void handleMoveConfirm()}
+              disabled={!canConfirmMove}
+            >
+              {isMoving
+                ? t("sessionManager.moving", {
+                    defaultValue: "移动中...",
+                  })
+                : t("sessionManager.moveConfirm", {
+                    defaultValue: "移动会话",
+                  })}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={backupDialogOpen} onOpenChange={setBackupDialogOpen}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>
+              {t("sessionManager.codexBackupsTitle", {
+                defaultValue: "Codex Keeper 备份",
+              })}
+            </DialogTitle>
+            <DialogDescription>
+              {t("sessionManager.codexBackupsDescription", {
+                defaultValue:
+                  "管理 Repair、Move、Trim、Branch、Trash 操作创建的本地备份。",
+              })}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-4 px-6 py-5 max-h-[65vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <Badge variant="secondary">
+                {t("sessionManager.backupCount", {
+                  defaultValue: "{{count}} 个备份",
+                  count: codexBackups.length,
+                })}
+              </Badge>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void refreshCodexBackups()}
+                disabled={isLoadingBackups}
+              >
+                <RefreshCw className="size-3.5 mr-1.5" />
+                {t("common.refresh", { defaultValue: "刷新" })}
+              </Button>
+            </div>
+
+            <div className="grid gap-2">
+              {codexBackups.length === 0 ? (
+                <div className="rounded-md border bg-muted/40 px-3 py-6 text-center text-sm text-muted-foreground">
+                  {isLoadingBackups
+                    ? t("common.loading", { defaultValue: "加载中..." })
+                    : t("sessionManager.noBackups", {
+                        defaultValue: "暂无备份",
+                      })}
+                </div>
+              ) : (
+                codexBackups.map((backup) => (
+                  <div
+                    key={backup.backupPath}
+                    className="grid gap-2 rounded-md border px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate font-mono text-xs">
+                          {backup.originalName}
+                        </div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          {backup.reason}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {backup.kind === "chatFile" && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 gap-1.5"
+                            onClick={async () => {
+                              try {
+                                await sessionsApi.restoreCodexBackup({
+                                  backupPath: backup.backupPath,
+                                  originalPath: backup.originalPath,
+                                });
+                                await refreshCodexBackups();
+                                await queryClient.invalidateQueries({
+                                  queryKey: ["sessions"],
+                                });
+                                toast.success(
+                                  t("sessionManager.restoreSuccess", {
+                                    defaultValue: "备份已恢复",
+                                  }),
+                                );
+                              } catch (error) {
+                                toast.error(
+                                  extractErrorMessage(error) ||
+                                    t("sessionManager.restoreFailed", {
+                                      defaultValue: "恢复失败",
+                                    }),
+                                );
+                              }
+                            }}
+                          >
+                            <RotateCcw className="size-3" />
+                            {t("sessionManager.restore", {
+                              defaultValue: "恢复",
+                            })}
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-destructive"
+                          onClick={async () => {
+                            try {
+                              await sessionsApi.moveCodexBackupToTrash(
+                                backup.backupPath,
+                              );
+                              await refreshCodexBackups();
+                            } catch (error) {
+                              toast.error(
+                                extractErrorMessage(error) ||
+                                  t("sessionManager.trashBackupFailed", {
+                                    defaultValue: "移动备份到 Trash 失败",
+                                  }),
+                              );
+                            }
+                          }}
+                        >
+                          <Trash2 className="size-3" />
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="break-all font-mono text-[11px] text-muted-foreground">
+                      {backup.backupPath}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {(codexTrashedThreads.length > 0 ||
+              codexTrashBackups.length > 0) && (
+              <div className="grid gap-2 border-t pt-4">
+                <div className="flex items-center justify-between">
+                  <Badge variant="outline">
+                    {t("sessionManager.trashCount", {
+                      defaultValue:
+                        "Trash: {{threads}} 个会话 / {{backups}} 个备份",
+                      threads: codexTrashedThreads.length,
+                      backups: codexTrashBackups.length,
+                    })}
+                  </Badge>
+                  <div className="flex items-center gap-2">
+                    {codexTrashedThreads.length > 0 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            await sessionsApi.emptyCodexThreadTrash();
+                            await refreshCodexBackups();
+                            await queryClient.invalidateQueries({
+                              queryKey: ["sessions"],
+                            });
+                          } catch (error) {
+                            toast.error(
+                              extractErrorMessage(error) ||
+                                t("sessionManager.emptyTrashFailed", {
+                                  defaultValue: "清空 Trash 失败",
+                                }),
+                            );
+                          }
+                        }}
+                      >
+                        {t("sessionManager.emptyThreadTrash", {
+                          defaultValue: "清空会话 Trash",
+                        })}
+                      </Button>
+                    )}
+                    {codexTrashBackups.length > 0 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            await sessionsApi.emptyCodexBackupTrash();
+                            await refreshCodexBackups();
+                          } catch (error) {
+                            toast.error(
+                              extractErrorMessage(error) ||
+                                t("sessionManager.emptyTrashFailed", {
+                                  defaultValue: "清空 Trash 失败",
+                                }),
+                            );
+                          }
+                        }}
+                      >
+                        {t("sessionManager.emptyBackupTrash", {
+                          defaultValue: "清空备份 Trash",
+                        })}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                {codexTrashedThreads.map((thread) => (
+                  <div
+                    key={thread.manifestPath}
+                    className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-sm">{thread.title}</div>
+                      <div className="truncate font-mono text-xs text-muted-foreground">
+                        {thread.originalPath}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            await sessionsApi.restoreCodexTrashedThread(
+                              thread.manifestPath,
+                            );
+                            await refreshCodexBackups();
+                            await queryClient.invalidateQueries({
+                              queryKey: ["sessions"],
+                            });
+                          } catch (error) {
+                            toast.error(
+                              extractErrorMessage(error) ||
+                                t("sessionManager.restoreFailed", {
+                                  defaultValue: "恢复失败",
+                                }),
+                            );
+                          }
+                        }}
+                      >
+                        {t("sessionManager.restore", {
+                          defaultValue: "恢复",
+                        })}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive"
+                        onClick={async () => {
+                          try {
+                            await sessionsApi.deleteCodexTrashedThread(
+                              thread.manifestPath,
+                            );
+                            await refreshCodexBackups();
+                          } catch (error) {
+                            toast.error(
+                              extractErrorMessage(error) ||
+                                t("sessionManager.deleteFailed", {
+                                  defaultValue: "删除失败",
+                                }),
+                            );
+                          }
+                        }}
+                      >
+                        <Trash2 className="size-3" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setBackupDialogOpen(false)}
+            >
+              {t("common.close", { defaultValue: "关闭" })}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </TooltipProvider>
   );
 }

@@ -106,6 +106,10 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
             role: role.to_string(),
             content,
             ts,
+            line_number: None,
+            branch_line_number: None,
+            can_trim: None,
+            can_branch: None,
         });
     }
 
@@ -170,6 +174,11 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
         last_active_at: last_active_at.or(created_at),
         source_path: Some(source_path),
         resume_command: Some(format!("gemini --resume {session_id}")),
+        codex_status: None,
+        is_in_session_index: None,
+        file_exists: None,
+        archived: None,
+        needs_repair: None,
     })
 }
 

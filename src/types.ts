@@ -437,12 +437,21 @@ export interface SessionMeta {
   lastActiveAt?: number;
   sourcePath?: string;
   resumeCommand?: string;
+  codexStatus?: string;
+  isInSessionIndex?: boolean;
+  fileExists?: boolean;
+  archived?: boolean;
+  needsRepair?: boolean;
 }
 
 export interface SessionMessage {
   role: string;
   content: string;
   ts?: number;
+  lineNumber?: number;
+  branchLineNumber?: number;
+  canTrim?: boolean;
+  canBranch?: boolean;
 }
 
 // MCP 服务器连接参数（宽松：允许扩展字段）

@@ -1,0 +1,84 @@
+name: Build macOS Ad Hoc
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-ad-hoc:
+    name: macOS Ad Hoc App
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add macOS targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.12.3
+          run_install: false
+
+      - name: Cache pnpm store
+        uses: actions/cache@v5
+        with:
+          path: ~/.local/share/pnpm/store
+          key: macos-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: macos-pnpm-store-
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: macos-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: macos-cargo-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Disable updater artifacts for local build
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const path = "src-tauri/tauri.conf.json";
+          const config = JSON.parse(fs.readFileSync(path, "utf8"));
+          config.bundle.targets = ["app"];
+          config.bundle.createUpdaterArtifacts = false;
+          fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+          NODE
+
+      - name: Build app bundle
+        run: pnpm tauri build --target universal-apple-darwin --bundles app
+
+      - name: Ad hoc sign app
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -type d | head -1)"
+          test -n "$APP_PATH"
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict "$APP_PATH"
+          mkdir -p release-assets
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" release-assets/CC-Switch-macOS-ad-hoc.zip
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: CC-Switch-macOS-ad-hoc
+          path: release-assets/CC-Switch-macOS-ad-hoc.zip
