@@ -23,8 +23,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add macOS targets
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Add macOS target
+        run: rustup target add aarch64-apple-darwin
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -64,21 +64,21 @@ jobs:
           NODE
 
       - name: Build app bundle
-        run: pnpm tauri build --target universal-apple-darwin --bundles app
+        run: pnpm tauri build --target aarch64-apple-darwin --bundles app
 
       - name: Ad hoc sign app
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH="$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -type d | head -1)"
+          APP_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -type d | head -1)"
           test -n "$APP_PATH"
           codesign --force --deep --sign - "$APP_PATH"
           codesign --verify --deep --strict "$APP_PATH"
           mkdir -p release-assets
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" release-assets/CC-Switch-macOS-ad-hoc.zip
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" release-assets/CC-Switch-macOS-arm64-ad-hoc.zip
 
       - name: Upload app artifact
         uses: actions/upload-artifact@v6
         with:
-          name: CC-Switch-macOS-ad-hoc
-          path: release-assets/CC-Switch-macOS-ad-hoc.zip
+          name: CC-Switch-macOS-arm64-ad-hoc
+          path: release-assets/CC-Switch-macOS-arm64-ad-hoc.zip
