@@ -13,7 +13,6 @@ import {
   Minimize2,
   X,
   Book,
-  Brain,
   Wrench,
   RefreshCw,
   History,
@@ -21,11 +20,6 @@ import {
   Download,
   FolderArchive,
   Search,
-  FolderOpen,
-  KeyRound,
-  Shield,
-  Cpu,
-  LayoutDashboard,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
@@ -39,9 +33,6 @@ import {
 } from "@/lib/api";
 import { checkAllEnvConflicts, checkEnvConflicts } from "@/lib/api/env";
 import { useProviderActions } from "@/hooks/useProviderActions";
-import { openclawKeys, useOpenClawHealth } from "@/hooks/useOpenClaw";
-import { hermesKeys, useOpenHermesWebUI } from "@/hooks/useHermes";
-import { hermesApi } from "@/lib/api/hermes";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useAutoCompact } from "@/hooks/useAutoCompact";
 import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
@@ -80,16 +71,6 @@ import { UniversalProviderPanel } from "@/components/universal";
 import { McpIcon } from "@/components/BrandIcons";
 import { Button } from "@/components/ui/button";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
-import {
-  useDisableCurrentOmo,
-  useDisableCurrentOmoSlim,
-} from "@/lib/query/omo";
-import WorkspaceFilesPanel from "@/components/workspace/WorkspaceFilesPanel";
-import EnvPanel from "@/components/openclaw/EnvPanel";
-import ToolsPanel from "@/components/openclaw/ToolsPanel";
-import AgentsDefaultsPanel from "@/components/openclaw/AgentsDefaultsPanel";
-import OpenClawHealthBanner from "@/components/openclaw/OpenClawHealthBanner";
-import HermesMemoryPanel from "@/components/hermes/HermesMemoryPanel";
 
 type View =
   | "providers"
@@ -100,12 +81,7 @@ type View =
   | "mcp"
   | "agents"
   | "universal"
-  | "sessions"
-  | "workspace"
-  | "openclawEnv"
-  | "openclawTools"
-  | "openclawAgents"
-  | "hermesMemory";
+  | "sessions";
 
 interface SyncStatusUpdatedPayload {
   source?: string;
@@ -121,10 +97,6 @@ const VALID_APPS: AppId[] = [
   "claude",
   "claude-desktop",
   "codex",
-  "gemini",
-  "opencode",
-  "openclaw",
-  "hermes",
 ];
 
 const getInitialApp = (): AppId => {
@@ -146,11 +118,6 @@ const VALID_VIEWS: View[] = [
   "agents",
   "universal",
   "sessions",
-  "workspace",
-  "openclawEnv",
-  "openclawTools",
-  "openclawAgents",
-  "hermesMemory",
 ];
 
 const getInitialView = (): View => {
@@ -186,20 +153,12 @@ function App() {
     claude: true,
     "claude-desktop": true,
     codex: true,
-    gemini: true,
-    opencode: true,
-    openclaw: true,
-    hermes: true,
   };
 
   const getFirstVisibleApp = (): AppId => {
     if (visibleApps.claude) return "claude";
     if (visibleApps["claude-desktop"]) return "claude-desktop";
     if (visibleApps.codex) return "codex";
-    if (visibleApps.gemini) return "gemini";
-    if (visibleApps.opencode) return "opencode";
-    if (visibleApps.openclaw) return "openclaw";
-    if (visibleApps.hermes) return "hermes";
     return "claude"; // fallback
   };
 
@@ -214,11 +173,7 @@ function App() {
     if (
       currentView === "sessions" &&
       sharedFeatureApp !== "claude" &&
-      sharedFeatureApp !== "codex" &&
-      sharedFeatureApp !== "opencode" &&
-      sharedFeatureApp !== "openclaw" &&
-      sharedFeatureApp !== "gemini" &&
-      sharedFeatureApp !== "hermes"
+      sharedFeatureApp !== "codex"
     ) {
       setCurrentView("providers");
     }
@@ -266,24 +221,8 @@ function App() {
   });
   const providers = useMemo(() => data?.providers ?? {}, [data]);
   const currentProviderId = data?.currentProviderId ?? "";
-  const isOpenClawView =
-    activeApp === "openclaw" &&
-    (currentView === "providers" ||
-      currentView === "workspace" ||
-      currentView === "sessions" ||
-      currentView === "openclawEnv" ||
-      currentView === "openclawTools" ||
-      currentView === "openclawAgents");
-  const { data: openclawHealthWarnings = [] } =
-    useOpenClawHealth(isOpenClawView);
-  const hasSkillsSupport = sharedFeatureApp !== "openclaw";
   const hasSessionSupport =
-    sharedFeatureApp === "claude" ||
-    sharedFeatureApp === "codex" ||
-    sharedFeatureApp === "opencode" ||
-    sharedFeatureApp === "openclaw" ||
-    sharedFeatureApp === "gemini" ||
-    sharedFeatureApp === "hermes";
+    sharedFeatureApp === "claude" || sharedFeatureApp === "codex";
 
   const {
     addProvider,
@@ -291,46 +230,11 @@ function App() {
     switchProvider,
     deleteProvider,
     saveUsageScript,
-    setAsDefaultModel,
   } = useProviderActions(
     activeApp,
     isProxyRunning,
     isProxyRunning && isCurrentAppTakeoverActive,
   );
-
-  const disableOmoMutation = useDisableCurrentOmo();
-  const handleDisableOmo = () => {
-    disableOmoMutation.mutate(undefined, {
-      onSuccess: () => {
-        toast.success(t("omo.disabled", { defaultValue: "OMO 已停用" }));
-      },
-      onError: (error: Error) => {
-        toast.error(
-          t("omo.disableFailed", {
-            defaultValue: "停用 OMO 失败: {{error}}",
-            error: extractErrorMessage(error),
-          }),
-        );
-      },
-    });
-  };
-
-  const disableOmoSlimMutation = useDisableCurrentOmoSlim();
-  const handleDisableOmoSlim = () => {
-    disableOmoSlimMutation.mutate(undefined, {
-      onSuccess: () => {
-        toast.success(t("omo.disabled", { defaultValue: "OMO 已停用" }));
-      },
-      onError: (error: Error) => {
-        toast.error(
-          t("omo.disableFailed", {
-            defaultValue: "停用 OMO 失败: {{error}}",
-            error: extractErrorMessage(error),
-          }),
-        );
-      },
-    });
-  };
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -595,11 +499,6 @@ function App() {
     };
   }, []);
 
-  const [launchDashboardOpen, setLaunchDashboardOpen] = useState(false);
-  const openHermesWebUI = useOpenHermesWebUI(() =>
-    setLaunchDashboardOpen(true),
-  );
-
   const handleOpenWebsite = async (url: string) => {
     try {
       await settingsApi.openExternal(url);
@@ -629,26 +528,9 @@ function App() {
     const { provider, action } = confirmAction;
 
     if (action === "remove") {
-      // Remove from live config only (for additive mode apps like OpenCode/OpenClaw)
+      // Remove from live config only.
       // Does NOT delete from database - provider remains in the list
       await providersApi.removeFromLiveConfig(provider.id, activeApp);
-      // Invalidate queries to refresh the isInConfig state
-      if (activeApp === "opencode") {
-        await queryClient.invalidateQueries({
-          queryKey: ["opencodeLiveProviderIds"],
-        });
-      } else if (activeApp === "openclaw") {
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.liveProviderIds,
-        });
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.health,
-        });
-      } else if (activeApp === "hermes") {
-        await queryClient.invalidateQueries({
-          queryKey: hermesKeys.liveProviderIds,
-        });
-      }
       toast.success(
         t("notifications.removeFromConfigSuccess", {
           defaultValue: "已从配置移除",
@@ -659,23 +541,6 @@ function App() {
       await deleteProvider(provider.id);
     }
     setConfirmAction(null);
-  };
-
-  const generateUniqueProviderCopyKey = (
-    originalKey: string,
-    existingKeys: string[],
-  ): string => {
-    const baseKey = `${originalKey}-copy`;
-
-    if (!existingKeys.includes(baseKey)) {
-      return baseKey;
-    }
-
-    let counter = 2;
-    while (existingKeys.includes(`${baseKey}-${counter}`)) {
-      counter++;
-    }
-    return `${baseKey}-${counter}`;
   };
 
   const handleDuplicateProvider = async (provider: Provider) => {
@@ -695,51 +560,6 @@ function App() {
       icon: provider.icon,
       iconColor: provider.iconColor,
     };
-
-    if (
-      activeApp === "opencode" ||
-      activeApp === "openclaw" ||
-      activeApp === "hermes"
-    ) {
-      let liveProviderIds: string[] = [];
-      try {
-        liveProviderIds =
-          activeApp === "opencode"
-            ? await queryClient.ensureQueryData({
-                queryKey: ["opencodeLiveProviderIds"],
-                queryFn: () => providersApi.getOpenCodeLiveProviderIds(),
-              })
-            : activeApp === "openclaw"
-              ? await queryClient.ensureQueryData({
-                  queryKey: openclawKeys.liveProviderIds,
-                  queryFn: () => providersApi.getOpenClawLiveProviderIds(),
-                })
-              : await queryClient.ensureQueryData({
-                  queryKey: hermesKeys.liveProviderIds,
-                  queryFn: () => providersApi.getHermesLiveProviderIds(),
-                });
-      } catch (error) {
-        console.error(
-          "[App] Failed to load live provider IDs for duplication",
-          error,
-        );
-        const errorMessage = extractErrorMessage(error);
-        toast.error(
-          t("provider.duplicateLiveIdsLoadFailed", {
-            defaultValue: "读取配置中的供应商标识失败，请先修复配置后再试",
-          }) + (errorMessage ? `: ${errorMessage}` : ""),
-        );
-        return;
-      }
-      const existingKeys = Array.from(
-        new Set([...Object.keys(providers), ...liveProviderIds]),
-      );
-      duplicatedProvider.providerKey = generateUniqueProviderCopyKey(
-        provider.id,
-        existingKeys,
-      );
-      duplicatedProvider.addToLive = false;
-    }
 
     if (provider.sortIndex !== undefined) {
       const updates = Object.values(providers)
@@ -878,25 +698,19 @@ function App() {
               appId={sharedFeatureApp}
             />
           );
-        case "hermesMemory":
-          return <HermesMemoryPanel />;
         case "skills":
           return (
             <UnifiedSkillsPanel
               ref={unifiedSkillsPanelRef}
               onOpenDiscovery={() => setCurrentView("skillsDiscovery")}
-              currentApp={
-                sharedFeatureApp === "openclaw" ? "claude" : sharedFeatureApp
-              }
+              currentApp={sharedFeatureApp}
             />
           );
         case "skillsDiscovery":
           return (
             <SkillsPage
               ref={skillsPageRef}
-              initialApp={
-                sharedFeatureApp === "openclaw" ? "claude" : sharedFeatureApp
-              }
+              initialApp={sharedFeatureApp}
             />
           );
         case "mcp":
@@ -924,14 +738,6 @@ function App() {
               appId={sharedFeatureApp}
             />
           );
-        case "workspace":
-          return <WorkspaceFilesPanel />;
-        case "openclawEnv":
-          return <EnvPanel />;
-        case "openclawTools":
-          return <ToolsPanel />;
-        case "openclawAgents":
-          return <AgentsDefaultsPanel />;
         default:
           return (
             <div className="px-6 flex flex-col flex-1 min-h-0 overflow-hidden">
@@ -962,22 +768,6 @@ function App() {
                       onDelete={(provider) =>
                         setConfirmAction({ provider, action: "delete" })
                       }
-                      onRemoveFromConfig={
-                        activeApp === "opencode" ||
-                        activeApp === "openclaw" ||
-                        activeApp === "hermes"
-                          ? (provider) =>
-                              setConfirmAction({ provider, action: "remove" })
-                          : undefined
-                      }
-                      onDisableOmo={
-                        activeApp === "opencode" ? handleDisableOmo : undefined
-                      }
-                      onDisableOmoSlim={
-                        activeApp === "opencode"
-                          ? handleDisableOmoSlim
-                          : undefined
-                      }
                       onDuplicate={handleDuplicateProvider}
                       onConfigureUsage={setUsageProvider}
                       onOpenWebsite={handleOpenWebsite}
@@ -985,13 +775,6 @@ function App() {
                         activeApp === "claude" ? handleOpenTerminal : undefined
                       }
                       onCreate={() => setIsAddOpen(true)}
-                      onSetAsDefault={
-                        activeApp === "openclaw"
-                          ? setAsDefaultModel
-                          : activeApp === "hermes"
-                            ? switchProvider
-                            : undefined
-                      }
                     />
                   </motion.div>
                 </AnimatePresence>
@@ -1148,12 +931,6 @@ function App() {
                       defaultValue: "统一供应商",
                     })}
                   {currentView === "sessions" && t("sessionManager.title")}
-                  {currentView === "workspace" && t("workspace.title")}
-                  {currentView === "openclawEnv" && t("openclaw.env.title")}
-                  {currentView === "openclawTools" && t("openclaw.tools.title")}
-                  {currentView === "openclawAgents" &&
-                    t("openclaw.agents.title")}
-                  {currentView === "hermesMemory" && t("hermes.memory.title")}
                 </h1>
               </div>
             ) : (
@@ -1212,10 +989,7 @@ function App() {
           </div>
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
-            {currentView === "providers" &&
-              activeApp !== "opencode" &&
-              activeApp !== "openclaw" &&
-              activeApp !== "hermes" && (
+            {currentView === "providers" && (
                 <div
                   className="flex shrink-0 items-center gap-1.5"
                   style={{ WebkitAppRegion: "no-drag" } as any}
@@ -1354,21 +1128,14 @@ function App() {
                     <div className="flex items-center gap-1 p-1 bg-muted rounded-xl">
                       <AnimatePresence mode="wait">
                         <motion.div
-                          key={
-                            activeApp === "openclaw"
-                              ? "openclaw"
-                              : activeApp === "hermes"
-                                ? "hermes"
-                                : "default"
-                          }
+                          key="default"
                           className="flex items-center gap-1"
                           initial={{ opacity: 0 }}
                           animate={{ opacity: 1 }}
                           exit={{ opacity: 0 }}
                           transition={{ duration: 0.15 }}
                         >
-                          {activeApp === "hermes" ? (
-                            <>
+                          <>
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -1377,99 +1144,6 @@ function App() {
                                 title={t("skills.manage")}
                               >
                                 <Wrench className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("hermesMemory")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("hermes.memory.title")}
-                              >
-                                <Brain className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => void openHermesWebUI()}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("hermes.webui.open")}
-                              >
-                                <LayoutDashboard className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("mcp")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("mcp.title")}
-                              >
-                                <McpIcon size={16} />
-                              </Button>
-                            </>
-                          ) : activeApp === "openclaw" ? (
-                            <>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("workspace")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("workspace.manage")}
-                              >
-                                <FolderOpen className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("openclawEnv")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("openclaw.env.title")}
-                              >
-                                <KeyRound className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("openclawTools")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("openclaw.tools.title")}
-                              >
-                                <Shield className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("openclawAgents")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("openclaw.agents.title")}
-                              >
-                                <Cpu className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("sessions")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("sessionManager.title")}
-                              >
-                                <History className="w-4 h-4" />
-                              </Button>
-                            </>
-                          ) : (
-                            <>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("skills")}
-                                className={cn(
-                                  "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5",
-                                  "transition-all duration-200 ease-in-out overflow-hidden",
-                                  hasSkillsSupport
-                                    ? "opacity-100 w-8 scale-100 px-2"
-                                    : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
-                                )}
-                                title={t("skills.manage")}
-                              >
-                                <Wrench className="flex-shrink-0 w-4 h-4" />
                               </Button>
                               <Button
                                 variant="ghost"
@@ -1504,8 +1178,7 @@ function App() {
                               >
                                 <McpIcon size={16} />
                               </Button>
-                            </>
-                          )}
+                          </>
                         </motion.div>
                       </AnimatePresence>
                     </div>
@@ -1526,9 +1199,6 @@ function App() {
       </header>
 
       <main className="flex-1 min-h-0 flex flex-col overflow-y-auto animate-fade-in">
-        {isOpenClawView && openclawHealthWarnings.length > 0 && (
-          <OpenClawHealthBanner warnings={openclawHealthWarnings} />
-        )}
         {renderContent()}
       </main>
 
@@ -1587,28 +1257,6 @@ function App() {
         }
         onConfirm={() => void handleConfirmAction()}
         onCancel={() => setConfirmAction(null)}
-      />
-
-      <ConfirmDialog
-        isOpen={launchDashboardOpen}
-        title={t("hermes.webui.launchConfirmTitle")}
-        message={t("hermes.webui.launchConfirmMessage")}
-        confirmText={t("hermes.webui.launchConfirmAction")}
-        variant="info"
-        onConfirm={() => {
-          setLaunchDashboardOpen(false);
-          void (async () => {
-            try {
-              await hermesApi.launchDashboard();
-              toast.success(t("hermes.webui.launching"));
-            } catch (error) {
-              toast.error(t("hermes.webui.launchFailed"), {
-                description: extractErrorMessage(error) || undefined,
-              });
-            }
-          })();
-        }}
-        onCancel={() => setLaunchDashboardOpen(false)}
       />
 
       <DeepLinkImportDialog />

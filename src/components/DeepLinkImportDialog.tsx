@@ -222,7 +222,7 @@ export function DeepLinkImportDialog() {
 
   // Parse config file content for display
   interface ParsedConfig {
-    type: "claude" | "codex" | "gemini";
+    type: "claude" | "codex";
     env?: Record<string, string>;
     auth?: Record<string, string>;
     tomlConfig?: string;
@@ -260,13 +260,6 @@ export function DeepLinkImportDialog() {
           type: "codex",
           auth: (parsed.auth as Record<string, string>) || {},
           tomlConfig: (parsed.config as string) || "",
-          raw: parsed,
-        };
-      } else if (request.app === "gemini") {
-        // Gemini 格式: 扁平结构 { GEMINI_API_KEY: ..., GEMINI_BASE_URL: ... }
-        return {
-          type: "gemini",
-          env: parsed as Record<string, string>,
           raw: parsed,
         };
       }
@@ -467,7 +460,7 @@ export function DeepLinkImportDialog() {
                     </>
                   ) : (
                     <>
-                      {/* Codex 和 Gemini 使用通用 model 字段 */}
+                      {/* Codex 使用通用 model 字段 */}
                       {request.model && (
                         <div className="grid grid-cols-3 items-center gap-4">
                           <div className="font-medium text-sm text-muted-foreground">
@@ -584,27 +577,6 @@ export function DeepLinkImportDialog() {
                             </div>
                           )}
 
-                          {/* Gemini config */}
-                          {parsedConfig.type === "gemini" &&
-                            parsedConfig.env && (
-                              <div className="space-y-1.5">
-                                {Object.entries(parsedConfig.env).map(
-                                  ([key, value]) => (
-                                    <div
-                                      key={key}
-                                      className="grid grid-cols-2 gap-2 text-xs"
-                                    >
-                                      <span className="font-mono text-muted-foreground truncate">
-                                        {key}
-                                      </span>
-                                      <span className="font-mono truncate">
-                                        {maskValue(key, String(value))}
-                                      </span>
-                                    </div>
-                                  ),
-                                )}
-                              </div>
-                            )}
                         </div>
                       )}
 

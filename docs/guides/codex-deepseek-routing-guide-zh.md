@@ -45,7 +45,7 @@ DeepSeek 官方文档目前写明 OpenAI 兼容 base URL 是 `https://api.deepse
 进入设置里的 `路由` 页面，展开 `本地路由`，完成两个开关：
 
 1. 打开 `路由总开关`，启动本地服务。默认地址是 `127.0.0.1:15721`。
-2. 在 `路由启用` 中打开 `Codex`。如果只想让 Codex 走路由，可以保持 Claude、Gemini 关闭。
+2. 在 `路由启用` 中打开 `Codex`。如果只想让 Codex 走路由，可以保持其他应用路由关闭。
 
 ![本地路由页面中启用 Codex 接管](../images/codex-deepseek-routing/03-local-route-codex-takeover.png)
 

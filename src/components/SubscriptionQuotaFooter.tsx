@@ -27,10 +27,6 @@ export const TIER_I18N_KEYS: Record<string, string> = {
   seven_day: "subscription.sevenDay",
   seven_day_opus: "subscription.sevenDayOpus",
   seven_day_sonnet: "subscription.sevenDaySonnet",
-  // Gemini 模型分类
-  gemini_pro: "subscription.geminiPro",
-  gemini_flash: "subscription.geminiFlash",
-  gemini_flash_lite: "subscription.geminiFlashLite",
   // Token Plan（five_hour 已在上方官方映射中）
   weekly_limit: "subscription.sevenDay",
   // GitHub Copilot

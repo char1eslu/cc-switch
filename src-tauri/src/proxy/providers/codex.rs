@@ -303,7 +303,7 @@ fn infer_aggregator_platform_config(
     // OpenRouter：用原生归一化对象 `reasoning: { effort }`（由 OpenRouter 翻译成各底层
     // 模型的正确推理参数，比顶层 OpenAI 别名 reasoning_effort 覆盖面更全）。effort 走
     // "openrouter" 值映射：枚举为 xhigh|high|medium|low|minimal，无 max——max 会触发
-    // `400 reasoning_effort: Invalid option`（见 openclaw#77350），故钳到 xhigh。
+    // `400 reasoning_effort: Invalid option`，故钳到 xhigh。
     // 安全降级：不发 `thinking:{type}`（OpenRouter 不认该字段），避免误配导致请求被拒。
     if platform.contains("openrouter") {
         return Some(CodexChatReasoningConfig {

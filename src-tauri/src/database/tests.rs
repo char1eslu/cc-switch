@@ -88,8 +88,7 @@ const V3_8_SCHEMA_V1_SQL: &str = r#"
         docs TEXT,
         tags TEXT NOT NULL DEFAULT '[]',
         enabled_claude BOOLEAN NOT NULL DEFAULT 0,
-        enabled_codex BOOLEAN NOT NULL DEFAULT 0,
-        enabled_gemini BOOLEAN NOT NULL DEFAULT 0
+        enabled_codex BOOLEAN NOT NULL DEFAULT 0
     );
     CREATE TABLE prompts (
         id TEXT NOT NULL,
@@ -198,7 +197,6 @@ fn schema_migration_adds_missing_columns_for_providers() {
         ("providers", "meta"),
         ("providers", "is_current"),
         ("provider_endpoints", "added_at"),
-        ("mcp_servers", "enabled_gemini"),
         ("prompts", "updated_at"),
         ("skills", "installed_at"),
         ("skill_repos", "enabled"),
@@ -311,9 +309,7 @@ fn schema_migration_v4_adds_pricing_model_columns() {
             name TEXT NOT NULL,
             server_config TEXT NOT NULL,
             enabled_claude INTEGER NOT NULL DEFAULT 0,
-            enabled_codex INTEGER NOT NULL DEFAULT 0,
-            enabled_gemini INTEGER NOT NULL DEFAULT 0,
-            enabled_opencode INTEGER NOT NULL DEFAULT 0
+            enabled_codex INTEGER NOT NULL DEFAULT 0
         );
         "#,
     )
@@ -728,19 +724,6 @@ fn schema_model_pricing_is_seeded_on_init() {
         gpt_count
     );
 
-    // 验证包含 Gemini 模型
-    let gemini_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM model_pricing WHERE model_id LIKE 'gemini-%'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("check gemini");
-    assert!(
-        gemini_count > 0,
-        "应该包含 Gemini 模型定价，实际数量: {}",
-        gemini_count
-    );
 }
 
 #[test]

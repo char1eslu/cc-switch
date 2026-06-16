@@ -7,7 +7,7 @@ const ICONS_DIR = path.join(__dirname, '../src/icons/extracted');
 // Based on common AI providers and tools
 const KEEP_LIST = [
     // AI Providers
-    'openai', 'anthropic', 'claude', 'google', 'gemini', 'gemma', 'palm',
+    'openai', 'anthropic', 'claude', 'google', 'gemma', 'palm',
     'microsoft', 'azure', 'copilot', 'meta', 'llama',
     'alibaba', 'qwen', 'tencent', 'hunyuan', 'baidu', 'wenxin',
     'bytedance', 'doubao', 'deepseek', 'moonshot', 'kimi', 'stepfun',

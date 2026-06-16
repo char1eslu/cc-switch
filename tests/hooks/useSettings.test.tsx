@@ -89,9 +89,6 @@ const createSettingsFormMock = (overrides: Record<string, unknown> = {}) => ({
     skipClaudeOnboarding: true,
     claudeConfigDir: "/claude",
     codexConfigDir: "/codex",
-    geminiConfigDir: "/gemini",
-    opencodeConfigDir: "/opencode",
-    openclawConfigDir: "/openclaw",
     language: "zh",
   },
   isLoading: false,
@@ -110,9 +107,6 @@ const createDirectorySettingsMock = (
     appConfig: "/home/mock/.cc-switch",
     claude: "/default/claude",
     codex: "/default/codex",
-    gemini: "/default/gemini",
-    opencode: "/default/opencode",
-    openclaw: "/default/openclaw",
   },
   isLoading: false,
   initialAppConfigDir: undefined,
@@ -158,9 +152,6 @@ describe("useSettings hook", () => {
       skipClaudeOnboarding: true,
       claudeConfigDir: "/server/claude",
       codexConfigDir: "/server/codex",
-      geminiConfigDir: "/server/gemini",
-      opencodeConfigDir: "/server/opencode",
-      openclawConfigDir: "/server/openclaw",
       language: "zh",
     };
 
@@ -252,9 +243,6 @@ describe("useSettings hook", () => {
       enableClaudePluginIntegration: false,
       claudeConfigDir: "/server/claude",
       codexConfigDir: undefined,
-      geminiConfigDir: "/server/gemini",
-      opencodeConfigDir: "/server/opencode",
-      openclawConfigDir: "/server/openclaw",
       language: "en",
     };
     useSettingsQueryMock.mockReturnValue({
@@ -267,7 +255,6 @@ describe("useSettings hook", () => {
         ...serverSettings,
         claudeConfigDir: "  /custom/claude  ",
         codexConfigDir: "   ",
-        openclawConfigDir: "  /custom/openclaw  ",
         language: "en",
         enableClaudePluginIntegration: true, // 状态从 false 变为 true
       },
@@ -291,7 +278,6 @@ describe("useSettings hook", () => {
     const payload = mutateAsyncMock.mock.calls[0][0] as Settings;
     expect(payload.claudeConfigDir).toBe("/custom/claude");
     expect(payload.codexConfigDir).toBeUndefined();
-    expect(payload.openclawConfigDir).toBe("/custom/openclaw");
     expect(payload.language).toBe("en");
     expect(setAppConfigDirOverrideMock).toHaveBeenCalledWith("/override/app");
     // 状态改变，应该调用 API
@@ -458,10 +444,6 @@ describe("useSettings hook", () => {
     expect(directorySettingsMock.resetAllDirectories).toHaveBeenCalledWith({
       claude: "/server/claude",
       codex: undefined,
-      gemini: "/server/gemini",
-      opencode: "/server/opencode",
-      openclaw: "/server/openclaw",
-      hermes: undefined,
     });
     expect(metadataMock.setRequiresRestart).toHaveBeenCalledWith(false);
   });

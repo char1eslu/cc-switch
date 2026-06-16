@@ -22,10 +22,6 @@ const ALL_APPS: AppId[] = [
   "claude",
   "claude-desktop",
   "codex",
-  "gemini",
-  "opencode",
-  "openclaw",
-  "hermes",
 ];
 const STORAGE_KEY = "cc-switch-last-app";
 
@@ -45,19 +41,11 @@ export function AppSwitcher({
     claude: "claude",
     "claude-desktop": "claude",
     codex: "openai",
-    gemini: "gemini",
-    opencode: "opencode",
-    openclaw: "openclaw",
-    hermes: "hermes",
   };
   const appDisplayName: Record<AppId, string> = {
     claude: "Claude Code",
     "claude-desktop": "Claude Desktop",
     codex: "Codex",
-    gemini: "Gemini",
-    opencode: "OpenCode",
-    openclaw: "OpenClaw",
-    hermes: "Hermes",
   };
 
   // Filter apps based on visibility settings (default all visible)

@@ -44,13 +44,6 @@ pub static DEFAULT_PROVIDER_ICONS: Lazy<HashMap<&'static str, ProviderIcon>> = L
         },
     );
     m.insert(
-        "gemini",
-        ProviderIcon {
-            name: "gemini",
-            color: "#4285F4",
-        },
-    );
-    m.insert(
         "deepseek",
         ProviderIcon {
             name: "deepseek",

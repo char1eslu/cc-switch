@@ -27,7 +27,7 @@ use tokio::sync::{Mutex, RwLock};
 /// GitHub OAuth 客户端 ID（VS Code）- 用于 github.com
 const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 
-/// GitHub OAuth 客户端 ID（与 OpenCode 相同）- 在所有 GHES Copilot 实例上预注册
+/// GitHub OAuth 客户端 ID - 在所有 GHES Copilot 实例上预注册
 const GITHUB_CLIENT_ID_GHES: &str = "Ov23li8tweQw6odWQebz";
 
 /// 默认 GitHub 域名
@@ -693,7 +693,7 @@ impl CopilotAuthManager {
             .await?;
 
         // GHES 无需换取 Copilot Token，直接使用 OAuth token 作为 Bearer
-        // 参考 OpenCode 的实现：GHE Copilot 直接用 OAuth token 调用 copilot-api.{domain}
+        // GHE Copilot 直接用 OAuth token 调用 copilot-api.{domain}
         if !is_ghes(&domain) {
             // github.com：验证 Copilot 订阅（获取 Copilot Token）
             self.fetch_copilot_token_with_github_token(

@@ -94,7 +94,7 @@ pub struct ProxyStatus {
 /// 活跃的代理目标信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveTarget {
-    pub app_type: String, // "Claude" | "Codex" | "Gemini"
+    pub app_type: String,
     pub provider_name: String,
     pub provider_id: String,
 }
@@ -112,9 +112,6 @@ pub struct ProxyServerInfo {
 pub struct ProxyTakeoverStatus {
     pub claude: bool,
     pub codex: bool,
-    pub gemini: bool,
-    pub opencode: bool,
-    pub openclaw: bool,
 }
 
 /// API 格式类型（预留，当前不需要格式转换）
@@ -123,7 +120,6 @@ pub struct ProxyTakeoverStatus {
 pub enum ApiFormat {
     Claude,
     OpenAI,
-    Gemini,
 }
 
 /// Provider健康状态
@@ -142,7 +138,7 @@ pub struct ProviderHealth {
 /// Live 配置备份记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveBackup {
-    /// 应用类型 (claude/codex/gemini)
+    /// 应用类型 (claude/codex)
     pub app_type: String,
     /// 原始配置 JSON
     pub original_config: String,
@@ -150,7 +146,7 @@ pub struct LiveBackup {
     pub backed_up_at: String,
 }
 
-/// 全局代理配置（统一字段，三行镜像）
+/// 全局代理配置（统一字段，多行镜像）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GlobalProxyConfig {
@@ -168,7 +164,7 @@ pub struct GlobalProxyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppProxyConfig {
-    /// 应用类型 (claude/codex/gemini)
+    /// 应用类型 (claude/codex)
     pub app_type: String,
     /// 该 app 代理启用开关
     pub enabled: bool,

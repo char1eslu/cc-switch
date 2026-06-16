@@ -23,10 +23,6 @@ const APP_CONFIG: Array<{
     nameKey: "apps.claudeDesktop",
   },
   { id: "codex", icon: "openai", nameKey: "apps.codex" },
-  { id: "gemini", icon: "gemini", nameKey: "apps.gemini" },
-  { id: "opencode", icon: "opencode", nameKey: "apps.opencode" },
-  { id: "openclaw", icon: "openclaw", nameKey: "apps.openclaw" },
-  { id: "hermes", icon: "hermes", nameKey: "apps.hermes" },
 ];
 
 export function AppVisibilitySettings({
@@ -39,10 +35,6 @@ export function AppVisibilitySettings({
     claude: true,
     "claude-desktop": true,
     codex: true,
-    gemini: true,
-    opencode: true,
-    openclaw: true,
-    hermes: true,
   };
 
   // Count how many apps are currently visible

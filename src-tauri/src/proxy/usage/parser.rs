@@ -4,7 +4,6 @@
 //! - Claude API (非流式和流式)
 //! - OpenRouter (OpenAI 格式)
 //! - Codex API (非流式和流式)
-//! - Gemini API (非流式和流式)
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,7 +57,6 @@ pub enum ApiType {
     Claude,
     OpenRouter,
     Codex,
-    Gemini,
 }
 
 impl TokenUsage {
@@ -199,8 +197,8 @@ impl TokenUsage {
 
         // 用 has_billable_tokens 而非仅看 input/output：完全缓存命中、无输出的流式请求
         // （input==0 && output==0 但 cache_read>0）是真实的 cache-read 计费，必须保留。
-        // Gemini→Anthropic 路径在 input 改为 fresh(promptTokenCount - cachedContentTokenCount)
-        // 后尤其会出现这种全缓存场景；旧 gate 会把它当成"无 usage"丢弃。
+        // 转换路径在 input 改为 fresh 后尤其会出现这种全缓存场景；
+        // 旧 gate 会把它当成"无 usage"丢弃。
         if usage.has_billable_tokens() {
             usage.model = model;
             usage.message_id = message_id;
@@ -429,88 +427,6 @@ impl TokenUsage {
         None
     }
 
-    /// 从 Gemini API 非流式响应解析
-    pub fn from_gemini_response(body: &Value) -> Option<Self> {
-        let usage = body.get("usageMetadata")?;
-        // 提取实际使用的模型名称（modelVersion 字段）
-        let model = body
-            .get("modelVersion")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let prompt_tokens = usage.get("promptTokenCount")?.as_u64()? as u32;
-        let total_tokens = usage.get("totalTokenCount")?.as_u64()? as u32;
-
-        // 输出 tokens = 总 tokens - 输入 tokens
-        // 这包含了 candidatesTokenCount + thoughtsTokenCount
-        let output_tokens = total_tokens.saturating_sub(prompt_tokens);
-
-        Some(Self {
-            input_tokens: prompt_tokens,
-            output_tokens,
-            cache_read_tokens: usage
-                .get("cachedContentTokenCount")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32,
-            cache_creation_tokens: 0,
-            model,
-            message_id: None,
-        })
-    }
-
-    /// 从 Gemini API 流式响应解析
-    #[allow(dead_code)]
-    pub fn from_gemini_stream_chunks(chunks: &[Value]) -> Option<Self> {
-        let mut total_input = 0u32;
-        let mut total_tokens = 0u32;
-        let mut total_cache_read = 0u32;
-        let mut model: Option<String> = None;
-
-        for chunk in chunks {
-            if let Some(usage) = chunk.get("usageMetadata") {
-                // 输入 tokens (通常在所有 chunk 中保持不变)
-                total_input = usage
-                    .get("promptTokenCount")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-
-                // 总 tokens (包含输入 + 输出 + 思考)
-                total_tokens = usage
-                    .get("totalTokenCount")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-
-                // 缓存读取 tokens
-                total_cache_read = usage
-                    .get("cachedContentTokenCount")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-            }
-
-            // 提取实际使用的模型名称（modelVersion 字段）
-            if model.is_none() {
-                if let Some(model_version) = chunk.get("modelVersion").and_then(|v| v.as_str()) {
-                    model = Some(model_version.to_string());
-                }
-            }
-        }
-
-        // 输出 tokens = 总 tokens - 输入 tokens
-        let total_output = total_tokens.saturating_sub(total_input);
-
-        if total_input > 0 || total_output > 0 {
-            Some(Self {
-                input_tokens: total_input,
-                output_tokens: total_output,
-                cache_read_tokens: total_cache_read,
-                cache_creation_tokens: 0,
-                model,
-                message_id: None,
-            })
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -695,87 +611,6 @@ mod tests {
         assert_eq!(usage.output_tokens, 50);
         assert_eq!(usage.cache_read_tokens, 0);
         assert_eq!(usage.cache_creation_tokens, 0);
-    }
-
-    #[test]
-    fn test_gemini_response_parsing() {
-        let response = json!({
-            "modelVersion": "gemini-3-pro-high",
-            "usageMetadata": {
-                "promptTokenCount": 8383,
-                "candidatesTokenCount": 50,
-                "thoughtsTokenCount": 114,
-                "totalTokenCount": 8547,
-                "cachedContentTokenCount": 20
-            }
-        });
-
-        let usage = TokenUsage::from_gemini_response(&response).unwrap();
-        assert_eq!(usage.input_tokens, 8383);
-        // output_tokens = totalTokenCount - promptTokenCount = 8547 - 8383 = 164
-        assert_eq!(usage.output_tokens, 164);
-        assert_eq!(usage.cache_read_tokens, 20);
-        assert_eq!(usage.cache_creation_tokens, 0);
-        assert_eq!(usage.model, Some("gemini-3-pro-high".to_string()));
-    }
-
-    #[test]
-    fn test_gemini_response_parsing_no_model() {
-        // 测试没有 modelVersion 字段的情况
-        let response = json!({
-            "usageMetadata": {
-                "promptTokenCount": 100,
-                "totalTokenCount": 150,
-                "cachedContentTokenCount": 20
-            }
-        });
-
-        let usage = TokenUsage::from_gemini_response(&response).unwrap();
-        assert_eq!(usage.input_tokens, 100);
-        // output_tokens = totalTokenCount - promptTokenCount = 150 - 100 = 50
-        assert_eq!(usage.output_tokens, 50);
-        assert_eq!(usage.cache_read_tokens, 20);
-        assert_eq!(usage.cache_creation_tokens, 0);
-        assert_eq!(usage.model, None);
-    }
-
-    #[test]
-    fn test_gemini_response_with_thoughts() {
-        // 测试包含 thoughtsTokenCount 的实际响应
-        // 这是用户报告的真实场景
-        let response = json!({
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [
-                            {
-                                "text": "",
-                                "thoughtSignature": "EvcECvQE..."
-                            }
-                        ],
-                        "role": "model"
-                    },
-                    "finishReason": "STOP"
-                }
-            ],
-            "modelVersion": "gemini-3-pro-high",
-            "responseId": "yupTafqLDu-PjMcPhrOx4QQ",
-            "usageMetadata": {
-                "candidatesTokenCount": 50,
-                "promptTokenCount": 8383,
-                "thoughtsTokenCount": 114,
-                "totalTokenCount": 8547
-            }
-        });
-
-        let usage = TokenUsage::from_gemini_response(&response).unwrap();
-        assert_eq!(usage.input_tokens, 8383);
-        // output_tokens = totalTokenCount - promptTokenCount
-        // = 8547 - 8383 = 164 (包含 candidatesTokenCount 50 + thoughtsTokenCount 114)
-        assert_eq!(usage.output_tokens, 164);
-        assert_eq!(usage.cache_read_tokens, 0);
-        assert_eq!(usage.cache_creation_tokens, 0);
-        assert_eq!(usage.model, Some("gemini-3-pro-high".to_string()));
     }
 
     #[test]

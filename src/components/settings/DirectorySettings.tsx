@@ -16,10 +16,6 @@ interface DirectorySettingsProps {
   onResetAppConfig: () => Promise<void>;
   claudeDir?: string;
   codexDir?: string;
-  geminiDir?: string;
-  opencodeDir?: string;
-  openclawDir?: string;
-  hermesDir?: string;
   onDirectoryChange: (app: DirectoryAppId, value?: string) => void;
   onBrowseDirectory: (app: DirectoryAppId) => Promise<void>;
   onResetDirectory: (app: DirectoryAppId) => Promise<void>;
@@ -33,10 +29,6 @@ export function DirectorySettings({
   onResetAppConfig,
   claudeDir,
   codexDir,
-  geminiDir,
-  opencodeDir,
-  openclawDir,
-  hermesDir,
   onDirectoryChange,
   onBrowseDirectory,
   onResetDirectory,
@@ -115,49 +107,6 @@ export function DirectorySettings({
           onReset={() => onResetDirectory("codex")}
         />
 
-        <DirectoryInput
-          label={t("settings.geminiConfigDir")}
-          description={undefined}
-          value={geminiDir}
-          resolvedValue={resolvedDirs.gemini}
-          placeholder={t("settings.browsePlaceholderGemini")}
-          onChange={(val) => onDirectoryChange("gemini", val)}
-          onBrowse={() => onBrowseDirectory("gemini")}
-          onReset={() => onResetDirectory("gemini")}
-        />
-
-        <DirectoryInput
-          label={t("settings.opencodeConfigDir")}
-          description={undefined}
-          value={opencodeDir}
-          resolvedValue={resolvedDirs.opencode}
-          placeholder={t("settings.browsePlaceholderOpencode")}
-          onChange={(val) => onDirectoryChange("opencode", val)}
-          onBrowse={() => onBrowseDirectory("opencode")}
-          onReset={() => onResetDirectory("opencode")}
-        />
-
-        <DirectoryInput
-          label={t("settings.openclawConfigDir")}
-          description={undefined}
-          value={openclawDir}
-          resolvedValue={resolvedDirs.openclaw}
-          placeholder={t("settings.browsePlaceholderOpenclaw")}
-          onChange={(val) => onDirectoryChange("openclaw", val)}
-          onBrowse={() => onBrowseDirectory("openclaw")}
-          onReset={() => onResetDirectory("openclaw")}
-        />
-
-        <DirectoryInput
-          label={t("settings.hermesConfigDir")}
-          description={undefined}
-          value={hermesDir}
-          resolvedValue={resolvedDirs.hermes}
-          placeholder={t("settings.browsePlaceholderHermes")}
-          onChange={(val) => onDirectoryChange("hermes", val)}
-          onBrowse={() => onBrowseDirectory("hermes")}
-          onReset={() => onResetDirectory("hermes")}
-        />
       </section>
     </div>
   );

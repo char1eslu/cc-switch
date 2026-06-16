@@ -45,10 +45,6 @@ export interface ProxyTakeoverStatus {
   claude: boolean;
   "claude-desktop"?: boolean;
   codex: boolean;
-  gemini: boolean;
-  opencode: boolean;
-  openclaw: boolean;
-  hermes: boolean;
 }
 
 export interface ProviderHealth {
@@ -115,7 +111,7 @@ export interface FailoverQueueItem {
   sortIndex?: number;
 }
 
-// 全局代理配置（统一字段，三行镜像）
+// 全局代理配置（统一字段，Claude/Codex 镜像）
 export interface GlobalProxyConfig {
   proxyEnabled: boolean;
   listenAddress: string;

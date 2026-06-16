@@ -7,8 +7,6 @@ import type { SwitchResult } from "@/lib/api/providers";
 import type { Provider, SessionMeta, Settings } from "@/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { generateUUID } from "@/utils/uuid";
-import { openclawKeys } from "@/hooks/useOpenClaw";
-import { invalidateHermesProviderCaches } from "@/hooks/useHermes";
 
 export const useAddProviderMutation = (appId: AppId) => {
   const queryClient = useQueryClient();
@@ -41,22 +39,7 @@ export const useAddProviderMutation = (appId: AppId) => {
 
       let id: string;
 
-      if (appId === "opencode" || appId === "openclaw" || appId === "hermes") {
-        if (
-          providerInput.category === "omo" ||
-          providerInput.category === "omo-slim"
-        ) {
-          const prefix = providerInput.category === "omo" ? "omo" : "omo-slim";
-          id = `${prefix}-${generateUUID()}`;
-        } else {
-          if (!providerInput.providerKey) {
-            throw new Error(`Provider key is required for ${appId}`);
-          }
-          id = providerInput.providerKey;
-        }
-      } else {
-        id = generateUUID();
-      }
+      id = generateUUID();
 
       const newProvider: Provider = {
         ...rest,
@@ -70,31 +53,6 @@ export const useAddProviderMutation = (appId: AppId) => {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
-
-      if (appId === "opencode") {
-        await queryClient.invalidateQueries({
-          queryKey: ["omo", "current-provider-id"],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["omo", "provider-count"],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["omo-slim", "current-provider-id"],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["omo-slim", "provider-count"],
-        });
-      }
-
-      if (appId === "openclaw") {
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.health,
-        });
-      }
-
-      if (appId === "hermes") {
-        await invalidateHermesProviderCaches(queryClient);
-      }
 
       try {
         await providersApi.updateTrayMenu();
@@ -143,14 +101,6 @@ export const useUpdateProviderMutation = (appId: AppId) => {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
-      if (appId === "openclaw") {
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.health,
-        });
-      }
-      if (appId === "hermes") {
-        await invalidateHermesProviderCaches(queryClient);
-      }
       toast.success(
         t("notifications.updateSuccess", {
           defaultValue: "供应商更新成功",
@@ -182,31 +132,6 @@ export const useDeleteProviderMutation = (appId: AppId) => {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
-
-      if (appId === "opencode") {
-        await queryClient.invalidateQueries({
-          queryKey: ["omo", "current-provider-id"],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["omo", "provider-count"],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["omo-slim", "current-provider-id"],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["omo-slim", "provider-count"],
-        });
-      }
-
-      if (appId === "openclaw") {
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.health,
-        });
-      }
-
-      if (appId === "hermes") {
-        await invalidateHermesProviderCaches(queryClient);
-      }
 
       try {
         await providersApi.updateTrayMenu();
@@ -253,33 +178,6 @@ export const useSwitchProviderMutation = (appId: AppId) => {
         await queryClient.invalidateQueries({
           queryKey: ["claudeDesktopStatus"],
         });
-      }
-
-      // OpenCode/OpenClaw: also invalidate live provider IDs cache to update button state
-      if (appId === "opencode") {
-        await queryClient.invalidateQueries({
-          queryKey: ["opencodeLiveProviderIds"],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["omo", "current-provider-id"],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["omo-slim", "current-provider-id"],
-        });
-      }
-      if (appId === "openclaw") {
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.liveProviderIds,
-        });
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.defaultModel,
-        });
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.health,
-        });
-      }
-      if (appId === "hermes") {
-        await invalidateHermesProviderCaches(queryClient);
       }
 
       try {

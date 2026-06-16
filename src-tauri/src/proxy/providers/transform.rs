@@ -652,7 +652,7 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
     // cache_creation，使 input 成为 fresh input。本路径以 app_type="claude" 记账（calculator
     // 不再扣减），若不减则缓存会被计入 input 与各 cache 桶两次。三桶互斥，恒等：
     // input + cache_read + cache_creation == prompt_tokens（inclusive 上游）。
-    // 与流式 build_anthropic_usage_json (#2774) 及 transform_gemini 的 saturating_sub 对称。
+    // 与流式 build_anthropic_usage_json (#2774) 的 saturating_sub 对称。
     // 最终 cache_read：直传字段优先于 nested；cache_creation 仅来自直传字段（OpenAI 无此概念）。
     let cached = usage
         .get("cache_read_input_tokens")

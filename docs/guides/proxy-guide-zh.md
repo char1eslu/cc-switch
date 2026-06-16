@@ -2,7 +2,7 @@
 
 ## 功能介绍
 
-CC Switch 的代理功能是一个本地 HTTP 代理服务器，可以统一管理 Claude Code、Codex 和 Gemini CLI 的 API 请求。主要特性包括：
+CC Switch 的代理功能是一个本地 HTTP 代理服务器，可以统一管理 Claude Code 和 Codex 的 API 请求。主要特性包括：
 
 - **统一代理入口** - 所有 CLI 应用的请求通过本地代理转发
 - **自动故障转移** - 当前供应商故障时自动切换到备用供应商
@@ -23,8 +23,6 @@ CC Switch 的代理功能是一个本地 HTTP 代理服务器，可以统一管�
 
 - **Claude** - 接管 Claude Code 的 API 请求
 - **Codex** - 接管 Codex CLI 的 API 请求
-- **Gemini** - 接管 Gemini CLI 的 API 请求
-
 点击对应应用的开关即可启用/禁用接管。
 
 > **注意**：启用接管后，CC Switch 会自动修改对应应用的配置文件，将 API 端点指向本地代理。原始配置会被安全备份。
@@ -141,8 +139,6 @@ A: 本地代理的延迟开销非常小（通常 < 1ms）。但如果启用了�
 |------|----------|----------|
 | Claude | `~/.claude/settings.json` | `apiBaseUrl` 指向代理 |
 | Codex | `~/.codex/config.toml` | `[api] baseUrl` 指向代理 |
-| Gemini | `~/.gemini/.env` | `GEMINI_BASE_URL` 指向代理 |
-
 原始配置备份在 CC Switch 数据库中，停止代理时自动恢复。
 
 ### 代理模式

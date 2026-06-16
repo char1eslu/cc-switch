@@ -121,8 +121,6 @@ pub async fn upsert_mcp_server_in_config(
     if sync_other_side.unwrap_or(false) {
         new_server.apps.claude = true;
         new_server.apps.codex = true;
-        new_server.apps.gemini = true;
-        new_server.apps.opencode = true;
     }
 
     McpService::upsert_server(&state, new_server)
@@ -200,8 +198,5 @@ pub async fn import_mcp_from_apps(state: State<'_, AppState>) -> Result<usize, S
     let mut total = 0;
     total += McpService::import_from_claude(&state).unwrap_or(0);
     total += McpService::import_from_codex(&state).unwrap_or(0);
-    total += McpService::import_from_gemini(&state).unwrap_or(0);
-    total += McpService::import_from_opencode(&state).unwrap_or(0);
-    total += McpService::import_from_hermes(&state).unwrap_or(0);
     Ok(total)
 }

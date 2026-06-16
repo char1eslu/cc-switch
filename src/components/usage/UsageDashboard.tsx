@@ -53,8 +53,6 @@ const REFRESH_INTERVAL_OPTIONS_MS = [0, 5000, 10000, 30000, 60000] as const;
 const APP_FILTER_ICON: Record<AppType, string> = {
   claude: "claude",
   codex: "openai",
-  gemini: "gemini",
-  opencode: "opencode",
 };
 
 // Select 的 "all" 哨兵和用户自定义名称同处一个值域——真有来源/模型叫 "all"

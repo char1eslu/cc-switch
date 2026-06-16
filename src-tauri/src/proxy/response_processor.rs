@@ -868,9 +868,7 @@ mod tests {
     use crate::provider::ProviderMeta;
     use crate::proxy::failover_switch::FailoverSwitchManager;
     use crate::proxy::provider_router::ProviderRouter;
-    use crate::proxy::providers::{
-        codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore,
-    };
+    use crate::proxy::providers::codex_chat_history::CodexChatHistoryStore;
     use crate::proxy::types::{ProxyConfig, ProxyStatus};
     use rust_decimal::Decimal;
     use std::collections::HashMap;
@@ -1025,7 +1023,6 @@ mod tests {
             start_time: Arc::new(RwLock::new(None)),
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             provider_router: Arc::new(ProviderRouter::new(db.clone())),
-            gemini_shadow: Arc::new(GeminiShadowStore::default()),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle: None,
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
@@ -1206,7 +1203,7 @@ mod tests {
 
         let db = Arc::new(Database::memory()?);
 
-        // 全局计费配置只有 claude/codex/gemini 三行；claude-desktop 的
+        // 全局计费配置只有 claude/codex；claude-desktop 的
         // 全局默认必须继承 claude，而不是静默落回工厂默认（1 / response）
         db.set_default_cost_multiplier("claude", "1.5").await?;
         db.set_pricing_model_source("claude", "request").await?;

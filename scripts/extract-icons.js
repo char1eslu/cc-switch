@@ -5,7 +5,7 @@ const path = require('path');
 const ICONS_TO_EXTRACT = {
   // AI 服务商（必需）
   aiProviders: [
-    'openai', 'anthropic', 'claude', 'google', 'gemini',
+    'openai', 'anthropic', 'claude', 'google',
     'deepseek', 'kimi', 'moonshot', 'stepfun', 'zhipu', 'minimax',
     'baidu', 'alibaba', 'tencent', 'meta', 'microsoft',
     'cohere', 'perplexity', 'mistral', 'huggingface'
@@ -108,8 +108,7 @@ export const iconMetadata: Record<string, IconMetadata> = {
   openai: { name: 'openai', displayName: 'OpenAI', category: 'ai-provider', keywords: ['gpt', 'chatgpt'], defaultColor: '#00A67E' },
   anthropic: { name: 'anthropic', displayName: 'Anthropic', category: 'ai-provider', keywords: ['claude'], defaultColor: '#D4915D' },
   claude: { name: 'claude', displayName: 'Claude', category: 'ai-provider', keywords: ['anthropic'], defaultColor: '#D4915D' },
-  google: { name: 'google', displayName: 'Google', category: 'ai-provider', keywords: ['gemini', 'bard'], defaultColor: '#4285F4' },
-  gemini: { name: 'gemini', displayName: 'Gemini', category: 'ai-provider', keywords: ['google'], defaultColor: '#4285F4' },
+  google: { name: 'google', displayName: 'Google', category: 'ai-provider', keywords: ['google'], defaultColor: '#4285F4' },
   deepseek: { name: 'deepseek', displayName: 'DeepSeek', category: 'ai-provider', keywords: ['deep', 'seek'], defaultColor: '#1E88E5' },
   moonshot: { name: 'moonshot', displayName: 'Moonshot', category: 'ai-provider', keywords: ['kimi', 'moonshot'], defaultColor: '#6366F1' },
   kimi: { name: 'kimi', displayName: 'Kimi', category: 'ai-provider', keywords: ['moonshot'], defaultColor: '#6366F1' },

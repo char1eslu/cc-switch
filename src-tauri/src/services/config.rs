@@ -87,7 +87,6 @@ impl ConfigService {
     pub fn sync_current_providers_to_live(config: &mut MultiAppConfig) -> Result<(), AppError> {
         Self::sync_current_provider_for_app(config, &AppType::Claude)?;
         Self::sync_current_provider_for_app(config, &AppType::Codex)?;
-        Self::sync_current_provider_for_app(config, &AppType::Gemini)?;
         Ok(())
     }
 
@@ -123,18 +122,6 @@ impl ConfigService {
             AppType::Claude => Self::sync_claude_live(config, &current_id, &provider)?,
             AppType::ClaudeDesktop => {
                 // Claude Desktop 3P profiles are managed by claude_desktop_config.
-            }
-            AppType::Gemini => Self::sync_gemini_live(config, &current_id, &provider)?,
-            AppType::OpenCode => {
-                // OpenCode uses additive mode, no live sync needed
-                // OpenCode providers are managed directly in the config file
-            }
-            AppType::OpenClaw => {
-                // OpenClaw uses additive mode, no live sync needed
-                // OpenClaw providers are managed directly in the config file
-            }
-            AppType::Hermes => {
-                // Hermes uses additive mode, no live sync needed
             }
         }
 
@@ -229,34 +216,4 @@ impl ConfigService {
         Ok(())
     }
 
-    fn sync_gemini_live(
-        config: &mut MultiAppConfig,
-        provider_id: &str,
-        provider: &Provider,
-    ) -> Result<(), AppError> {
-        use crate::gemini_config::{env_to_json, read_gemini_env};
-
-        ProviderService::write_gemini_live(provider)?;
-
-        // 读回实际写入的内容并更新到配置中（包含 settings.json）
-        let live_after_env = read_gemini_env()?;
-        let settings_path = crate::gemini_config::get_gemini_settings_path();
-        let live_after_config = if settings_path.exists() {
-            crate::config::read_json_file(&settings_path)?
-        } else {
-            serde_json::json!({})
-        };
-        let mut live_after = env_to_json(&live_after_env);
-        if let Some(obj) = live_after.as_object_mut() {
-            obj.insert("config".to_string(), live_after_config);
-        }
-
-        if let Some(manager) = config.get_manager_mut(&AppType::Gemini) {
-            if let Some(target) = manager.providers.get_mut(provider_id) {
-                target.settings_config = live_after;
-            }
-        }
-
-        Ok(())
-    }
 }

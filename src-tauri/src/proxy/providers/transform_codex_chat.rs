@@ -426,9 +426,9 @@ fn apply_reasoning_options(
             result["reasoning_effort"] = json!(mapped);
         }
         // OpenRouter 原生归一化对象：reasoning.effort 会被 OpenRouter 翻译成各底层模型
-        // （OpenAI/Grok/Gemini/Anthropic）的正确推理参数，覆盖面比顶层 OpenAI 别名更全。
+        // （OpenAI/Grok/Anthropic）的正确推理参数，覆盖面比顶层 OpenAI 别名更全。
         // 本转换从空对象构造、不残留原始 reasoning 对象，故不会出现 reasoning 与
-        // reasoning_effort 并存触发 400 的情况（参见 openclaw#24119）。
+        // reasoning_effort 并存触发 400 的情况。
         "reasoning.effort" => {
             result["reasoning"] = json!({ "effort": mapped });
         }
@@ -464,7 +464,7 @@ fn map_reasoning_effort(effort: &str, mode: Option<&str>) -> Option<&'static str
         },
         // OpenRouter effort 枚举为 xhigh|high|medium|low|minimal（无 max）。max 是
         // Codex / 部分模型的扩展档位，对 OpenRouter 非法，会触发
-        // `400 reasoning_effort: Invalid option`（见 openclaw#77350）；钳到最高合法档
+        // `400 reasoning_effort: Invalid option`；钳到最高合法档
         // xhigh，其余合法值透传，未知值丢弃以免被上游拒绝。
         "openrouter" => match effort.as_str() {
             "max" | "xhigh" => Some("xhigh"),
@@ -2112,7 +2112,7 @@ mod tests {
             output_format: Some("auto".to_string()),
         };
 
-        // max 不在 OpenRouter 枚举内（见 openclaw#77350），必须钳成 xhigh，
+        // max 不在 OpenRouter 枚举内，必须钳成 xhigh，
         // 且写进原生 reasoning 对象，而非顶层 reasoning_effort 别名。
         let input = json!({
             "model": "deepseek/deepseek-chat-v3.1",

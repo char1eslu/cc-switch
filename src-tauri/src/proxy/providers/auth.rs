@@ -11,8 +11,6 @@ pub struct AuthInfo {
     pub api_key: String,
     /// 认证策略
     pub strategy: AuthStrategy,
-    /// OAuth access_token（用于 GoogleOAuth 策略）
-    pub access_token: Option<String>,
 }
 
 impl AuthInfo {
@@ -21,16 +19,6 @@ impl AuthInfo {
         Self {
             api_key,
             strategy,
-            access_token: None,
-        }
-    }
-
-    /// 创建带有 access_token 的认证信息（用于 OAuth）
-    pub fn with_access_token(api_key: String, access_token: String) -> Self {
-        Self {
-            api_key,
-            strategy: AuthStrategy::GoogleOAuth,
-            access_token: Some(access_token),
         }
     }
 
@@ -57,26 +45,6 @@ impl AuthInfo {
         }
     }
 
-    /// 返回遮蔽后的 access_token（用于日志输出）
-    #[allow(dead_code)]
-    pub fn masked_access_token(&self) -> Option<String> {
-        self.access_token.as_ref().map(|token| {
-            if token.chars().count() > 8 {
-                let prefix: String = token.chars().take(4).collect();
-                let suffix: String = token
-                    .chars()
-                    .rev()
-                    .take(4)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                format!("{prefix}...{suffix}")
-            } else {
-                "***".to_string()
-            }
-        })
-    }
 }
 
 /// 认证策略
@@ -100,18 +68,6 @@ pub enum AuthStrategy {
     ///
     /// - Header: `Authorization: Bearer <api_key>`
     Bearer,
-
-    /// Google API Key 认证方式
-    ///
-    /// - Header: `x-goog-api-key: <api_key>`
-    Google,
-
-    /// Google OAuth 认证方式
-    ///
-    /// - Header: `Authorization: Bearer <access_token>`
-    ///
-    /// 用于 Gemini CLI 等需要 OAuth 的场景
-    GoogleOAuth,
 
     /// GitHub Copilot 认证方式
     ///
@@ -169,54 +125,6 @@ mod tests {
     fn test_auth_strategy_equality() {
         assert_eq!(AuthStrategy::Anthropic, AuthStrategy::Anthropic);
         assert_ne!(AuthStrategy::Anthropic, AuthStrategy::Bearer);
-        assert_ne!(AuthStrategy::Bearer, AuthStrategy::Google);
-    }
-
-    #[test]
-    fn test_auth_info_new_has_no_access_token() {
-        let auth = AuthInfo::new("api-key".to_string(), AuthStrategy::Bearer);
-        assert!(auth.access_token.is_none());
-    }
-
-    #[test]
-    fn test_auth_info_with_access_token() {
-        let auth = AuthInfo::with_access_token(
-            "refresh-token".to_string(),
-            "ya29.access-token-12345".to_string(),
-        );
-        assert_eq!(auth.api_key, "refresh-token");
-        assert_eq!(auth.strategy, AuthStrategy::GoogleOAuth);
-        assert_eq!(
-            auth.access_token,
-            Some("ya29.access-token-12345".to_string())
-        );
-    }
-
-    #[test]
-    fn test_masked_access_token_long() {
-        let auth =
-            AuthInfo::with_access_token("refresh".to_string(), "ya29.1234567890abcdef".to_string());
-        assert_eq!(auth.masked_access_token(), Some("ya29...cdef".to_string()));
-    }
-
-    #[test]
-    fn test_masked_access_token_utf8_safe() {
-        let auth =
-            AuthInfo::with_access_token("refresh".to_string(), "令牌⚠️1234567890".to_string());
-        let masked = auth.masked_access_token().unwrap();
-        assert!(!masked.is_empty());
-    }
-
-    #[test]
-    fn test_masked_access_token_short() {
-        let auth = AuthInfo::with_access_token("refresh".to_string(), "short".to_string());
-        assert_eq!(auth.masked_access_token(), Some("***".to_string()));
-    }
-
-    #[test]
-    fn test_masked_access_token_none() {
-        let auth = AuthInfo::new("api-key".to_string(), AuthStrategy::Bearer);
-        assert!(auth.masked_access_token().is_none());
     }
 
     #[test]
@@ -228,20 +136,11 @@ mod tests {
     }
 
     #[test]
-    fn test_google_oauth_strategy() {
-        let auth = AuthInfo::new("refresh-token".to_string(), AuthStrategy::GoogleOAuth);
-        assert_eq!(auth.strategy, AuthStrategy::GoogleOAuth);
-        assert_ne!(auth.strategy, AuthStrategy::Google);
-    }
-
-    #[test]
     fn test_all_strategies_are_distinct() {
         let strategies = [
             AuthStrategy::Anthropic,
             AuthStrategy::ClaudeAuth,
             AuthStrategy::Bearer,
-            AuthStrategy::Google,
-            AuthStrategy::GoogleOAuth,
             AuthStrategy::GitHubCopilot,
             AuthStrategy::CodexOAuth,
         ];

@@ -147,7 +147,7 @@ function detectBalanceProvider(baseUrl: string | undefined): boolean {
 }
 
 function isOfficialSubscriptionProvider(provider: Provider, appId: AppId) {
-  if (!["claude", "codex", "gemini"].includes(appId)) return false;
+  if (!["claude", "codex"].includes(appId)) return false;
   if (provider.category === "official") return true;
 
   const config = provider.settingsConfig as Record<string, any>;
@@ -164,15 +164,6 @@ function isOfficialSubscriptionProvider(provider: Provider, appId: AppId) {
     return (
       !bearerToken &&
       (!apiKey || (typeof apiKey === "string" && apiKey.trim() === ""))
-    );
-  }
-  if (appId === "gemini") {
-    const env = config?.env || {};
-    const apiKey = env.GEMINI_API_KEY;
-    const baseUrl = env.GOOGLE_GEMINI_BASE_URL;
-    return (
-      (!apiKey || (typeof apiKey === "string" && apiKey.trim() === "")) &&
-      (!baseUrl || (typeof baseUrl === "string" && baseUrl.trim() === ""))
     );
   }
   return false;
@@ -240,33 +231,6 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           return {
             apiKey,
             baseUrl: extractCodexBaseUrl(configToml),
-          };
-        } else if (appId === "gemini") {
-          // Gemini: { env: { GEMINI_API_KEY, GOOGLE_GEMINI_BASE_URL } }
-          // Key fallback mirrors the backend resolver (Provider::resolve_usage_credentials).
-          const env = (config as any).env || {};
-          return {
-            apiKey: env.GEMINI_API_KEY || env.GOOGLE_API_KEY,
-            baseUrl: env.GOOGLE_GEMINI_BASE_URL,
-          };
-        } else if (appId === "hermes") {
-          // Hermes: settingsConfig 顶层扁平（snake_case，对应 config.yaml）
-          return {
-            apiKey: (config as any).api_key,
-            baseUrl: (config as any).base_url,
-          };
-        } else if (appId === "openclaw") {
-          // OpenClaw: settingsConfig 顶层扁平（camelCase，对应 openclaw.json）
-          return {
-            apiKey: (config as any).apiKey,
-            baseUrl: (config as any).baseUrl,
-          };
-        } else if (appId === "opencode") {
-          // OpenCode (OMO): 凭据嵌在 options.{baseURL, apiKey}（SDK options 对象）
-          const options = (config as any).options || {};
-          return {
-            apiKey: options.apiKey,
-            baseUrl: options.baseURL,
           };
         }
         return { apiKey: undefined, baseUrl: undefined };

@@ -117,10 +117,6 @@ const UnifiedSkillsPanel = React.forwardRef<
       claude: 0,
       "claude-desktop": 0,
       codex: 0,
-      gemini: 0,
-      opencode: 0,
-      openclaw: 0,
-      hermes: 0,
     };
     if (!skills) return counts;
     skills.forEach((skill) => {
@@ -744,10 +740,6 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
         {
           claude: skill.foundIn.includes("claude"),
           codex: skill.foundIn.includes("codex"),
-          gemini: skill.foundIn.includes("gemini"),
-          opencode: skill.foundIn.includes("opencode"),
-          openclaw: false,
-          hermes: skill.foundIn.includes("hermes"),
         },
       ]),
     ),
@@ -770,10 +762,6 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
         apps: selectedApps[directory] ?? {
           claude: false,
           codex: false,
-          gemini: false,
-          opencode: false,
-          openclaw: false,
-          hermes: false,
         },
       })),
     );
@@ -813,10 +801,6 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
                         selectedApps[skill.directory] ?? {
                           claude: false,
                           codex: false,
-                          gemini: false,
-                          opencode: false,
-                          openclaw: false,
-                          hermes: false,
                         }
                       }
                       onToggle={(app, enabled) => {
@@ -826,10 +810,6 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
                             ...(prev[skill.directory] ?? {
                               claude: false,
                               codex: false,
-                              gemini: false,
-                              opencode: false,
-                              openclaw: false,
-                              hermes: false,
                             }),
                             [app]: enabled,
                           },

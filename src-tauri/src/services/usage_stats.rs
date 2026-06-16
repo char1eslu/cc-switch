@@ -206,8 +206,6 @@ fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
         "COALESCE({provider_alias}.name, CASE {log_alias}.provider_id \
          WHEN '_session' THEN 'Claude (Session)' \
          WHEN '_codex_session' THEN 'Codex (Session)' \
-         WHEN '_gemini_session' THEN 'Gemini (Session)' \
-         WHEN '_opencode_session' THEN 'OpenCode (Session)' \
          ELSE {log_alias}.provider_id END)"
     )
 }
@@ -293,7 +291,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
     let proxy_data_source = data_source_expr("proxy_dedup");
     format!(
         "NOT (
-            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')
+            {data_source} IN ('session_log', 'codex_session')
             AND EXISTS (
                 SELECT 1
                 FROM proxy_request_logs proxy_dedup
@@ -308,7 +306,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
                       proxy_dedup.cache_creation_tokens = {log_alias}.cache_creation_tokens
                       OR (
                           {log_alias}.cache_creation_tokens = 0
-                          AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session')
+                          AND {data_source} = 'codex_session'
                       )
                   )
                   AND proxy_dedup.created_at BETWEEN
@@ -326,7 +324,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
 
 /// 跨源去重指纹键。
 ///
-/// `cache_creation_tokens`：Codex/Gemini session 日志不暴露该字段，调用方传 0
+/// `cache_creation_tokens`：Codex session 日志不暴露该字段，调用方传 0
 /// 表示"未知"，匹配器会放行 proxy 侧任意 cache_creation_tokens 值。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DedupKey<'a> {
@@ -367,8 +365,7 @@ pub(crate) fn has_matching_proxy_usage_log(
     conn: &Connection,
     key: &DedupKey,
 ) -> Result<bool, AppError> {
-    let allow_missing_cache_creation =
-        matches!(key.app_type, "codex" | "gemini" | "opencode") && key.cache_creation_tokens == 0;
+    let allow_missing_cache_creation = key.app_type == "codex" && key.cache_creation_tokens == 0;
 
     let l_data_source = data_source_expr("l");
     let sql = format!(
@@ -1809,10 +1806,10 @@ impl Database {
         let million = rust_decimal::Decimal::from(1_000_000u64);
 
         // 与 CostCalculator::calculate_for_app 保持一致的计算逻辑：
-        // 1. Codex/Gemini 的 input_tokens 包含 cache_read_tokens，需要扣除后按输入价计费
+        // 1. Codex 的 input_tokens 包含 cache_read_tokens，需要扣除后按输入价计费
         // 2. Claude/Anthropic 的 input_tokens 已经是 fresh input，不能再次扣减
         // 3. 各项成本是基础成本（不含倍率），倍率只作用于最终总价
-        let input_includes_cache_read = matches!(log.app_type.as_str(), "codex" | "gemini");
+        let input_includes_cache_read = log.app_type == "codex";
         let billable_input_tokens = if input_includes_cache_read {
             (log.input_tokens as u64).saturating_sub(log.cache_read_tokens as u64)
         } else {
@@ -2117,12 +2114,10 @@ fn strip_claude_desktop_non_anthropic_prefix(model_id: &str) -> Option<String> {
         "deepseek",
         "doubao",
         "ernie",
-        "gemini",
         "gemma",
         "glm",
         "gpt",
         "grok",
-        "hermes",
         "hy3",
         "hunyuan",
         "jamba",
@@ -2207,7 +2202,6 @@ fn should_try_pricing_prefix_match(model_id: &str) -> bool {
 
     const PREFIX_MATCH_FAMILIES: &[&str] = &[
         "gpt-",
-        "gemini-",
         "deepseek-",
         "qwen-",
         "glm-",
@@ -3101,36 +3095,6 @@ mod tests {
             )?;
             insert_usage_log(
                 &conn,
-                "gemini-proxy",
-                "gemini",
-                "google",
-                "gemini-2.5-pro",
-                "proxy",
-                20_000,
-                200,
-                40,
-                30,
-                0,
-                200,
-                "0.20",
-            )?;
-            insert_usage_log(
-                &conn,
-                "gemini-session-dup",
-                "gemini",
-                "_gemini_session",
-                "gemini-2.5-pro",
-                "gemini_session",
-                20_060,
-                200,
-                40,
-                30,
-                0,
-                200,
-                "0.20",
-            )?;
-            insert_usage_log(
-                &conn,
                 "codex-session-only",
                 "codex",
                 "_codex_session",
@@ -3147,22 +3111,21 @@ mod tests {
         }
 
         let summary = db.get_usage_summary(None, None, None, None, None)?;
-        assert_eq!(summary.total_requests, 4);
-        // codex-proxy contributes 100-10=90; gemini-proxy contributes 200-30=170
-        // (both cache-inclusive providers). claude-proxy=300, codex-session-only=50.
-        // 90 + 170 + 300 + 50 = 610.
-        assert_eq!(summary.total_input_tokens, 610);
-        assert_eq!(summary.total_output_tokens, 125);
-        assert_eq!(summary.total_cache_read_tokens, 60);
+        assert_eq!(summary.total_requests, 3);
+        // codex-proxy contributes 100-10=90; claude-proxy=300, codex-session-only=50.
+        // 90 + 300 + 50 = 440.
+        assert_eq!(summary.total_input_tokens, 440);
+        assert_eq!(summary.total_output_tokens, 85);
+        assert_eq!(summary.total_cache_read_tokens, 30);
         assert_eq!(summary.total_cache_creation_tokens, 12);
-        // real_total = fresh_input(610) + output(125) + cache_create(12) + cache_read(60) = 807
-        assert_eq!(summary.real_total_tokens, 807);
-        // hit_rate = 60 / (610 + 12 + 60) = 60 / 682
-        let expected_hit_rate = 60.0_f64 / 682.0_f64;
+        // real_total = fresh_input(440) + output(85) + cache_create(12) + cache_read(30) = 567
+        assert_eq!(summary.real_total_tokens, 567);
+        // hit_rate = 30 / (440 + 12 + 30) = 30 / 482
+        let expected_hit_rate = 30.0_f64 / 482.0_f64;
         assert!((summary.cache_hit_rate - expected_hit_rate).abs() < 1e-9);
 
         let trends = db.get_daily_trends(Some(0), Some(40_000), None, None, None)?;
-        assert_eq!(trends.iter().map(|stat| stat.request_count).sum::<u64>(), 4);
+        assert_eq!(trends.iter().map(|stat| stat.request_count).sum::<u64>(), 3);
 
         let provider_stats = db.get_provider_stats(None, None, None, None, None)?;
         assert_eq!(
@@ -3170,14 +3133,11 @@ mod tests {
                 .iter()
                 .map(|stat| stat.request_count)
                 .sum::<u64>(),
-            4
+            3
         );
         assert!(provider_stats
             .iter()
             .any(|stat| stat.provider_id == "_codex_session" && stat.request_count == 1));
-        assert!(!provider_stats
-            .iter()
-            .any(|stat| stat.provider_id == "_gemini_session"));
         assert!(!provider_stats
             .iter()
             .any(|stat| stat.provider_id == "_session"));
@@ -3188,7 +3148,7 @@ mod tests {
                 .iter()
                 .map(|stat| stat.request_count)
                 .sum::<u64>(),
-            4
+            3
         );
 
         let logs = db.get_request_logs(&LogFilters::default(), 0, 10)?;
@@ -3197,14 +3157,12 @@ mod tests {
             .iter()
             .map(|log| log.request_id.as_str())
             .collect();
-        assert_eq!(logs.total, 4);
+        assert_eq!(logs.total, 3);
         assert!(request_ids.contains(&"codex-proxy"));
         assert!(request_ids.contains(&"claude-proxy"));
-        assert!(request_ids.contains(&"gemini-proxy"));
         assert!(request_ids.contains(&"codex-session-only"));
         assert!(!request_ids.contains(&"codex-session-dup"));
         assert!(!request_ids.contains(&"claude-session-dup"));
-        assert!(!request_ids.contains(&"gemini-session-dup"));
 
         let breakdown = crate::services::session_usage::get_data_source_breakdown(&db)?;
         let proxy_count = breakdown
@@ -3215,17 +3173,12 @@ mod tests {
             .iter()
             .find(|item| item.data_source == "codex_session")
             .map(|item| item.request_count);
-        let gemini_session_count = breakdown
-            .iter()
-            .find(|item| item.data_source == "gemini_session")
-            .map(|item| item.request_count);
         let session_log_count = breakdown
             .iter()
             .find(|item| item.data_source == "session_log")
             .map(|item| item.request_count);
-        assert_eq!(proxy_count, Some(3));
+        assert_eq!(proxy_count, Some(2));
         assert_eq!(codex_session_count, Some(1));
-        assert_eq!(gemini_session_count, None);
         assert_eq!(session_log_count, None);
 
         Ok(())
@@ -3285,10 +3238,10 @@ mod tests {
             insert_usage_log(
                 &conn,
                 "session-app-mismatch",
-                "gemini",
-                "_gemini_session",
+                "claude",
+                "_codex_session",
                 "gpt-5.4",
-                "gemini_session",
+                "codex_session",
                 10_060,
                 100,
                 20,
@@ -3459,37 +3412,6 @@ mod tests {
         assert_eq!(stats[0].provider_id, "p1");
         assert_eq!(stats[0].request_count, 1);
         assert_eq!(stats[0].total_tokens, 275);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_provider_stats_labels_opencode_session_provider() -> Result<(), AppError> {
-        let db = Database::memory()?;
-
-        {
-            let conn = lock_conn!(db.conn);
-            insert_usage_log(
-                &conn,
-                "opencode-session",
-                "opencode",
-                "_opencode_session",
-                "opencode-model",
-                "opencode_session",
-                1000,
-                100,
-                50,
-                0,
-                0,
-                200,
-                "0.01",
-            )?;
-        }
-
-        let stats = db.get_provider_stats(None, None, Some("opencode"), None, None)?;
-        assert_eq!(stats.len(), 1);
-        assert_eq!(stats[0].provider_id, "_opencode_session");
-        assert_eq!(stats[0].provider_name, "OpenCode (Session)");
 
         Ok(())
     }
@@ -3864,12 +3786,6 @@ mod tests {
             result.is_some(),
             "OpenAI 日期后缀模型应能回退到 gpt-5.5 基础定价"
         );
-        let result = find_model_pricing_row(&conn, "google/gemini-3-pro-preview-20260514")?;
-        assert!(
-            result.is_some(),
-            "Gemini 日期后缀模型应能回退到 gemini-3-pro-preview 基础定价"
-        );
-
         // Claude Desktop route 短 ID：应通过前缀匹配到带日期的定价
         let result = find_model_pricing_row(&conn, "claude-haiku-4-5")?;
         assert!(

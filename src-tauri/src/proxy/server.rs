@@ -13,14 +13,14 @@ use super::{
     handlers,
     log_codes::srv as log_srv,
     provider_router::ProviderRouter,
-    providers::{codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore},
+    providers::codex_chat_history::CodexChatHistoryStore,
     types::*,
     ProxyError,
 };
 use crate::database::Database;
 use axum::{
     extract::DefaultBodyLimit,
-    routing::{any, get, post},
+    routing::{get, post},
     Router,
 };
 use hyper_util::rt::TokioIo;
@@ -40,8 +40,6 @@ pub struct ProxyState {
     pub current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
     /// 共享的 ProviderRouter（持有熔断器状态，跨请求保持）
     pub provider_router: Arc<ProviderRouter>,
-    /// Gemini Native shadow state，用于 thoughtSignature / tool call 回放
-    pub gemini_shadow: Arc<GeminiShadowStore>,
     /// Codex Chat bridge history，用于恢复 previous_response_id 指向的 tool call
     pub codex_chat_history: Arc<CodexChatHistoryStore>,
     /// AppHandle，用于发射事件和更新托盘菜单
@@ -77,7 +75,6 @@ impl ProxyServer {
             start_time: Arc::new(RwLock::new(None)),
             current_providers: Arc::new(RwLock::new(std::collections::HashMap::new())),
             provider_router,
-            gemini_shadow: Arc::new(GeminiShadowStore::default()),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle,
             failover_manager,
@@ -344,16 +341,6 @@ impl ProxyServer {
                 "/codex/v1/responses/compact",
                 post(handlers::handle_responses_compact),
             )
-            // Gemini API (支持带前缀和不带前缀)
-            //
-            // 用 `any(..)` 覆盖所有 HTTP 方法：除了 POST `:generateContent` /
-            // `:streamGenerateContent` / `:countTokens` 之外，Gemini SDK / CLI 还会发
-            // GET `/models`、GET `/models/<id>` 等只读端点。如果只挂 POST，这些 GET
-            // 请求会在路由层 404，绕过本地代理的统计、整流和故障转移。
-            .route("/v1beta/*path", any(handlers::handle_gemini))
-            .route("/gemini/v1beta/*path", any(handlers::handle_gemini))
-            // Gemini 的 GA 版本也叫 /v1，给原 SDK 留一条出口
-            .route("/gemini/v1/*path", any(handlers::handle_gemini))
             // 提高默认请求体大小限制（避免 413 Payload Too Large）
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
             .with_state(self.state.clone())

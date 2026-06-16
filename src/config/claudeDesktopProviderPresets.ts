@@ -14,8 +14,7 @@ import type { PresetTheme } from "./claudeProviderPresets";
 export type ClaudeDesktopApiFormat =
   | "anthropic"
   | "openai_chat"
-  | "openai_responses"
-  | "gemini_native";
+  | "openai_responses";
 
 export interface ClaudeDesktopRoutePreset {
   routeId: string;
@@ -270,24 +269,6 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
     icon: "unity2",
   },
   {
-    name: "Gemini Native",
-    websiteUrl: "https://ai.google.dev/gemini-api",
-    apiKeyUrl: "https://aistudio.google.com/app/apikey",
-    category: "third_party",
-    baseUrl: "https://generativelanguage.googleapis.com",
-    apiKeyField: "ANTHROPIC_API_KEY",
-    mode: "proxy",
-    apiFormat: "gemini_native",
-    modelRoutes: brandedRoutes(
-      "gemini-3.5-flash",
-      "gemini-3.5-flash",
-      "gemini-3.5-flash",
-    ),
-    endpointCandidates: ["https://generativelanguage.googleapis.com"],
-    icon: "gemini",
-    iconColor: "#4285F4",
-  },
-  {
     name: "GitHub Copilot",
     websiteUrl: "https://github.com/features/copilot",
     category: "third_party",
@@ -331,22 +312,6 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
     ),
     icon: "deepseek",
     iconColor: "#1E88E5",
-  },
-  {
-    name: "OpenCode Go",
-    websiteUrl: "https://opencode.ai",
-    category: "third_party",
-    baseUrl: "https://opencode.ai/zen/go",
-    mode: "proxy",
-    apiFormat: "openai_chat",
-    modelRoutes: brandedRoutes(
-      "deepseek-v4-flash",
-      "deepseek-v4-flash",
-      "deepseek-v4-flash",
-    ),
-    endpointCandidates: ["https://opencode.ai/zen/go"],
-    icon: "opencode",
-    iconColor: "#211E1E",
   },
   {
     name: "Zhipu GLM",

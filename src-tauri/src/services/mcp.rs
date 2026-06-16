@@ -34,15 +34,6 @@ impl McpService {
         if prev_apps.codex && !server.apps.codex {
             Self::remove_server_from_app(state, &server.id, &AppType::Codex)?;
         }
-        if prev_apps.gemini && !server.apps.gemini {
-            Self::remove_server_from_app(state, &server.id, &AppType::Gemini)?;
-        }
-        if prev_apps.opencode && !server.apps.opencode {
-            Self::remove_server_from_app(state, &server.id, &AppType::OpenCode)?;
-        }
-        if prev_apps.hermes && !server.apps.hermes {
-            Self::remove_server_from_app(state, &server.id, &AppType::Hermes)?;
-        }
 
         // 同步到各个启用的应用
         Self::sync_server_to_apps(state, &server)?;
@@ -119,24 +110,6 @@ impl McpService {
                 // Codex uses TOML format, must use the correct function
                 mcp::sync_single_server_to_codex(&Default::default(), &server.id, &server.server)?;
             }
-            AppType::Gemini => {
-                mcp::sync_single_server_to_gemini(&Default::default(), &server.id, &server.server)?;
-            }
-            AppType::OpenCode => {
-                mcp::sync_single_server_to_opencode(
-                    &Default::default(),
-                    &server.id,
-                    &server.server,
-                )?;
-            }
-            AppType::OpenClaw => {
-                // OpenClaw MCP support is still in development (Issue #4834)
-                // Skip for now
-                log::debug!("OpenClaw MCP support is still in development, skipping sync");
-            }
-            AppType::Hermes => {
-                mcp::sync_single_server_to_hermes(&Default::default(), &server.id, &server.server)?;
-            }
         }
         Ok(())
     }
@@ -161,17 +134,6 @@ impl McpService {
                 log::debug!("Claude Desktop 3P profiles do not use CC Switch MCP sync, skipping");
             }
             AppType::Codex => mcp::remove_server_from_codex(id)?,
-            AppType::Gemini => mcp::remove_server_from_gemini(id)?,
-            AppType::OpenCode => {
-                mcp::remove_server_from_opencode(id)?;
-            }
-            AppType::OpenClaw => {
-                // OpenClaw MCP support is still in development
-                log::debug!("OpenClaw MCP support is still in development, skipping remove");
-            }
-            AppType::Hermes => {
-                mcp::remove_server_from_hermes(id)?;
-            }
         }
         Ok(())
     }
@@ -181,7 +143,7 @@ impl McpService {
         let servers = Self::get_all_servers(state)?;
 
         for app in AppType::all() {
-            if matches!(app, AppType::OpenClaw | AppType::ClaudeDesktop) {
+            if matches!(app, AppType::ClaudeDesktop) {
                 continue;
             }
 
@@ -321,117 +283,4 @@ impl McpService {
         Ok(new_count)
     }
 
-    /// 从 Gemini 导入 MCP（v3.7.0 已更新为统一结构）
-    pub fn import_from_gemini(state: &AppState) -> Result<usize, AppError> {
-        // 创建临时 MultiAppConfig 用于导入
-        let mut temp_config = crate::app_config::MultiAppConfig::default();
-
-        // 调用原有的导入逻辑（从 mcp.rs）
-        let count = crate::mcp::import_from_gemini(&mut temp_config)?;
-
-        let mut new_count = 0;
-
-        // 如果有导入的服务器，保存到数据库
-        if count > 0 {
-            if let Some(servers) = &temp_config.mcp.servers {
-                let mut existing = state.db.get_all_mcp_servers()?;
-                for server in servers.values() {
-                    // 已存在：仅启用 Gemini，不覆盖其他字段（与导入模块语义保持一致）
-                    let to_save = if let Some(existing_server) = existing.get(&server.id) {
-                        let mut merged = existing_server.clone();
-                        merged.apps.gemini = true;
-                        merged
-                    } else {
-                        // 真正的新服务器
-                        new_count += 1;
-                        server.clone()
-                    };
-
-                    state.db.save_mcp_server(&to_save)?;
-                    existing.insert(to_save.id.clone(), to_save.clone());
-
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
-                }
-            }
-        }
-
-        Ok(new_count)
-    }
-
-    /// 从 OpenCode 导入 MCP（v3.9.2+ 新增）
-    pub fn import_from_opencode(state: &AppState) -> Result<usize, AppError> {
-        // 创建临时 MultiAppConfig 用于导入
-        let mut temp_config = crate::app_config::MultiAppConfig::default();
-
-        // 调用原有的导入逻辑（从 mcp/opencode.rs）
-        let count = crate::mcp::import_from_opencode(&mut temp_config)?;
-
-        let mut new_count = 0;
-
-        // 如果有导入的服务器，保存到数据库
-        if count > 0 {
-            if let Some(servers) = &temp_config.mcp.servers {
-                let mut existing = state.db.get_all_mcp_servers()?;
-                for server in servers.values() {
-                    // 已存在：仅启用 OpenCode，不覆盖其他字段（与导入模块语义保持一致）
-                    let to_save = if let Some(existing_server) = existing.get(&server.id) {
-                        let mut merged = existing_server.clone();
-                        merged.apps.opencode = true;
-                        merged
-                    } else {
-                        // 真正的新服务器
-                        new_count += 1;
-                        server.clone()
-                    };
-
-                    state.db.save_mcp_server(&to_save)?;
-                    existing.insert(to_save.id.clone(), to_save.clone());
-
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
-                }
-            }
-        }
-
-        Ok(new_count)
-    }
-
-    /// 从 Hermes 导入 MCP
-    pub fn import_from_hermes(state: &AppState) -> Result<usize, AppError> {
-        // 创建临时 MultiAppConfig 用于导入
-        let mut temp_config = crate::app_config::MultiAppConfig::default();
-
-        // 调用导入逻辑（从 mcp/hermes.rs）
-        let count = crate::mcp::import_from_hermes(&mut temp_config)?;
-
-        let mut new_count = 0;
-
-        // 如果有导入的服务器，保存到数据库
-        if count > 0 {
-            if let Some(servers) = &temp_config.mcp.servers {
-                let mut existing = state.db.get_all_mcp_servers()?;
-                for server in servers.values() {
-                    // 已存在：仅启用 Hermes，不覆盖其他字段（与导入模块语义保持一致）
-                    let to_save = if let Some(existing_server) = existing.get(&server.id) {
-                        let mut merged = existing_server.clone();
-                        merged.apps.hermes = true;
-                        merged
-                    } else {
-                        // 真正的新服务器
-                        new_count += 1;
-                        server.clone()
-                    };
-
-                    state.db.save_mcp_server(&to_save)?;
-                    existing.insert(to_save.id.clone(), to_save.clone());
-
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
-                }
-            }
-        }
-
-        Ok(new_count)
-    }
 }

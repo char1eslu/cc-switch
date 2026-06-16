@@ -45,7 +45,7 @@ The preset already includes DeepSeek's request base URL, default model, model me
 Go to the `Routing` page in Settings, expand `Local Routing`, and complete two toggles:
 
 1. Turn on the main routing switch to start the local service. The default address is `127.0.0.1:15721`.
-2. Turn on `Codex` under `Routing Enabled`. If you only want Codex to use local routing, you can leave Claude and Gemini off.
+2. Turn on `Codex` under `Routing Enabled`. If you only want Codex to use local routing, leave the other app routes off.
 
 ![Enabling Codex routing on the local routing page](../images/codex-deepseek-routing/03-local-route-codex-takeover.png)
 

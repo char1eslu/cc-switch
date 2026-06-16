@@ -359,7 +359,7 @@ pub(crate) fn build_anthropic_usage_from_responses(usage: Option<&Value>) -> Val
     // → 减去 cache_read 与 cache_creation，使其成为 fresh input。本函数在计量意义上是 claude 专属
     // （Codex Responses 透传走 from_codex_response_*，不调用本函数），故可安全在此扣减。三桶互斥，
     // 恒等：input + cache_read + cache_creation == 上游 input(inclusive)。与 build_anthropic_usage_json
-    // (#2774) 及 transform_gemini 的 saturating_sub 对称；一处同时覆盖非流式与流式(streaming_responses)。
+    // (#2774) 使用 saturating_sub；一处同时覆盖非流式与流式(streaming_responses)。
     let cached = result
         .get("cache_read_input_tokens")
         .and_then(|v| v.as_u64())

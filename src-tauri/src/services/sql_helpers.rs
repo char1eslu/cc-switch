@@ -1,8 +1,7 @@
 //! SQL fragment helpers shared across usage aggregation queries.
 //!
 //! Anthropic reports `input_tokens` as fresh (cache reads counted
-//! separately); OpenAI Responses API and Google Gemini's
-//! `promptTokenCount` both include the cached portion. Any aggregation
+//! separately); OpenAI Responses API includes the cached portion. Any aggregation
 //! summing `input_tokens` across providers must route through
 //! [`fresh_input_sql`] to recover a consistent semantics.
 
@@ -16,7 +15,7 @@
 /// style provider not added here) shows up loudly as a too-low cache hit
 /// rate, which is easier to catch than the silent over-deduction that
 /// would happen with the opposite default.
-const CACHE_INCLUSIVE_APP_TYPES: &[&str] = &["codex", "gemini"];
+const CACHE_INCLUSIVE_APP_TYPES: &[&str] = &["codex"];
 
 /// Build an SQL expression that returns the cache-normalized `input_tokens`
 /// for a single row in `proxy_request_logs` or `usage_daily_rollups`.
@@ -80,7 +79,6 @@ mod tests {
         let sql = fresh_input_sql("");
         assert!(!sql.contains("."));
         assert!(sql.contains("'codex'"));
-        assert!(sql.contains("'gemini'"));
     }
 
     #[test]
@@ -90,13 +88,6 @@ mod tests {
         conn.execute(
             "INSERT INTO proxy_request_logs (request_id, app_type, input_tokens, cache_read_tokens)
              VALUES ('codex-1', 'codex', 1000, 600)",
-            [],
-        )
-        .unwrap();
-        // Gemini row: Google semantics — promptTokenCount includes cachedContentTokenCount.
-        conn.execute(
-            "INSERT INTO proxy_request_logs (request_id, app_type, input_tokens, cache_read_tokens)
-             VALUES ('gemini-1', 'gemini', 800, 300)",
             [],
         )
         .unwrap();
@@ -111,8 +102,8 @@ mod tests {
         let expr = fresh_input_sql("l");
         let sql = format!("SELECT COALESCE(SUM({expr}), 0) FROM proxy_request_logs l");
         let total: i64 = conn.query_row(&sql, [], |r| r.get(0)).unwrap();
-        // Codex: 1000-600=400; Gemini: 800-300=500; Claude: 200 unchanged.
-        assert_eq!(total, 400 + 500 + 200);
+        // Codex: 1000-600=400; Claude: 200 unchanged.
+        assert_eq!(total, 400 + 200);
     }
 
     #[test]

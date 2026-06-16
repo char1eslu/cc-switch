@@ -36,7 +36,6 @@ fn get_keywords_for_app(app: &str) -> Vec<&str> {
     match app.to_lowercase().as_str() {
         "claude" => vec!["ANTHROPIC"],
         "codex" => vec!["OPENAI"],
-        "gemini" => vec!["GEMINI", "GOOGLE_GEMINI"],
         _ => vec![],
     }
 }
@@ -159,10 +158,6 @@ mod tests {
     fn test_get_keywords() {
         assert_eq!(get_keywords_for_app("claude"), vec!["ANTHROPIC"]);
         assert_eq!(get_keywords_for_app("codex"), vec!["OPENAI"]);
-        assert_eq!(
-            get_keywords_for_app("gemini"),
-            vec!["GEMINI", "GOOGLE_GEMINI"]
-        );
         assert_eq!(get_keywords_for_app("unknown"), Vec::<&str>::new());
     }
 }

@@ -19,16 +19,9 @@ const W_TIER_NAMES: &[&str] = &[
     crate::services::subscription::TIER_SEVEN_DAY_OPUS,
     crate::services::subscription::TIER_SEVEN_DAY_SONNET,
 ];
-const GEMINI_PRO_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_PRO];
-const GEMINI_FLASH_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_FLASH];
-const GEMINI_FLASH_LITE_TIER_NAMES: &[&str] =
-    &[crate::services::subscription::TIER_GEMINI_FLASH_LITE];
 const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[
     ("h", H_TIER_NAMES),
     ("w", W_TIER_NAMES),
-    ("p", GEMINI_PRO_TIER_NAMES),
-    ("f", GEMINI_FLASH_TIER_NAMES),
-    ("l", GEMINI_FLASH_LITE_TIER_NAMES),
 ];
 
 /// 每个 app 分区的子菜单句柄，用于 usage 更新时就地改 label 而非整菜单重建。
@@ -100,7 +93,7 @@ pub struct TrayAppSection {
 pub const AUTO_SUFFIX: &str = "auto";
 pub const TRAY_ID: &str = "cc-switch";
 
-pub const TRAY_SECTIONS: [TrayAppSection; 3] = [
+pub const TRAY_SECTIONS: [TrayAppSection; 2] = [
     TrayAppSection {
         app_type: AppType::Claude,
         prefix: "claude_",
@@ -114,13 +107,6 @@ pub const TRAY_SECTIONS: [TrayAppSection; 3] = [
         empty_id: "codex_empty",
         header_label: "Codex",
         log_name: "Codex",
-    },
-    TrayAppSection {
-        app_type: AppType::Gemini,
-        prefix: "gemini_",
-        empty_id: "gemini_empty",
-        header_label: "Gemini",
-        log_name: "Gemini",
     },
 ];
 
@@ -877,9 +863,8 @@ mod tests {
     use super::{format_script_summary, format_subscription_summary, TRAY_ID};
     use crate::provider::{UsageData, UsageResult};
     use crate::services::subscription::{
-        CredentialStatus, QuotaTier, SubscriptionQuota, TIER_FIVE_HOUR, TIER_GEMINI_FLASH,
-        TIER_GEMINI_FLASH_LITE, TIER_GEMINI_PRO, TIER_SEVEN_DAY, TIER_SEVEN_DAY_OPUS,
-        TIER_SEVEN_DAY_SONNET, TIER_WEEKLY_LIMIT,
+        CredentialStatus, QuotaTier, SubscriptionQuota, TIER_FIVE_HOUR, TIER_SEVEN_DAY,
+        TIER_SEVEN_DAY_OPUS, TIER_SEVEN_DAY_SONNET, TIER_WEEKLY_LIMIT,
     };
 
     #[test]
@@ -924,63 +909,6 @@ mod tests {
     }
 
     #[test]
-    fn gemini_summary_uses_p_and_f_labels() {
-        let quota = make_quota(
-            "gemini",
-            true,
-            vec![tier("gemini_pro", 15.0), tier("gemini_flash", 42.0)],
-        );
-        let s = format_subscription_summary(&quota).expect("should format");
-        assert!(s.contains("p15%"), "expected p15% in {s}");
-        assert!(s.contains("f42%"), "expected f42% in {s}");
-    }
-
-    #[test]
-    fn gemini_summary_includes_all_three_tiers() {
-        let quota = make_quota(
-            "gemini",
-            true,
-            vec![
-                tier("gemini_pro", 5.0),
-                tier("gemini_flash", 42.0),
-                tier("gemini_flash_lite", 80.0),
-            ],
-        );
-        let s = format_subscription_summary(&quota).expect("should format");
-        assert!(s.contains("p5%"), "expected p5% in {s}");
-        assert!(s.contains("f42%"), "expected f42% in {s}");
-        assert!(s.contains("l80%"), "expected l80% in {s}");
-    }
-
-    #[test]
-    fn gemini_summary_lite_only_still_renders() {
-        // flash_lite 如果是 API 返回的唯一 tier，仍应显示（避免前端 footer 能看到、
-        // 托盘空白的不对称）。
-        let quota = make_quota("gemini", true, vec![tier("gemini_flash_lite", 80.0)]);
-        let s = format_subscription_summary(&quota).expect("should format");
-        assert!(s.contains("l80%"), "expected l80% in {s}");
-    }
-
-    #[test]
-    fn gemini_summary_emoji_reflects_highest_tier_including_lite() {
-        // lite 是利用率最高的那条 → emoji 必须是红色，不能被 pro/flash 掩盖。
-        let quota = make_quota(
-            "gemini",
-            true,
-            vec![
-                tier("gemini_pro", 10.0),
-                tier("gemini_flash", 20.0),
-                tier("gemini_flash_lite", 95.0),
-            ],
-        );
-        let s = format_subscription_summary(&quota).unwrap();
-        assert!(
-            s.starts_with("\u{1F534}"),
-            "expected red emoji (lite worst) in {s}"
-        );
-    }
-
-    #[test]
     fn worst_emoji_reflects_highest_utilization() {
         // 🔴 = \u{1F534}; 任一 tier ≥ 90% 时预期显示红色。
         let quota = make_quota(
@@ -1017,13 +945,6 @@ mod tests {
     #[test]
     fn unknown_tiers_return_none() {
         let quota = make_quota("claude", true, vec![tier("one_hour", 80.0)]);
-        assert!(format_subscription_summary(&quota).is_none());
-    }
-
-    #[test]
-    fn gemini_without_any_known_tiers_returns_none() {
-        // 完全没有 pro/flash/flash_lite 三种 tier 的退化响应 → None。
-        let quota = make_quota("gemini", true, vec![tier("some_future_tier", 80.0)]);
         assert!(format_subscription_summary(&quota).is_none());
     }
 
@@ -1125,26 +1046,6 @@ mod tests {
         let s = format_script_summary(&r).unwrap();
         assert!(s.contains("w95%"), "expected w95% in {s}");
         assert!(s.starts_with("\u{1F534}"), "expected red emoji in {s}");
-    }
-
-    #[test]
-    fn script_summary_official_subscription_gemini_uses_short_labels() {
-        let r = usage_result(
-            true,
-            vec![
-                usage_data(Some(TIER_GEMINI_PRO), 15.0),
-                usage_data(Some(TIER_GEMINI_FLASH), 42.0),
-                usage_data(Some(TIER_GEMINI_FLASH_LITE), 80.0),
-            ],
-        );
-        let s = format_script_summary(&r).expect("should format");
-        assert!(s.contains("p15%"), "expected p15% in {s}");
-        assert!(s.contains("f42%"), "expected f42% in {s}");
-        assert!(s.contains("l80%"), "expected l80% in {s}");
-        assert!(
-            !s.contains("gemini_"),
-            "Gemini tier machine names should not leak into label: {s}"
-        );
     }
 
     #[test]

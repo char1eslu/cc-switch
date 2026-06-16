@@ -52,7 +52,7 @@ pub fn should_rectify_thinking_signature(
         return true;
     }
 
-    // 场景1b: Gemini/第三方渠道返回 "Thought signature is not valid"
+    // 场景1b: 第三方渠道返回 "Thought signature is not valid"
     // 错误示例: "Unable to submit request because Thought signature is not valid"
     if lower.contains("thought signature")
         && (lower.contains("not valid") || lower.contains("invalid"))

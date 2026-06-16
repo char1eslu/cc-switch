@@ -1,7 +1,7 @@
 {
   "name": "cc-switch",
   "version": "3.16.3",
-  "description": "All-in-One Assistant for Claude Code, Codex & Gemini CLI",
+  "description": "Claude and Codex desktop manager with Codex Keeper session tools",
   "type": "module",
   "scripts": {
     "dev": "pnpm tauri dev",

@@ -15,7 +15,6 @@ import SubscriptionQuotaFooter from "@/components/SubscriptionQuotaFooter";
 import CopilotQuotaFooter from "@/components/CopilotQuotaFooter";
 import CodexOauthQuotaFooter from "@/components/CodexOauthQuotaFooter";
 import { PROVIDER_TYPES, TEMPLATE_TYPES } from "@/config/constants";
-import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
 import {
@@ -37,15 +36,10 @@ interface ProviderCardProps {
   provider: Provider;
   isCurrent: boolean;
   appId: AppId;
-  isInConfig?: boolean; // OpenCode: 是否已添加到 opencode.json
-  isOmo?: boolean;
-  isOmoSlim?: boolean;
+  isInConfig?: boolean;
   onSwitch: (provider: Provider) => void;
   onEdit: (provider: Provider) => void;
   onDelete: (provider: Provider) => void;
-  onRemoveFromConfig?: (provider: Provider) => void;
-  onDisableOmo?: () => void;
-  onDisableOmoSlim?: () => void;
   onConfigureUsage: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
   onDuplicate: (provider: Provider) => void;
@@ -60,9 +54,6 @@ interface ProviderCardProps {
   isInFailoverQueue?: boolean; // 是否在故障转移队列中
   onToggleFailover?: (enabled: boolean) => void; // 切换故障转移队列
   activeProviderId?: string; // 代理当前实际使用的供应商 ID（用于故障转移模式下标注绿色边框）
-  // OpenClaw: default model
-  isDefaultModel?: boolean;
-  onSetAsDefault?: () => void;
 }
 
 /** 判断是否为官方供应商（无自定义 base URL / API key，直连官方 API） */
@@ -88,15 +79,6 @@ function isOfficialProvider(provider: Provider, appId: AppId): boolean {
       (!apiKey || (typeof apiKey === "string" && apiKey.trim() === ""))
     );
   }
-  if (appId === "gemini") {
-    // 无 GEMINI_API_KEY 且无 GOOGLE_GEMINI_BASE_URL → Google OAuth 官方模式
-    const apiKey = config?.env?.GEMINI_API_KEY;
-    const baseUrl = config?.env?.GOOGLE_GEMINI_BASE_URL;
-    return (
-      (!apiKey || (typeof apiKey === "string" && apiKey.trim() === "")) &&
-      (!baseUrl || (typeof baseUrl === "string" && baseUrl.trim() === ""))
-    );
-  }
   return false;
 }
 
@@ -112,9 +94,7 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
   const config = provider.settingsConfig;
 
   if (config && typeof config === "object") {
-    const envBase =
-      (config as Record<string, any>)?.env?.ANTHROPIC_BASE_URL ||
-      (config as Record<string, any>)?.env?.GOOGLE_GEMINI_BASE_URL;
+    const envBase = (config as Record<string, any>)?.env?.ANTHROPIC_BASE_URL;
     if (typeof envBase === "string" && envBase.trim()) {
       return envBase;
     }
@@ -137,14 +117,9 @@ export function ProviderCard({
   isCurrent,
   appId,
   isInConfig = true,
-  isOmo = false,
-  isOmoSlim = false,
   onSwitch,
   onEdit,
   onDelete,
-  onRemoveFromConfig,
-  onDisableOmo,
-  onDisableOmoSlim,
   onConfigureUsage,
   onOpenWebsite,
   onDuplicate,
@@ -159,16 +134,8 @@ export function ProviderCard({
   isInFailoverQueue = false,
   onToggleFailover,
   activeProviderId,
-  // OpenClaw: default model
-  isDefaultModel,
-  onSetAsDefault,
 }: ProviderCardProps) {
   const { t } = useTranslation();
-
-  // OMO and OMO Slim share the same card behavior
-  const isAnyOmo = isOmo || isOmoSlim;
-  const handleDisableAnyOmo = isOmoSlim ? onDisableOmoSlim : onDisableOmo;
-  const isAdditiveMode = appId === "opencode" && !isAnyOmo;
 
   const { data: health } = useProviderHealth(provider.id, appId);
 
@@ -193,7 +160,7 @@ export function ProviderCard({
   const usageEnabled = provider.meta?.usage_script?.enabled ?? false;
   const isOfficial = isOfficialProvider(provider, appId);
   const supportsOfficialSubscription =
-    isOfficial && ["claude", "codex", "gemini"].includes(appId);
+    isOfficial && ["claude", "codex"].includes(appId);
   const isOfficialSubscriptionUsage =
     provider.meta?.usage_script?.templateType ===
     TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION;
@@ -212,10 +179,6 @@ export function ProviderCard({
   const isCopilot =
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.usage_script?.templateType === "github_copilot";
-  // Hermes v12+ overlay entries live under the `providers:` dict and are
-  // read-only here — writes have to go through Hermes Web UI.
-  const isHermesReadOnly =
-    appId === "hermes" && isHermesReadOnlyProvider(provider.settingsConfig);
   const isCodexOauth =
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
   const codexNeedsRouting = useMemo(() => {
@@ -232,13 +195,7 @@ export function ProviderCard({
     provider.meta?.apiFormat,
     (provider.settingsConfig as Record<string, any>)?.config,
   ]);
-  // 获取用量数据以判断是否有多套餐
-  // 累加模式应用（OpenCode/OpenClaw/Hermes）：使用 isInConfig 代替 isCurrent
-  const shouldAutoQuery =
-    appId === "opencode" || appId === "openclaw" || appId === "hermes"
-      ? isInConfig
-      : isCurrent;
-  const autoQueryInterval = shouldAutoQuery
+  const autoQueryInterval = isCurrent
     ? provider.meta?.usage_script?.autoQueryInterval || 0
     : 0;
 
@@ -267,29 +224,13 @@ export function ProviderCard({
     onOpenWebsite(displayUrl);
   };
 
-  // 判断是否是"当前使用中"的供应商
-  // - OMO/OMO Slim 供应商：使用 isCurrent
-  // - OpenClaw：使用默认模型归属的 provider 作为当前项（蓝色边框）
-  // - OpenCode（非 OMO）：不存在"当前"概念，返回 false
-  // - 故障转移模式：代理实际使用的供应商（activeProviderId）
-  // - 普通模式：isCurrent
-  const isActiveProvider = isAnyOmo
-    ? isCurrent
-    : appId === "openclaw"
-      ? Boolean(isDefaultModel)
-      : appId === "opencode"
-        ? false
-        : isAutoFailoverEnabled
-          ? activeProviderId === provider.id
-          : isCurrent;
+  const isActiveProvider = isAutoFailoverEnabled
+    ? activeProviderId === provider.id
+    : isCurrent;
 
-  const shouldUseGreen = !isAnyOmo && isProxyTakeover && isActiveProvider;
-  const hasPersistentConfigHighlight = isAdditiveMode && isInConfig;
+  const shouldUseGreen = isProxyTakeover && isActiveProvider;
   const shouldUseBlue =
-    (isAnyOmo && isActiveProvider) ||
-    (!isAnyOmo &&
-      !isProxyTakeover &&
-      (isActiveProvider || hasPersistentConfigHighlight));
+    !isProxyTakeover && isActiveProvider;
 
   return (
     <div
@@ -302,8 +243,7 @@ export function ProviderCard({
         shouldUseGreen &&
           "border-emerald-500/60 shadow-sm shadow-emerald-500/10",
         shouldUseBlue && "border-blue-500/60 shadow-sm shadow-blue-500/10",
-        !(isActiveProvider || hasPersistentConfigHighlight) &&
-          "hover:shadow-sm",
+        !isActiveProvider && "hover:shadow-sm",
         dragHandleProps?.isDragging &&
           "cursor-grabbing border-primary shadow-lg scale-105 z-10",
       )}
@@ -314,9 +254,7 @@ export function ProviderCard({
           shouldUseGreen && "from-emerald-500/10",
           shouldUseBlue && "from-blue-500/10",
           !shouldUseGreen && !shouldUseBlue && "from-primary/10",
-          isActiveProvider || hasPersistentConfigHighlight
-            ? "opacity-100"
-            : "opacity-0",
+          isActiveProvider ? "opacity-100" : "opacity-0",
         )}
       />
       <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -349,18 +287,6 @@ export function ProviderCard({
               <h3 className="text-base font-semibold leading-none">
                 {provider.name}
               </h3>
-
-              {isOmo && (
-                <span className="inline-flex items-center rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
-                  OMO
-                </span>
-              )}
-
-              {isOmoSlim && (
-                <span className="inline-flex items-center rounded-md bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
-                  Slim
-                </span>
-              )}
 
               {appId === "claude-desktop" &&
                 provider.category !== "official" &&
@@ -432,18 +358,6 @@ export function ProviderCard({
                   </span>
                 )}
 
-              {isHermesReadOnly && (
-                <span
-                  className="inline-flex items-center rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 dark:bg-slate-700/60 dark:text-slate-200"
-                  title={t("provider.managedByHermesHint", {
-                    defaultValue: "由 Hermes 管理，请在 Hermes Web UI 中编辑",
-                  })}
-                >
-                  {t("provider.managedByHermes", {
-                    defaultValue: "Hermes Managed",
-                  })}
-                </span>
-              )}
             </div>
 
             {displayUrl && (
@@ -542,8 +456,6 @@ export function ProviderCard({
               isTesting={isTesting}
               isProxyTakeover={isProxyTakeover}
               isOfficialBlockedByProxy={isOfficialBlockedByProxy}
-              isReadOnly={isHermesReadOnly}
-              isOmo={isAnyOmo}
               onSwitch={() => onSwitch(provider)}
               onEdit={() => onEdit(provider)}
               onDuplicate={() => onDuplicate(provider)}
@@ -565,21 +477,12 @@ export function ProviderCard({
                   : () => onConfigureUsage(provider)
               }
               onDelete={() => onDelete(provider)}
-              onRemoveFromConfig={
-                onRemoveFromConfig
-                  ? () => onRemoveFromConfig(provider)
-                  : undefined
-              }
-              onDisableOmo={handleDisableAnyOmo}
               onOpenTerminal={
                 onOpenTerminal ? () => onOpenTerminal(provider) : undefined
               }
               isAutoFailoverEnabled={isAutoFailoverEnabled}
               isInFailoverQueue={isInFailoverQueue}
               onToggleFailover={onToggleFailover}
-              // OpenClaw: default model
-              isDefaultModel={isDefaultModel}
-              onSetAsDefault={onSetAsDefault}
             />
           </div>
         </div>

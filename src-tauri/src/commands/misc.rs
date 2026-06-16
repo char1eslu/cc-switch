@@ -111,9 +111,7 @@ pub struct ToolVersion {
     wsl_distro: Option<String>,
 }
 
-const VALID_TOOLS: [&str; 6] = [
-    "claude", "codex", "gemini", "opencode", "openclaw", "hermes",
-];
+const VALID_TOOLS: [&str; 2] = ["claude", "codex"];
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -423,10 +421,6 @@ fn tool_display_name(tool: &str) -> &'static str {
     match tool {
         "claude" => "Claude Code",
         "codex" => "Codex",
-        "gemini" => "Gemini CLI",
-        "opencode" => "OpenCode",
-        "openclaw" => "OpenClaw",
-        "hermes" => "Hermes",
         _ => "Unknown",
     }
 }
@@ -438,22 +432,6 @@ fn tool_display_name(tool: &str) -> &'static str {
 /// 先下载到 mktemp 文件再交给 bash,能让 curl 失败稳定变成整条命令失败。
 const CLAUDE_INSTALL_UNIX: &str =
     "bash -c 'tmp=$(mktemp) && curl -fsSL https://claude.ai/install.sh -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'";
-const OPENCODE_INSTALL_UNIX: &str =
-    "bash -c 'tmp=$(mktemp) && curl -fsSL https://opencode.ai/install -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'";
-
-/// Hermes 官方安装器会自带/选择合适的 Python 运行时。不要再用
-/// `python3 -m pip ... || python -m pip ...`:Hermes PyPI 包要求 Python >=3.11,
-/// 但 macOS 系统 `python3` 常是 3.9,而 pyenv 下 `python` shim 还可能不存在,会把
-/// 真正的 Python 版本问题盖成 "python command exists in these Python versions"。
-const HERMES_INSTALL_UNIX: &str =
-    "bash -c 'tmp=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'";
-const HERMES_UPDATE_UNIX: &str =
-    "hermes update || bash -c 'tmp=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'";
-
-#[cfg(target_os = "windows")]
-const HERMES_INSTALL_WINDOWS_SCRIPT: &str =
-    "irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex";
-
 #[cfg(target_os = "windows")]
 fn powershell_encoded_command(script: &str) -> String {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -463,21 +441,6 @@ fn powershell_encoded_command(script: &str) -> String {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
     STANDARD.encode(bytes)
-}
-
-#[cfg(target_os = "windows")]
-fn hermes_install_windows_command() -> String {
-    format!(
-        "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {}",
-        powershell_encoded_command(HERMES_INSTALL_WINDOWS_SCRIPT)
-    )
-}
-
-#[cfg(target_os = "windows")]
-fn hermes_update_windows_command() -> String {
-    // fallback 是 powershell.exe，不是 .cmd/.bat；这里不需要 `call`。PowerShell 的
-    // `irm | iex` 已被 EncodedCommand 收进单一参数,避免 `cmd.exe` 解析管道符。
-    format!("hermes update || {}", hermes_install_windows_command())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -491,18 +454,13 @@ fn npm_install_command_for(tool: &str) -> Option<&'static str> {
     match tool {
         "claude" => Some("npm i -g @anthropic-ai/claude-code@latest"),
         "codex" => Some("npm i -g @openai/codex@latest"),
-        "gemini" => Some("npm i -g @google/gemini-cli@latest"),
-        "opencode" => Some("npm i -g opencode-ai@latest"),
-        "openclaw" => Some("npm i -g openclaw@latest"),
         _ => None,
     }
 }
 
 fn official_update_args(tool: &str) -> Option<&'static str> {
     match tool {
-        "claude" | "codex" | "hermes" => Some("update"),
-        "openclaw" => Some("update --yes"),
-        "opencode" => Some("upgrade"),
+        "claude" | "codex" => Some("update"),
         _ => None,
     }
 }
@@ -532,26 +490,6 @@ fn tool_action_shell_command_for_shell(
     action: ToolLifecycleAction,
     shell: LifecycleCommandShell,
 ) -> Option<String> {
-    if tool == "hermes" {
-        return Some(
-            match (action, shell) {
-                (ToolLifecycleAction::Install, LifecycleCommandShell::Posix) => HERMES_INSTALL_UNIX,
-                (ToolLifecycleAction::Update, LifecycleCommandShell::Posix) => HERMES_UPDATE_UNIX,
-                #[cfg(target_os = "windows")]
-                (ToolLifecycleAction::Install, LifecycleCommandShell::WindowsBatch) => {
-                    return Some(hermes_install_windows_command());
-                }
-                #[cfg(target_os = "windows")]
-                (ToolLifecycleAction::Update, LifecycleCommandShell::WindowsBatch) => {
-                    return Some(hermes_update_windows_command());
-                }
-                #[cfg(not(target_os = "windows"))]
-                (_, LifecycleCommandShell::WindowsBatch) => return None,
-            }
-            .to_string(),
-        );
-    }
-
     let install = npm_install_command_for(tool)?;
     match action {
         ToolLifecycleAction::Install => Some(install.to_string()),
@@ -575,9 +513,8 @@ fn tool_action_shell_command(tool: &str, action: ToolLifecycleAction) -> Option<
 }
 
 /// Windows host 上的 WSL 分支专用:`tool_action_shell_command` 在 Windows target 编译
-/// 出的版本会包含 Windows batch 语义(例如 `|| call npm ...`)且 hermes 会返回
-/// Windows PowerShell installer,但跨 `wsl.exe` 边界后跑的是 Linux。这个 wrapper
-/// 强制生成 POSIX 版命令。
+/// 出的版本会包含 Windows batch 语义(例如 `|| call npm ...`),但跨 `wsl.exe`
+/// 边界后跑的是 Linux。这个 wrapper 强制生成 POSIX 版命令。
 #[cfg(target_os = "windows")]
 fn wsl_tool_action_shell_command(tool: &str, action: ToolLifecycleAction) -> Option<String> {
     match action {
@@ -608,8 +545,7 @@ fn build_tool_action_line(
         //    install 走 POSIX 安装优先级,update 走 POSIX 静态/官方 update 命令,
         //    再通过 wsl.exe -d distro -- sh 包一层。
         //    **必须用 wsl_tool_action_shell_command 而非 tool_action_shell_command**:
-        //    后者在 Windows target 给 hermes 返回 PowerShell installer,且 Windows batch
-        //    语义也不适合跨 wsl.exe;这里统一替换为 POSIX 版安装/更新命令。
+        //    Windows batch 语义不适合跨 wsl.exe;这里统一替换为 POSIX 版安装/更新命令。
         if let Some(distro) = wsl_distro_for_tool(tool) {
             let command = wsl_tool_action_shell_command(tool, action)
                 .ok_or_else(|| format!("Unsupported tool action target: {tool}"))?;
@@ -645,8 +581,7 @@ fn build_tool_action_line(
     {
         let _ = (wsl_shell, wsl_shell_flag);
         // update 锚定到命令行实际命中的那处（写回同一个 node / brew / 原生安装器），
-        // 而非裸 `npm` 落到 PATH 第一个 npm；install 走「上游推荐 || npm 兜底」短路链
-        // （有 native installer 的工具如 claude/opencode/hermes），其余仍裸 npm。
+        // 而非裸 `npm` 落到 PATH 第一个 npm；install 走「上游推荐 || npm 兜底」短路链。
         let command = match action {
             ToolLifecycleAction::Update => {
                 let installs = enumerate_tool_installations(tool);
@@ -761,18 +696,6 @@ async fn get_single_tool_version_impl(
             fetch_npm_latest_for_tool(&client, "@anthropic-ai/claude-code", tool, local).await
         }
         "codex" => fetch_npm_latest_for_tool(&client, "@openai/codex", tool, local).await,
-        "gemini" => fetch_npm_latest_for_tool(&client, "@google/gemini-cli", tool, local).await,
-        "opencode" => {
-            if let Some(version) =
-                fetch_npm_latest_for_tool(&client, "opencode-ai", tool, local).await
-            {
-                Some(version)
-            } else {
-                fetch_github_latest_version(&client, "anomalyco/opencode").await
-            }
-        }
-        "openclaw" => fetch_npm_latest_for_tool(&client, "openclaw", tool, local).await,
-        "hermes" => fetch_pypi_latest_version(&client, "hermes-agent").await,
         _ => None,
     };
 
@@ -792,11 +715,8 @@ async fn get_single_tool_version_impl(
 /// 看到与所在通道对齐的"最新版本",同时绝不把稳定通道用户暴露给预发布版。
 /// 返回空切片表示该工具只看 `latest`、不补查。
 ///
-/// 为何不通用覆盖所有工具:各家预发布 tag 命名互不统一(codex=alpha/beta/native、
-/// gemini=nightly/preview、openclaw=alpha/beta),且 codex 的 beta/native 是
-/// `0.1.x` 时间戳式版本、gemini 有误发的 `false` tag —— 这些脏值虽会被
-/// `pick_latest_version` 的版本比较挡掉,但维护成本与误报风险不值当,故暂只为
-/// Claude Code 启用。
+/// 为何不通用覆盖所有工具:各家预发布 tag 命名互不统一；先只为 Claude Code
+/// 启用,避免把不稳定通道误报给稳定用户。
 fn npm_prerelease_tags(tool: &str) -> &'static [&'static str] {
     match tool {
         "claude" => &["next"],
@@ -1415,33 +1335,6 @@ fn extend_windows_cli_manager_search_paths(paths: &mut Vec<std::path::PathBuf>, 
     push_unique_path(paths, program_data.join("scoop").join("shims"));
 }
 
-/// OpenCode install.sh 路径优先级（见 https://github.com/anomalyco/opencode README）:
-///   $OPENCODE_INSTALL_DIR > $XDG_BIN_DIR > $HOME/bin > $HOME/.opencode/bin
-/// 额外扫描 Bun 默认全局安装路径（~/.bun/bin）
-/// 和 Go 安装路径（~/go/bin、$GOPATH/*/bin）。
-fn opencode_extra_search_paths(
-    home: &Path,
-    opencode_install_dir: Option<std::ffi::OsString>,
-    xdg_bin_dir: Option<std::ffi::OsString>,
-    gopath: Option<std::ffi::OsString>,
-) -> Vec<std::path::PathBuf> {
-    let mut paths = Vec::new();
-
-    push_env_single_dir(&mut paths, opencode_install_dir);
-    push_env_single_dir(&mut paths, xdg_bin_dir);
-
-    if !home.as_os_str().is_empty() {
-        push_unique_path(&mut paths, home.join("bin"));
-        push_unique_path(&mut paths, home.join(".opencode").join("bin"));
-        push_unique_path(&mut paths, home.join(".bun").join("bin"));
-        push_unique_path(&mut paths, home.join("go").join("bin"));
-    }
-
-    extend_from_path_list(&mut paths, gopath, Some("bin"));
-
-    paths
-}
-
 fn tool_executable_candidates(tool: &str, dir: &Path) -> Vec<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -1505,19 +1398,6 @@ fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
             &mut search_paths,
             std::path::PathBuf::from("/usr/local/bin"),
         );
-        if tool == "hermes" {
-            let python_base = home.join("Library").join("Python");
-            if python_base.exists() {
-                if let Ok(entries) = std::fs::read_dir(&python_base) {
-                    for entry in entries.flatten() {
-                        let bin_path = entry.path().join("bin");
-                        if bin_path.exists() {
-                            push_unique_path(&mut search_paths, bin_path);
-                        }
-                    }
-                }
-            }
-        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1533,34 +1413,6 @@ fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
     {
         if let Some(appdata) = dirs::data_dir() {
             push_unique_path(&mut search_paths, appdata.join("npm"));
-            if tool == "hermes" {
-                let python_base = appdata.join("Python");
-                if python_base.exists() {
-                    if let Ok(entries) = std::fs::read_dir(&python_base) {
-                        for entry in entries.flatten() {
-                            let scripts_path = entry.path().join("Scripts");
-                            if scripts_path.exists() {
-                                push_unique_path(&mut search_paths, scripts_path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if tool == "hermes" {
-            if let Some(local_data) = dirs::data_local_dir() {
-                let programs_python = local_data.join("Programs").join("Python");
-                if programs_python.exists() {
-                    if let Ok(entries) = std::fs::read_dir(&programs_python) {
-                        for entry in entries.flatten() {
-                            let scripts_path = entry.path().join("Scripts");
-                            if scripts_path.exists() {
-                                push_unique_path(&mut search_paths, scripts_path);
-                            }
-                        }
-                    }
-                }
-            }
         }
         push_unique_path(
             &mut search_paths,
@@ -1590,19 +1442,6 @@ fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
                     push_unique_path(&mut search_paths, bin_path);
                 }
             }
-        }
-    }
-
-    if tool == "opencode" {
-        let extra_paths = opencode_extra_search_paths(
-            &home,
-            std::env::var_os("OPENCODE_INSTALL_DIR"),
-            std::env::var_os("XDG_BIN_DIR"),
-            std::env::var_os("GOPATH"),
-        );
-
-        for path in extra_paths {
-            push_unique_path(&mut search_paths, path);
         }
     }
 
@@ -1656,7 +1495,7 @@ fn scan_cli_version(tool: &str) -> ShellProbe {
         .unwrap_or_default();
 
     // 记录"可执行文件存在、但 `--version` 非零退出"时的首个诊断信息。
-    // 典型场景：工具已安装但当前环境跑不起来（如 openclaw 要求 Node v22.19+）。
+    // 典型场景：工具已安装但当前运行时不满足要求。
     // 这类信息比笼统的 "not installed" 有用得多，循环结束未探到版本时回传。
     let mut exec_diagnostic: Option<String> = None;
 
@@ -1910,15 +1749,12 @@ fn enumerate_tool_installations(tool: &str) -> Vec<ToolInstallation> {
     installs
 }
 
-/// 工具对应的 npm 包名（hermes 走自己的 CLI/installer，不在此表）。锚定升级据此拼 `npm i -g`。
+/// 工具对应的 npm 包名。锚定升级据此拼 `npm i -g`。
 /// 全平台共用一张表——Windows 锚定层(`anchored_command_from_paths` 的 windows 版)也读这里。
 fn npm_package_for(tool: &str) -> Option<&'static str> {
     match tool {
         "claude" => Some("@anthropic-ai/claude-code"),
         "codex" => Some("@openai/codex"),
-        "gemini" => Some("@google/gemini-cli"),
-        "opencode" => Some("opencode-ai"),
-        "openclaw" => Some("openclaw"),
         _ => None,
     }
 }
@@ -1940,7 +1776,7 @@ fn parent_dir(p: &str) -> String {
 }
 
 /// 从 canonicalize 后的真身路径提取 Homebrew formula 名：
-/// `/opt/homebrew/Cellar/gemini-cli/0.13.0/...` → `Some("gemini-cli")`。
+/// `/opt/homebrew/Cellar/codex/1.2.3/...` → `Some("codex")`。
 /// 非 Cellar 路径（= 不是 formula，可能是 Homebrew 的 node 装的 npm 全局包）返回 None。
 /// 关键区分：formula 即便内部用 node，真身也落在 `Cellar/<formula>/` 下；而 Homebrew
 /// npm 全局包落在 `/opt/homebrew/lib/node_modules`（不含 Cellar）。两者升级命令不同。
@@ -2060,7 +1896,7 @@ fn sibling_bin_with_ext(
 }
 
 /// 返回 `<bin_path 同目录>/<exe>` 的绝对路径。bin_path 是命令行命中的入口
-/// (如 `/opt/homebrew/bin/gemini`、`~/.volta/bin/codex`),`exe` 是与之共处一个
+/// (如 `/opt/homebrew/bin/codex`、`~/.volta/bin/codex`),`exe` 是与之共处一个
 /// bin 目录的另一个可执行(`brew` / `volta` / `bun` / `npm`)——这些包管理器
 /// 都把自己的 cli 跟它们安装的命令并列放在同一个 bin 目录,所以"同目录推导"
 /// 是可靠的绝对路径来源。
@@ -2102,17 +1938,10 @@ fn anchored_official_update_command(tool: &str, bin_path: &str) -> Option<String
 fn prefers_official_update(tool: &str, shell: LifecycleCommandShell) -> bool {
     match shell {
         LifecycleCommandShell::Posix => {
-            matches!(tool, "claude" | "opencode" | "openclaw")
+            matches!(tool, "claude")
         }
         LifecycleCommandShell::WindowsBatch => {
-            matches!(
-                tool,
-                // OpenCode 的 Windows `upgrade` 在 anomalyco/opencode#17295 修复前可能因
-                // 安装方式探测失败弹交互 prompt（spawn npm.cmd 没传 shell:true）；静默
-                // lifecycle 没有 stdin 会挂死，Windows 先锚到包管理器路径，等上游修了
-                // 再把 opencode 加回这里。
-                "claude" | "openclaw"
-            )
+            matches!(tool, "claude")
         }
     }
 }
@@ -2220,23 +2049,18 @@ fn package_manager_anchored_command_from_paths(
 /// 已展示给用户"将写回原生那处"——欺骗性故障。
 ///
 /// 判定顺序（命中即返回）：
-/// ① Hermes → `<bin_path 绝对> update`;Hermes CLI 自己知道安装环境,避免 cc-switch
-///    猜系统 `python3`/`python` 时撞上 Python 版本或 pyenv shim 问题。
-/// ② Claude 原生安装器（`~/.local/share/claude/versions/`）→ `<bin_path 绝对> update`；
+/// ① Claude 原生安装器（`~/.local/share/claude/versions/`）→ `<bin_path 绝对> update`；
 ///    bin_path 指向 launcher,launcher 内部 dispatch update 子命令。它不归 npm 管,
 ///    且在 PATH 里比 nvm/homebrew 更靠前,用 npm 升级会装到别处且被原生那份遮蔽。
-/// ③ Homebrew formula（真身在 `Cellar/<formula>/`）→ `<bin_path 同目录>/brew upgrade <formula>`;
+/// ② Homebrew formula（真身在 `Cellar/<formula>/`）→ `<bin_path 同目录>/brew upgrade <formula>`;
 ///    formula 由 Homebrew 拥有,避免 self-update 尝试改动包管理器管理的安装。
-/// ④ 其余支持官方自升级的工具 → `<bin_path 绝对> update/upgrade || <原锚定包管理器命令>`；
+/// ③ 其余支持官方自升级的工具 → `<bin_path 绝对> update/upgrade || <原锚定包管理器命令>`；
 ///    Codex 的 self-update 只在部分 release 可用,所以保留 npm/brew/bun/volta fallback。
-/// ⑤ 不支持官方自升级的 npm 全局包(例如 Gemini CLI) → 锚定到"那处 bin 目录的 npm"。
+/// ④ 不支持官方自升级的 npm 全局包 → 锚定到"那处 bin 目录的 npm"。
 #[cfg(not(target_os = "windows"))]
 fn anchored_command_from_paths(tool: &str, bin_path: &str, real_target: &str) -> Option<String> {
     let real_lower = real_target.to_ascii_lowercase();
 
-    if tool == "hermes" {
-        return anchored_official_update_command(tool, bin_path);
-    }
     if tool == "claude"
         && (real_lower.contains("/.local/share/claude/")
             || real_lower.contains("/claude/versions/"))
@@ -2308,18 +2132,14 @@ fn package_manager_anchored_command_from_paths(tool: &str, bin_path: &str) -> Op
 /// 下的 Volta/pnpm 路径;`$SHELL -lic` 的探测时 PATH 与执行时 PATH 不对称。
 ///
 /// 判定顺序(命中即返回):
-/// ① hermes → `<bin_path> update`;Hermes CLI 自己处理安装环境。
-/// ② 支持官方自升级且 Windows 可安全静默执行的工具 → `<bin_path> update/upgrade || call <包管理器 fallback>`。
-/// ③ 其余 npm 工具 → sibling `npm.cmd`/`.exe` i -g <pkg>@latest。
+/// ① 支持官方自升级且 Windows 可安全静默执行的工具 → `<bin_path> update/upgrade || call <包管理器 fallback>`。
+/// ② 其余 npm 工具 → sibling `npm.cmd`/`.exe` i -g <pkg>@latest。
 ///
 /// 包管理器 fallback 的 sibling 探测都通过 `sibling_bin_with_ext`(碰 fs):该处无候选
 /// 扩展名存在时,支持官方自升级的工具仍返回 `<bin_path> update/upgrade`,其余工具
 /// 才返 None 让上游兜回静态命令、`anchored=false`。
 #[cfg(target_os = "windows")]
 fn anchored_command_from_paths(tool: &str, bin_path: &str, _real_target: &str) -> Option<String> {
-    if tool == "hermes" {
-        return anchored_official_update_command(tool, bin_path);
-    }
     let package_command = package_manager_anchored_command_from_paths(tool, bin_path);
     if prefers_official_update(tool, LifecycleCommandShell::WindowsBatch) {
         let update = anchored_official_update_command(tool, bin_path)?;
@@ -2390,16 +2210,13 @@ fn static_fallback_command(tool: &str) -> String {
 ///
 /// 设计理由:
 /// - install 没有锚点可言(从无到有),但**有"上游推荐方式"这一事实** ——
-///   Anthropic 和 SST(OpenCode)都已将自家 native installer 列为首推、把 npm 列为传统方式。
+///   Anthropic 已将 native installer 列为首推、把 npm 列为传统方式。
 ///   把这层认知补进来,让 install 表与 update 端的锚定决策树共用同一份"上游事实"。
-/// - Hermes 使用官方 installer,避免用系统 Python/pip 安装时踩 Python >=3.11 与 pyenv
-///   `python` shim 问题;更新路径若能锚定已安装 CLI,则走 `<hermes> update`。
-///   **Hermes 没有 npm 包,install 端不享受 `||` 降级**——上游 installer 不可达就只能等。
-/// - 对**有 npm 包**的工具(claude/opencode),短路链(POSIX `||`)保证官方脚本不可达/
+/// - 对**有 npm 包**的工具(claude),短路链(POSIX `||`)保证官方脚本不可达/
 ///   防火墙拦截时仍能装上,降级到裸 `npm i -g`。官方脚本本身不用 pipe,
 ///   所以这条路径在 WSL 的 `sh -c` 子 shell 中也不依赖外层 `pipefail`。
-/// - Windows 原生不启用:claude.ai/install.sh、opencode.ai/install 都是 bash 脚本,
-///   Windows 原生继续走 `tool_action_shell_command` 的 npm/PowerShell 命令;WSL 作为
+/// - Windows 原生不启用:claude.ai/install.sh 是 bash 脚本,
+///   Windows 原生继续走 `tool_action_shell_command` 的 npm 命令;WSL 作为
 ///   Linux 环境复用这套 POSIX 安装优先级。
 fn installer_with_npm_fallback(installer: &str, tool: &str) -> String {
     match npm_install_command_for(tool) {
@@ -2415,8 +2232,6 @@ fn installer_with_npm_fallback(installer: &str, tool: &str) -> String {
 fn posix_install_command_for(tool: &str) -> String {
     match tool {
         "claude" => installer_with_npm_fallback(CLAUDE_INSTALL_UNIX, tool),
-        "opencode" => installer_with_npm_fallback(OPENCODE_INSTALL_UNIX, tool),
-        "hermes" => HERMES_INSTALL_UNIX.to_string(),
         _ => static_fallback_command_for(tool, ToolLifecycleAction::Install),
     }
 }
@@ -2432,9 +2247,7 @@ fn install_command_for(tool: &str) -> String {
 ///   边界进入 distro 文件系统后完全无效;且 `enumerate_tool_installations` 不参与
 ///   WSL 文件系统、锚定无锚点。这一类显式短路到 `(unix_static, false, false)`,
 ///   前端不会弹确认。
-///   **必须用 `wsl_tool_action_shell_command`(unix 版)而非 `static_fallback_command`**
-///   ——后者读 `tool_action_shell_command`,Windows target 给 hermes 返回 PowerShell
-///   installer,跨 wsl.exe 后不适用;`build_tool_action_line` 的 WSL 分支也用同一 wrapper,
+///   **必须用 `wsl_tool_action_shell_command`(unix 版)而非 `static_fallback_command`**,
 ///   保证 plan 展示给前端的命令与实际执行落 .bat 的命令一致。
 /// - 其他平台与 Windows 原生工具走 `installs_anchored_command`:命中 → 锚定;
 ///   None(无默认 / sibling 不存在等)→ 静态兜底、`anchored=false`,
@@ -2524,10 +2337,6 @@ fn wsl_distro_for_tool(tool: &str) -> Option<String> {
     let override_dir = match tool {
         "claude" => crate::settings::get_claude_override_dir(),
         "codex" => crate::settings::get_codex_override_dir(),
-        "gemini" => crate::settings::get_gemini_override_dir(),
-        "opencode" => crate::settings::get_opencode_override_dir(),
-        "openclaw" => crate::settings::get_openclaw_override_dir(),
-        "hermes" => crate::settings::get_hermes_override_dir(),
         _ => None,
     }?;
 
@@ -2604,7 +2413,7 @@ fn extract_env_vars_from_config(
         return env_vars;
     };
 
-    // 处理 env 字段（Claude/Gemini 通用）
+    // 处理 env 字段（Claude / Claude Desktop）
     if let Some(env) = obj.get("env").and_then(|v| v.as_object()) {
         for (key, value) in env {
             if let Some(str_val) = value.as_str() {
@@ -2615,7 +2424,6 @@ fn extract_env_vars_from_config(
         // 处理 base_url: 根据应用类型添加对应的环境变量
         let base_url_key = match app_type {
             AppType::Claude | AppType::ClaudeDesktop => Some("ANTHROPIC_BASE_URL"),
-            AppType::Gemini => Some("GOOGLE_GEMINI_BASE_URL"),
             _ => None,
         };
 
@@ -2630,13 +2438,6 @@ fn extract_env_vars_from_config(
     if *app_type == AppType::Codex {
         if let Some(auth) = obj.get("auth").and_then(|v| v.as_str()) {
             env_vars.push(("OPENAI_API_KEY".to_string(), auth.to_string()));
-        }
-    }
-
-    // Gemini 使用 api_key 字段转换为 GEMINI_API_KEY
-    if *app_type == AppType::Gemini {
-        if let Some(api_key) = obj.get("api_key").and_then(|v| v.as_str()) {
-            env_vars.push(("GEMINI_API_KEY".to_string(), api_key.to_string()));
         }
     }
 
@@ -3645,7 +3446,7 @@ mod tests {
             compare_semver("2.1.156-beta.1", "2.1.156"),
             Some(Ordering::Less)
         );
-        // core 更高的预发布仍高于较低的正式版（gemini nightly 场景）
+        // core 更高的预发布仍高于较低的正式版
         assert_eq!(
             compare_semver("0.45.0-nightly.1", "0.44.1"),
             Some(Ordering::Greater)
@@ -3655,7 +3456,7 @@ mod tests {
             compare_semver("0.1.2505172116", "0.135.0"),
             Some(Ordering::Less)
         );
-        // 无法解析返回 None（gemini 的 `false` 脏 tag）
+        // 无法解析返回 None
         assert_eq!(compare_semver("false", "1.0.0"), None);
     }
 
@@ -3738,8 +3539,8 @@ mod tests {
             // Windows 上 `Path::join` 与字符串拼接可能产出混合分隔符;取**两种之中最右
             // 出现**的位置,而非"优先 `\`"——后者在混合时会取错父目录。
             assert_eq!(
-                parent_dir("C:\\Users\\me/Code/openclaw\\codex.cmd"),
-                "C:\\Users\\me/Code/openclaw"
+                parent_dir("C:\\Users\\me/Code/project\\codex.cmd"),
+                "C:\\Users\\me/Code/project"
             );
         }
 
@@ -3844,25 +3645,6 @@ mod tests {
         }
 
         #[test]
-        fn opencode_windows_uses_package_fallback_without_official_upgrade() {
-            let (_dir, sub, bin_path) = setup_sibling("pnpm", "opencode.cmd", &["pnpm.cmd"]);
-            let cmd = anchored_command_from_paths("opencode", &bin_path, &bin_path);
-            let pnpm_full = format!("{}\\pnpm.cmd", sub.to_string_lossy());
-            let expected = format!(
-                "{} add -g opencode-ai@latest",
-                expect_quoted_path(&pnpm_full)
-            );
-            assert_eq!(cmd.as_deref(), Some(expected.as_str()));
-        }
-
-        #[test]
-        fn opencode_windows_static_fallback_skips_official_upgrade() {
-            let cmd = static_fallback_command("opencode");
-            assert_eq!(cmd, "npm i -g opencode-ai@latest");
-            assert!(!cmd.contains("opencode upgrade"));
-        }
-
-        #[test]
         fn npm_windows_default_branch() {
             // 任意 system 类路径(不命中 volta/pnpm)→ 兜底 sibling npm.cmd 锚定。
             // 模拟 nvm-windows 的实际形态:`<NVM_HOME>\v22.0.0\codex.cmd`。
@@ -3885,69 +3667,6 @@ mod tests {
             let cmd = anchored_command_from_paths("codex", &bin_path, &bin_path);
             let expected = format!("{} update", expect_quoted_path(&bin_path));
             assert_eq!(cmd.as_deref(), Some(expected.as_str()));
-        }
-
-        #[test]
-        fn hermes_windows_uses_cli_update() {
-            // Hermes 自带 `hermes update`,不要再回退到 py/python/pip。即便同目录有
-            // npm.cmd,也不应走 npm 分支。
-            let (_dir, _sub, bin_path) = setup_sibling("", "hermes.exe", &["npm.cmd"]);
-            let cmd = anchored_command_from_paths("hermes", &bin_path, &bin_path);
-            let expected = format!("{} update", expect_quoted_path(&bin_path));
-            assert_eq!(cmd.as_deref(), Some(expected.as_str()));
-        }
-
-        #[test]
-        fn hermes_windows_static_fallback_uses_powershell_installer_without_pip() {
-            let install = static_fallback_command_for("hermes", ToolLifecycleAction::Install);
-            assert!(
-                install
-                    .starts_with("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "),
-                "should use PowerShell EncodedCommand installer: {install}"
-            );
-            let encoded = install
-                .split_once("-EncodedCommand ")
-                .map(|(_, encoded)| encoded)
-                .expect("installer should include encoded command");
-            assert_eq!(
-                encoded,
-                powershell_encoded_command(HERMES_INSTALL_WINDOWS_SCRIPT)
-            );
-            let install_prefix = install
-                .split_once("-EncodedCommand ")
-                .map(|(prefix, _)| prefix)
-                .expect("installer should include encoded command");
-            assert!(
-                !install_prefix.contains("|")
-                    && !install_prefix.contains("-Command")
-                    && !install_prefix.contains("python")
-                    && !install_prefix.contains("pip"),
-                "should hide PowerShell pipe from cmd.exe and avoid system Python/pip: {install}"
-            );
-
-            let update = static_fallback_command("hermes");
-            assert!(
-                update.starts_with(
-                    "hermes update || powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "
-                ),
-                "should try CLI update before PowerShell installer: {update}"
-            );
-            let fallback = update
-                .split_once("||")
-                .map(|(_, fallback)| fallback)
-                .expect("update should include a fallback command");
-            let fallback_prefix = fallback
-                .split_once("-EncodedCommand ")
-                .map(|(prefix, _)| prefix)
-                .expect("fallback should include encoded command");
-            assert!(
-                !fallback_prefix.contains('|')
-                    && !fallback_prefix.contains("-Command")
-                    && !update.contains("call powershell")
-                    && !fallback_prefix.contains("python")
-                    && !fallback_prefix.contains("pip"),
-                "PowerShell fallback should be encoded, not called like a batch file or use pip: {update}"
-            );
         }
 
         #[test]
@@ -4127,51 +3846,6 @@ mod tests {
         }
 
         #[test]
-        fn wsl_hermes_command_uses_unix_installer_not_powershell_or_pip() {
-            // 跨 wsl.exe 边界后跑的是 Linux,Windows PowerShell installer 不适用;
-            // 也不要再走 python3/python pip 链,避免 Python 版本/pyenv shim 问题。
-            let update_cmd =
-                wsl_tool_action_shell_command("hermes", ToolLifecycleAction::Update).unwrap();
-            assert!(
-                update_cmd.starts_with("hermes update || bash -c 'tmp=$(mktemp) && curl -fsSL "),
-                "WSL hermes 更新应先尝试 CLI 自更新再回退官方 installer,得到: {update_cmd}"
-            );
-            let fallback = update_cmd
-                .split_once("||")
-                .map(|(_, fallback)| fallback)
-                .expect("update should include installer fallback");
-            assert!(
-                !fallback.contains('|')
-                    && fallback.contains(" -o $tmp && bash $tmp")
-                    && !update_cmd.contains("powershell")
-                    && !update_cmd.contains("pip"),
-                "WSL hermes fallback 不能依赖 pipefail/Windows installer/pip,得到: {update_cmd}"
-            );
-
-            let install_cmd =
-                wsl_tool_action_shell_command("hermes", ToolLifecycleAction::Install).unwrap();
-            assert!(
-                install_cmd.starts_with("bash -c 'tmp=$(mktemp) && curl -fsSL "),
-                "WSL hermes 安装应直接走官方 Unix installer,得到: {install_cmd}"
-            );
-            assert!(
-                !install_cmd.contains('|') && install_cmd.contains(" -o $tmp && bash $tmp"),
-                "WSL hermes 安装不应依赖 pipefail,得到: {install_cmd}"
-            );
-        }
-
-        #[test]
-        fn wsl_hermes_install_line_does_not_depend_on_outer_pipefail() {
-            let line = build_wsl_tool_action_line("Ubuntu", HERMES_INSTALL_UNIX, None, None)
-                .expect("valid WSL command line");
-            assert!(line.starts_with("wsl.exe -d Ubuntu -- sh -c "));
-            assert!(
-                !line.contains("| bash") && line.contains(" -o $tmp && bash $tmp"),
-                "WSL 子 shell 内不能出现 curl 管道安装器: {line}"
-            );
-        }
-
-        #[test]
         fn wsl_install_uses_posix_install_priority() {
             let claude =
                 wsl_tool_action_shell_command("claude", ToolLifecycleAction::Install).unwrap();
@@ -4181,16 +3855,6 @@ mod tests {
                 "WSL claude install should prefer native POSIX installer with npm fallback: {claude}"
             );
             assert!(!claude.contains("| bash"));
-
-            let opencode =
-                wsl_tool_action_shell_command("opencode", ToolLifecycleAction::Install).unwrap();
-            assert!(
-                opencode.starts_with(
-                    "bash -c 'tmp=$(mktemp) && curl -fsSL https://opencode.ai/install "
-                ) && opencode.contains(" || npm i -g opencode-ai@latest"),
-                "WSL opencode install should prefer native POSIX installer with npm fallback: {opencode}"
-            );
-            assert!(!opencode.contains("| bash"));
 
             let codex =
                 wsl_tool_action_shell_command("codex", ToolLifecycleAction::Install).unwrap();
@@ -4312,23 +3976,6 @@ mod tests {
         }
 
         #[test]
-        fn gemini_homebrew_formula_uses_brew_upgrade() {
-            // /opt/homebrew/bin/gemini → Cellar/gemini-cli/...:是 brew formula 而非 npm 全局包,
-            // 且 formula 名(gemini-cli) ≠ npm 包名(@google/gemini-cli)。
-            // **brew 与 formula 入口同目录**,用 `<dir>/brew` 绝对路径调用,避免 GUI
-            // 非登录 `bash -c` 时 PATH 没有 /opt/homebrew/bin 导致 `brew: not found`。
-            let cmd = anchored_command_from_paths(
-                "gemini",
-                "/opt/homebrew/bin/gemini",
-                "/opt/homebrew/Cellar/gemini-cli/0.13.0/libexec/lib/node_modules/@google/gemini-cli/dist/index.js",
-            );
-            assert_eq!(
-                cmd.as_deref(),
-                Some("/opt/homebrew/bin/brew upgrade gemini-cli")
-            );
-        }
-
-        #[test]
         fn codex_homebrew_formula_uses_brew_not_self_update() {
             // Homebrew formula 归 brew 管理;即使 Codex 有 self-update,也不先改动
             // Cellar 内的安装内容。
@@ -4338,21 +3985,6 @@ mod tests {
                 "/opt/homebrew/Cellar/codex/1.2.3/bin/codex",
             );
             assert_eq!(cmd.as_deref(), Some("/opt/homebrew/bin/brew upgrade codex"));
-        }
-
-        #[test]
-        fn gemini_nvm_anchors_to_npm_without_cli_update() {
-            let cmd = anchored_command_from_paths(
-                "gemini",
-                "/Users/me/.nvm/versions/node/v22.14.0/bin/gemini",
-                "/Users/me/.nvm/versions/node/v22.14.0/lib/node_modules/@google/gemini-cli/dist/index.js",
-            );
-            assert_eq!(
-                cmd.as_deref(),
-                Some(
-                    "/Users/me/.nvm/versions/node/v22.14.0/bin/npm i -g @google/gemini-cli@latest"
-                )
-            );
         }
 
         #[test]
@@ -4372,38 +4004,6 @@ mod tests {
         }
 
         #[test]
-        fn homebrew_npm_global_package_anchors_not_brew() {
-            // openclaw 装在 Homebrew node 的全局目录(lib/node_modules，非 Cellar)：
-            // 是 npm 全局包，官方 update 失败后走 npm 锚定而非 brew upgrade。
-            let cmd = anchored_command_from_paths(
-                "openclaw",
-                "/opt/homebrew/bin/openclaw",
-                "/opt/homebrew/lib/node_modules/openclaw/openclaw.mjs",
-            );
-            assert_eq!(
-                cmd.as_deref(),
-                Some("/opt/homebrew/bin/openclaw update --yes || /opt/homebrew/bin/npm i -g openclaw@latest")
-            );
-        }
-
-        #[test]
-        fn volta_self_update_chain_anchors_to_volta() {
-            // `~/.volta/bin` 通常不在 GUI 非登录 `bash -c` 的 PATH 里,且用户可能
-            // PATH 上还有另一份 volta → 必须绝对路径锚定到命令行命中的这一份。
-            // 用 openclaw（仍在 prefers_official_update）覆盖 volta 分支的 self-update 链;
-            // codex 已改为不 self-update（见 codex_volta_anchors_to_volta_install）。
-            let cmd = anchored_command_from_paths(
-                "openclaw",
-                "/Users/me/.volta/bin/openclaw",
-                "/Users/me/.volta/tools/image/packages/openclaw/lib/node_modules/openclaw",
-            );
-            assert_eq!(
-                cmd.as_deref(),
-                Some("/Users/me/.volta/bin/openclaw update --yes || /Users/me/.volta/bin/volta install openclaw")
-            );
-        }
-
-        #[test]
         fn codex_volta_anchors_to_volta_install() {
             // codex 锚定到命令行命中的那份 volta，但不 self-update：纯 `volta install`。
             let cmd = anchored_command_from_paths(
@@ -4414,20 +4014,6 @@ mod tests {
             assert_eq!(
                 cmd.as_deref(),
                 Some("/Users/me/.volta/bin/volta install @openai/codex")
-            );
-        }
-
-        #[test]
-        fn bun_uses_bun_add() {
-            // OpenCode 先跑官方 upgrade;失败后 bun 同 volta:绝对路径写回原安装源。
-            let cmd = anchored_command_from_paths(
-                "opencode",
-                "/Users/me/.bun/bin/opencode",
-                "/Users/me/.bun/install/global/node_modules/opencode-ai/bin/opencode",
-            );
-            assert_eq!(
-                cmd.as_deref(),
-                Some("/Users/me/.bun/bin/opencode upgrade || /Users/me/.bun/bin/bun add -g opencode-ai@latest")
             );
         }
 
@@ -4443,59 +4029,6 @@ mod tests {
                 cmd.as_deref(),
                 Some("'/Users/my name/.volta/bin/volta' install @openai/codex")
             );
-        }
-
-        #[test]
-        fn bun_path_with_space_is_quoted() {
-            // bun 分支与 volta 共享 sibling_bin + quote_path_if_spaced,
-            // 这条用例锁住 `bun add -g` 命令头部的引号包裹形态。
-            let cmd = anchored_command_from_paths(
-                "opencode",
-                "/Users/my name/.bun/bin/opencode",
-                "/Users/my name/.bun/install/global/node_modules/opencode-ai/bin/opencode",
-            );
-            assert_eq!(
-                cmd.as_deref(),
-                Some("'/Users/my name/.bun/bin/opencode' upgrade || '/Users/my name/.bun/bin/bun' add -g opencode-ai@latest")
-            );
-        }
-
-        #[test]
-        fn hermes_uses_cli_update_anchor() {
-            // Hermes 自带 `hermes update`;锚定到命令行默认那处 CLI,避免 cc-switch 猜
-            // 系统 Python/pip 时撞上 Python >=3.11 或 pyenv shim 问题。
-            let cmd = anchored_command_from_paths(
-                "hermes",
-                "/usr/local/bin/hermes",
-                "/usr/local/bin/hermes",
-            );
-            assert_eq!(cmd.as_deref(), Some("/usr/local/bin/hermes update"));
-        }
-
-        #[test]
-        fn opencode_native_install_uses_cli_upgrade_without_package_fallback() {
-            // opencode install.sh 装到 ~/.opencode/bin（独立二进制、无同级 npm）：
-            // 不能锚定到 `<dir>/npm`（必失败），但可以锚定到 CLI 自身跑官方 upgrade。
-            let cmd = anchored_command_from_paths(
-                "opencode",
-                "/Users/me/.opencode/bin/opencode",
-                "/Users/me/.opencode/bin/opencode",
-            );
-            assert_eq!(
-                cmd.as_deref(),
-                Some("/Users/me/.opencode/bin/opencode upgrade")
-            );
-        }
-
-        #[test]
-        fn go_bin_opencode_uses_cli_upgrade_without_package_fallback() {
-            // ~/go/bin 同理：无同级 npm，但 OpenCode 官方 upgrade 可由 CLI 自己处理。
-            let cmd = anchored_command_from_paths(
-                "opencode",
-                "/Users/me/go/bin/opencode",
-                "/Users/me/go/bin/opencode",
-            );
-            assert_eq!(cmd.as_deref(), Some("/Users/me/go/bin/opencode upgrade"));
         }
 
         #[test]
@@ -4546,26 +4079,26 @@ mod tests {
         fn brew_path_with_space_is_quoted() {
             // brew 分支用 `<bin_path 同目录>/brew`,目录含空格时同样要引号包裹。
             let cmd = anchored_command_from_paths(
-                "gemini",
-                "/opt/my brew/bin/gemini",
-                "/opt/my brew/Cellar/gemini-cli/0.13.0/libexec/lib/node_modules/@google/gemini-cli/dist/index.js",
+                "codex",
+                "/opt/my brew/bin/codex",
+                "/opt/my brew/Cellar/codex/1.2.3/bin/codex",
             );
             assert_eq!(
                 cmd.as_deref(),
-                Some("'/opt/my brew/bin/brew' upgrade gemini-cli")
+                Some("'/opt/my brew/bin/brew' upgrade codex")
             );
         }
 
         #[test]
         fn brew_formula_extraction() {
             assert_eq!(
-                brew_formula_from_path("/opt/homebrew/Cellar/gemini-cli/0.13.0/bin/gemini")
+                brew_formula_from_path("/opt/homebrew/Cellar/codex/1.2.3/bin/codex")
                     .as_deref(),
-                Some("gemini-cli")
+                Some("codex")
             );
             // node 全局包不在 Cellar 下 → 不是 formula。
             assert_eq!(
-                brew_formula_from_path("/opt/homebrew/lib/node_modules/openclaw/openclaw.mjs"),
+                brew_formula_from_path("/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js"),
                 None
             );
             assert_eq!(
@@ -4585,7 +4118,7 @@ mod tests {
             assert_eq!(sibling_bin("", "brew"), None);
             // 含 `/` 即可拼出绝对路径——这是常规路径。
             assert_eq!(
-                sibling_bin("/opt/homebrew/bin/gemini", "brew").as_deref(),
+                sibling_bin("/opt/homebrew/bin/codex", "brew").as_deref(),
                 Some("/opt/homebrew/bin/brew")
             );
         }
@@ -4593,29 +4126,29 @@ mod tests {
         #[test]
         fn default_install_prefers_path_default() {
             let installs = vec![
-                inst("/opt/homebrew/bin/openclaw", false),
-                inst("/Users/me/.nvm/versions/node/v22/bin/openclaw", true),
+                inst("/opt/homebrew/bin/codex", false),
+                inst("/Users/me/.nvm/versions/node/v22/bin/codex", true),
             ];
             assert_eq!(
                 default_install(&installs).map(|i| i.path.as_str()),
-                Some("/Users/me/.nvm/versions/node/v22/bin/openclaw")
+                Some("/Users/me/.nvm/versions/node/v22/bin/codex")
             );
         }
 
         #[test]
         fn default_install_falls_back_to_sole_entry() {
-            let installs = vec![inst("/opt/homebrew/bin/gemini", false)];
+            let installs = vec![inst("/opt/homebrew/bin/codex", false)];
             assert_eq!(
                 default_install(&installs).map(|i| i.path.as_str()),
-                Some("/opt/homebrew/bin/gemini")
+                Some("/opt/homebrew/bin/codex")
             );
         }
 
         #[test]
         fn default_install_none_when_ambiguous() {
             let installs = vec![
-                inst("/opt/homebrew/bin/openclaw", false),
-                inst("/Users/me/.nvm/versions/node/v22/bin/openclaw", false),
+                inst("/opt/homebrew/bin/codex", false),
+                inst("/Users/me/.nvm/versions/node/v22/bin/codex", false),
             ];
             assert!(default_install(&installs).is_none());
         }
@@ -4702,8 +4235,8 @@ mod tests {
             );
             // 无噪音时取第一行。
             assert_eq!(
-                first_abs_path_line("/opt/homebrew/bin/gemini\n"),
-                Some("/opt/homebrew/bin/gemini")
+                first_abs_path_line("/opt/homebrew/bin/codex\n"),
+                Some("/opt/homebrew/bin/codex")
             );
             // 输出里没有任何绝对路径 → None。
             assert_eq!(first_abs_path_line("welcome\nbye\n"), None);
@@ -4770,45 +4303,11 @@ mod tests {
         }
 
         #[test]
-        fn opencode_install_prefers_native_with_npm_fallback() {
-            // SST 自家 install.sh 与 claude 同形态:bash 脚本、网络下载、装到 ~/.opencode/bin。
-            let cmd = install_command_for("opencode");
-            assert!(
-                cmd.contains("https://opencode.ai/install"),
-                "should include official installer URL: {cmd}"
-            );
-            assert!(
-                cmd.contains("opencode-ai@latest"),
-                "should keep npm package as fallback: {cmd}"
-            );
-            assert!(cmd.contains("||"), "should chain fallback: {cmd}");
-            assert!(
-                !cmd.split("||").next().unwrap_or_default().contains('|'),
-                "native installer should avoid pipe: {cmd}"
-            );
-        }
-
-        #[test]
         fn codex_install_keeps_static_npm() {
             // OpenAI 暂无独立 native installer,保持原裸 npm,不引入兜底链(无东西可兜底)。
             let cmd = install_command_for("codex");
             assert_eq!(cmd, "npm i -g @openai/codex@latest");
             assert!(!cmd.contains("||"));
-        }
-
-        #[test]
-        fn gemini_install_keeps_static_npm() {
-            // Google 文档同时支持 brew/npm,但本表保持与 update fallback 一致的 npm。
-            // 用户若已装 brew gemini-cli,update 路径的锚定会识别 formula → brew upgrade,
-            // 所以 install 端不强行替用户决策"用 brew 还是 npm"。
-            let cmd = install_command_for("gemini");
-            assert_eq!(cmd, "npm i -g @google/gemini-cli@latest");
-        }
-
-        #[test]
-        fn openclaw_install_keeps_static_npm() {
-            let cmd = install_command_for("openclaw");
-            assert_eq!(cmd, "npm i -g openclaw@latest");
         }
 
         #[test]
@@ -4822,54 +4321,6 @@ mod tests {
                 "npm i -g @openai/codex@latest"
             );
             assert!(!static_fallback_command("codex").contains("codex update"));
-            assert_eq!(
-                static_fallback_command("gemini"),
-                "npm i -g @google/gemini-cli@latest"
-            );
-            assert!(!static_fallback_command("gemini").contains("gemini update"));
-            assert_eq!(
-                static_fallback_command("opencode"),
-                "opencode upgrade || npm i -g opencode-ai@latest"
-            );
-            assert_eq!(
-                static_fallback_command("openclaw"),
-                "openclaw update --yes || npm i -g openclaw@latest"
-            );
-        }
-
-        #[test]
-        fn hermes_install_uses_official_installer() {
-            // Hermes 官方 installer 会处理 Python 3.11+/uv 等运行时;不要再从 cc-switch
-            // 里走 `python3 || python` pip 链。
-            let cmd = install_command_for("hermes");
-            assert!(
-                cmd.starts_with("bash -c 'tmp=$(mktemp) && curl -fsSL ")
-                    && cmd.contains("install.sh -o $tmp && bash $tmp"),
-                "should use official installer: {cmd}"
-            );
-            assert!(
-                !cmd.contains('|') && !cmd.contains("python") && !cmd.contains("pip"),
-                "should not depend on pipefail or system Python/pip: {cmd}"
-            );
-        }
-
-        #[test]
-        fn hermes_update_fallback_uses_cli_update_then_installer() {
-            // 锚定失败时也不回退 pip:先让 PATH 上的 hermes 自更新,找不到/失败再跑官方
-            // installer。这样 pyenv 的 `python` shim 不会参与错误路径。
-            let cmd = static_fallback_command("hermes");
-            assert!(
-                cmd.starts_with("hermes update || bash -c 'tmp=$(mktemp) && curl -fsSL "),
-                "should try CLI update before official installer: {cmd}"
-            );
-            let fallback = cmd
-                .split_once("||")
-                .map(|(_, fallback)| fallback)
-                .expect("update should include installer fallback");
-            assert!(
-                !fallback.contains('|') && !cmd.contains("python") && !cmd.contains("pip"),
-                "should not depend on pipefail or system Python/pip: {cmd}"
-            );
         }
     }
 
@@ -4921,52 +4372,6 @@ mod tests {
             assert!(!is_valid_wsl_distro_name("distro with spaces"));
             assert!(!is_valid_wsl_distro_name(&"a".repeat(65)));
         }
-    }
-
-    #[test]
-    fn opencode_extra_search_paths_includes_install_and_fallback_dirs() {
-        let home = PathBuf::from("/home/tester");
-        let install_dir = Some(std::ffi::OsString::from("/custom/opencode/bin"));
-        let xdg_bin_dir = Some(std::ffi::OsString::from("/xdg/bin"));
-        let gopath =
-            std::env::join_paths([PathBuf::from("/go/path1"), PathBuf::from("/go/path2")]).ok();
-
-        let paths = opencode_extra_search_paths(&home, install_dir, xdg_bin_dir, gopath);
-
-        assert_eq!(paths[0], PathBuf::from("/custom/opencode/bin"));
-        assert_eq!(paths[1], PathBuf::from("/xdg/bin"));
-        assert!(paths.contains(&PathBuf::from("/home/tester/bin")));
-        assert!(paths.contains(&PathBuf::from("/home/tester/.opencode/bin")));
-        assert!(paths.contains(&PathBuf::from("/home/tester/.bun/bin")));
-        assert!(paths.contains(&PathBuf::from("/home/tester/go/bin")));
-        assert!(paths.contains(&PathBuf::from("/go/path1/bin")));
-        assert!(paths.contains(&PathBuf::from("/go/path2/bin")));
-    }
-
-    #[test]
-    fn opencode_extra_search_paths_deduplicates_repeated_entries() {
-        let home = PathBuf::from("/home/tester");
-        let same_dir = Some(std::ffi::OsString::from("/same/path"));
-
-        let paths = opencode_extra_search_paths(&home, same_dir.clone(), same_dir, None);
-
-        let count = paths
-            .iter()
-            .filter(|path| path.as_path() == Path::new("/same/path"))
-            .count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn opencode_extra_search_paths_deduplicates_bun_default_dir() {
-        let home = PathBuf::from("/home/tester");
-        let paths = opencode_extra_search_paths(&home, None, None, None);
-
-        let count = paths
-            .iter()
-            .filter(|path| path.as_path() == Path::new("/home/tester/.bun/bin"))
-            .count();
-        assert_eq!(count, 1);
     }
 
     #[test]
@@ -5042,23 +4447,23 @@ mod tests {
     #[test]
     fn tool_executable_candidates_non_windows_uses_plain_binary_name() {
         let dir = PathBuf::from("/usr/local/bin");
-        let candidates = tool_executable_candidates("opencode", &dir);
+        let candidates = tool_executable_candidates("codex", &dir);
 
-        assert_eq!(candidates, vec![PathBuf::from("/usr/local/bin/opencode")]);
+        assert_eq!(candidates, vec![PathBuf::from("/usr/local/bin/codex")]);
     }
 
     #[cfg(target_os = "windows")]
     #[test]
     fn tool_executable_candidates_windows_includes_cmd_exe_and_plain_name() {
         let dir = PathBuf::from("C:\\tools");
-        let candidates = tool_executable_candidates("opencode", &dir);
+        let candidates = tool_executable_candidates("codex", &dir);
 
         assert_eq!(
             candidates,
             vec![
-                PathBuf::from("C:\\tools\\opencode.cmd"),
-                PathBuf::from("C:\\tools\\opencode.exe"),
-                PathBuf::from("C:\\tools\\opencode"),
+                PathBuf::from("C:\\tools\\codex.cmd"),
+                PathBuf::from("C:\\tools\\codex.exe"),
+                PathBuf::from("C:\\tools\\codex"),
             ]
         );
     }

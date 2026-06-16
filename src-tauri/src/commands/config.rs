@@ -47,7 +47,7 @@ fn validate_common_config_snippet(app_type: &str, snippet: &str) -> Result<(), S
     }
 
     match app_type {
-        "claude" | "gemini" | "omo" | "omo-slim" => {
+        "claude" => {
             serde_json::from_str::<serde_json::Value>(snippet)
                 .map_err(invalid_json_format_error)?;
         }
@@ -90,42 +90,6 @@ pub async fn get_config_status(
 
             Ok(ConfigStatus { exists, path })
         }
-        AppType::Gemini => {
-            let env_path = crate::gemini_config::get_gemini_env_path();
-            let exists = env_path.exists();
-            let path = crate::gemini_config::get_gemini_dir()
-                .to_string_lossy()
-                .to_string();
-
-            Ok(ConfigStatus { exists, path })
-        }
-        AppType::OpenCode => {
-            let config_path = crate::opencode_config::get_opencode_config_path();
-            let exists = config_path.exists();
-            let path = crate::opencode_config::get_opencode_dir()
-                .to_string_lossy()
-                .to_string();
-
-            Ok(ConfigStatus { exists, path })
-        }
-        AppType::OpenClaw => {
-            let config_path = crate::openclaw_config::get_openclaw_config_path();
-            let exists = config_path.exists();
-            let path = crate::openclaw_config::get_openclaw_dir()
-                .to_string_lossy()
-                .to_string();
-
-            Ok(ConfigStatus { exists, path })
-        }
-        AppType::Hermes => {
-            let config_path = crate::hermes_config::get_hermes_config_path();
-            let exists = config_path.exists();
-            let path = crate::hermes_config::get_hermes_dir()
-                .to_string_lossy()
-                .to_string();
-
-            Ok(ConfigStatus { exists, path })
-        }
     }
 }
 
@@ -142,10 +106,6 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
             crate::claude_desktop_config::get_config_library_path().map_err(|e| e.to_string())?
         }
         AppType::Codex => codex_config::get_codex_config_dir(),
-        AppType::Gemini => crate::gemini_config::get_gemini_dir(),
-        AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
-        AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
-        AppType::Hermes => crate::hermes_config::get_hermes_dir(),
     };
 
     Ok(dir.to_string_lossy().to_string())
@@ -159,10 +119,6 @@ pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, 
             crate::claude_desktop_config::get_config_library_path().map_err(|e| e.to_string())?
         }
         AppType::Codex => codex_config::get_codex_config_dir(),
-        AppType::Gemini => crate::gemini_config::get_gemini_dir(),
-        AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
-        AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
-        AppType::Hermes => crate::hermes_config::get_hermes_dir(),
     };
 
     if !config_dir.exists() {
@@ -291,7 +247,7 @@ pub async fn set_common_config_snippet(
 
     let value = if is_cleared { None } else { Some(snippet) };
 
-    if matches!(app_type.as_str(), "claude" | "codex" | "gemini") {
+    if matches!(app_type.as_str(), "claude" | "codex") {
         if let Some(legacy_snippet) = old_snippet
             .as_deref()
             .filter(|value| !value.trim().is_empty())
@@ -315,7 +271,7 @@ pub async fn set_common_config_snippet(
         .set_config_snippet_cleared(&app_type, is_cleared)
         .map_err(|e| e.to_string())?;
 
-    if matches!(app_type.as_str(), "claude" | "codex" | "gemini") {
+    if matches!(app_type.as_str(), "claude" | "codex") {
         let app = AppType::from_str(&app_type).map_err(|e| e.to_string())?;
         crate::services::provider::ProviderService::sync_current_provider_for_app(
             state.inner(),
@@ -324,32 +280,6 @@ pub async fn set_common_config_snippet(
         .map_err(|e| e.to_string())?;
     }
 
-    if app_type == "omo"
-        && state
-            .db
-            .get_current_omo_provider("opencode", "omo")
-            .map_err(|e| e.to_string())?
-            .is_some()
-    {
-        crate::services::OmoService::write_config_to_file(
-            state.inner(),
-            &crate::services::omo::STANDARD,
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    if app_type == "omo-slim"
-        && state
-            .db
-            .get_current_omo_provider("opencode", "omo-slim")
-            .map_err(|e| e.to_string())?
-            .is_some()
-    {
-        crate::services::OmoService::write_config_to_file(
-            state.inner(),
-            &crate::services::omo::SLIM,
-        )
-        .map_err(|e| e.to_string())?;
-    }
     Ok(())
 }
 

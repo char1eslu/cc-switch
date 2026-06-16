@@ -7,7 +7,6 @@
 //! 支持从客户端请求中提取 Session ID，用于关联同一对话的多个请求：
 //! - Claude: 从 `metadata.user_id` (格式: `user_xxx_session_yyy`) 或 `metadata.session_id` 提取
 //! - Codex: 从 headers 中的 `session_id` / `x-session-id` 或 `metadata.session_id` 提取
-//! - 其他: 生成新的 UUID
 
 use axum::http::HeaderMap;
 use std::time::Instant;
@@ -23,10 +22,6 @@ pub enum ClientFormat {
     Codex,
     /// OpenAI Chat Completions API (/v1/chat/completions)
     OpenAI,
-    /// Gemini API (/v1beta/models/*/generateContent)
-    Gemini,
-    /// Gemini CLI API (/v1internal/models/*/generateContent)
-    GeminiCli,
     /// 未知格式
     Unknown,
 }
@@ -41,17 +36,6 @@ impl ClientFormat {
             ClientFormat::Codex
         } else if path.contains("/v1/chat/completions") {
             ClientFormat::OpenAI
-        } else if path.contains("/v1internal/") && path.contains("generateContent") {
-            // Gemini CLI 使用 /v1internal/ 路径
-            ClientFormat::GeminiCli
-        } else if (path.contains("/v1beta/") || path.contains("/v1/"))
-            && path.contains("generateContent")
-        {
-            // Gemini API 使用 /v1beta/ 或 /v1/ 路径
-            ClientFormat::Gemini
-        } else if path.contains("generateContent") {
-            // 通用 Gemini 端点
-            ClientFormat::Gemini
         } else {
             ClientFormat::Unknown
         }
@@ -77,11 +61,6 @@ impl ClientFormat {
             return ClientFormat::Codex;
         }
 
-        // Gemini 格式特征: contents 数组
-        if body.get("contents").is_some() {
-            return ClientFormat::Gemini;
-        }
-
         ClientFormat::Unknown
     }
 
@@ -91,8 +70,6 @@ impl ClientFormat {
             ClientFormat::Claude => "claude",
             ClientFormat::Codex => "codex",
             ClientFormat::OpenAI => "openai",
-            ClientFormat::Gemini => "gemini",
-            ClientFormat::GeminiCli => "gemini_cli",
             ClientFormat::Unknown => "unknown",
         }
     }
@@ -409,22 +386,6 @@ mod tests {
     }
 
     #[test]
-    fn test_client_format_from_path_gemini() {
-        assert_eq!(
-            ClientFormat::from_path("/v1beta/models/gemini-pro:generateContent"),
-            ClientFormat::Gemini
-        );
-    }
-
-    #[test]
-    fn test_client_format_from_path_gemini_cli() {
-        assert_eq!(
-            ClientFormat::from_path("/v1internal/models/gemini-pro:generateContent"),
-            ClientFormat::GeminiCli
-        );
-    }
-
-    #[test]
     fn test_client_format_from_body_claude() {
         let body = json!({
             "model": "claude-3-5-sonnet",
@@ -440,14 +401,6 @@ mod tests {
             "input": "Write a function"
         });
         assert_eq!(ClientFormat::from_body(&body), ClientFormat::Codex);
-    }
-
-    #[test]
-    fn test_client_format_from_body_gemini() {
-        let body = json!({
-            "contents": [{"parts": [{"text": "Hello"}]}]
-        });
-        assert_eq!(ClientFormat::from_body(&body), ClientFormat::Gemini);
     }
 
     #[test]
@@ -490,8 +443,6 @@ mod tests {
         assert_eq!(ClientFormat::Claude.as_str(), "claude");
         assert_eq!(ClientFormat::Codex.as_str(), "codex");
         assert_eq!(ClientFormat::OpenAI.as_str(), "openai");
-        assert_eq!(ClientFormat::Gemini.as_str(), "gemini");
-        assert_eq!(ClientFormat::GeminiCli.as_str(), "gemini_cli");
         assert_eq!(ClientFormat::Unknown.as_str(), "unknown");
     }
 

@@ -64,9 +64,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS mcp_servers (
             id TEXT PRIMARY KEY, name TEXT NOT NULL, server_config TEXT NOT NULL,
             description TEXT, homepage TEXT, docs TEXT, tags TEXT NOT NULL DEFAULT '[]',
-            enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0,
-            enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
-            enabled_hermes BOOLEAN NOT NULL DEFAULT 0
+            enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0
         )",
             [],
         )
@@ -92,9 +90,6 @@ impl Database {
             readme_url TEXT,
             enabled_claude BOOLEAN NOT NULL DEFAULT 0,
             enabled_codex BOOLEAN NOT NULL DEFAULT 0,
-            enabled_gemini BOOLEAN NOT NULL DEFAULT 0,
-            enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
-            enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
             installed_at INTEGER NOT NULL DEFAULT 0,
             content_hash TEXT,
             updated_at INTEGER NOT NULL DEFAULT 0
@@ -120,9 +115,9 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 8. Proxy Config 表（三行结构，app_type 主键）
+        // 8. Proxy Config 表（Claude/Codex 两行结构，app_type 主键）
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
-            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -136,7 +131,7 @@ impl Database {
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 初始化三行数据（每应用不同默认值）
+        // 初始化两行数据（每应用不同默认值）
         //
         // 兼容旧数据库：
         // - 老版本 proxy_config 是单例表（没有 app_type 列），此时不能执行三行 seed insert；
@@ -157,15 +152,6 @@ impl Database {
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests)
                 VALUES ('codex', 3, 60, 120, 600, 4, 2, 60, 0.6, 10)",
-                [],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
-            conn.execute(
-                "INSERT OR IGNORE INTO proxy_config (app_type, max_retries,
-                streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
-                circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
-                circuit_error_rate_threshold, circuit_min_requests)
-                VALUES ('gemini', 5, 60, 120, 600, 4, 2, 60, 0.6, 10)",
                 [],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
@@ -405,7 +391,7 @@ impl Database {
                         Self::set_user_version(conn, 3)?;
                     }
                     3 => {
-                        log::info!("迁移数据库从 v3 到 v4（OpenCode 支持）");
+                        log::info!("迁移数据库从 v3 到 v4（旧扩展列迁移已停用）");
                         Self::migrate_v3_to_v4(conn)?;
                         Self::set_user_version(conn, 4)?;
                     }
@@ -435,7 +421,7 @@ impl Database {
                         Self::set_user_version(conn, 9)?;
                     }
                     9 => {
-                        log::info!("迁移数据库从 v9 到 v10（添加 Hermes Agent 支持）");
+                        log::info!("迁移数据库从 v9 到 v10（旧扩展列迁移已停用）");
                         Self::migrate_v9_to_v10(conn)?;
                         Self::set_user_version(conn, 10)?;
                     }
@@ -500,13 +486,6 @@ impl Database {
             "enabled_codex",
             "BOOLEAN NOT NULL DEFAULT 0",
         )?;
-        Self::add_column_if_missing(
-            conn,
-            "mcp_servers",
-            "enabled_gemini",
-            "BOOLEAN NOT NULL DEFAULT 0",
-        )?;
-
         // prompts 表
         Self::add_column_if_missing(conn, "prompts", "description", "TEXT")?;
         Self::add_column_if_missing(conn, "prompts", "enabled", "BOOLEAN NOT NULL DEFAULT 1")?;
@@ -743,25 +722,12 @@ impl Database {
                 old_cb.3,
                 old_cb.4,
             ),
-            (
-                "gemini",
-                get_bool("proxy_takeover_gemini"),
-                get_bool("auto_failover_enabled_gemini"),
-                5,
-                old_config.4,
-                old_config.5,
-                old_cb.0,
-                old_cb.1,
-                old_cb.2,
-                old_cb.3,
-                old_cb.4,
-            ),
         ];
 
         // 创建新表
         conn.execute("DROP TABLE IF EXISTS proxy_config_new", [])?;
         conn.execute("CREATE TABLE proxy_config_new (
-            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -799,7 +765,7 @@ impl Database {
             [],
         )?;
 
-        log::info!("proxy_config 已迁移为三行结构");
+        log::info!("proxy_config 已迁移为 Claude/Codex 两行结构");
         Ok(())
     }
 
@@ -807,7 +773,7 @@ impl Database {
     fn migrate_skills_table(conn: &Connection) -> Result<(), AppError> {
         // v3 结构（统一管理架构）已经是更高版本的 skills 表：
         // - 主键为 id
-        // - 包含 enabled_claude / enabled_codex / enabled_gemini 等列
+        // - 包含 enabled_claude / enabled_codex 等列
         // 在这种情况下，不应再执行 v1 -> v2 的迁移逻辑，否则会因列不匹配而失败。
         if Self::has_column(conn, "skills", "enabled_claude")?
             || Self::has_column(conn, "skills", "id")?
@@ -890,7 +856,7 @@ impl Database {
     /// v2 -> v3 迁移：Skills 统一管理架构
     ///
     /// 将 skills 表从 (directory, app_type) 复合主键结构迁移到统一的 id 主键结构，
-    /// 支持三应用启用标志（enabled_claude, enabled_codex, enabled_gemini）。
+    /// 支持 Claude/Codex 启用标志（enabled_claude, enabled_codex）。
     ///
     /// 迁移策略：
     /// 1. 旧数据库只存储安装记录，真正的 skill 文件在文件系统
@@ -958,7 +924,6 @@ impl Database {
                 readme_url TEXT,
                 enabled_claude BOOLEAN NOT NULL DEFAULT 0,
                 enabled_codex BOOLEAN NOT NULL DEFAULT 0,
-                enabled_gemini BOOLEAN NOT NULL DEFAULT 0,
                 installed_at INTEGER NOT NULL DEFAULT 0
             )",
             [],
@@ -973,27 +938,9 @@ impl Database {
         Ok(())
     }
 
-    /// v3 -> v4 迁移：添加 OpenCode 支持
-    ///
-    /// 为 mcp_servers 和 skills 表添加 enabled_opencode 列。
-    fn migrate_v3_to_v4(conn: &Connection) -> Result<(), AppError> {
-        // 为 mcp_servers 表添加 enabled_opencode 列
-        Self::add_column_if_missing(
-            conn,
-            "mcp_servers",
-            "enabled_opencode",
-            "BOOLEAN NOT NULL DEFAULT 0",
-        )?;
-
-        // 为 skills 表添加 enabled_opencode 列
-        Self::add_column_if_missing(
-            conn,
-            "skills",
-            "enabled_opencode",
-            "BOOLEAN NOT NULL DEFAULT 0",
-        )?;
-
-        log::info!("v3 -> v4 迁移完成：已添加 OpenCode 支持");
+    /// v3 -> v4 迁移：历史扩展列已移除，保留版本跳转。
+    fn migrate_v3_to_v4(_conn: &Connection) -> Result<(), AppError> {
+        log::info!("v3 -> v4 迁移完成：旧扩展列已停用");
         Ok(())
     }
 
@@ -1190,26 +1137,9 @@ impl Database {
         Ok(())
     }
 
-    /// v9 -> v10 迁移：添加 Hermes Agent 支持
-    fn migrate_v9_to_v10(conn: &Connection) -> Result<(), AppError> {
-        Self::add_column_if_missing(
-            conn,
-            "mcp_servers",
-            "enabled_hermes",
-            "BOOLEAN NOT NULL DEFAULT 0",
-        )?;
-
-        // skills table may not exist in databases migrated from very old versions
-        if Self::table_exists(conn, "skills")? {
-            Self::add_column_if_missing(
-                conn,
-                "skills",
-                "enabled_hermes",
-                "BOOLEAN NOT NULL DEFAULT 0",
-            )?;
-        }
-
-        log::info!("v9 -> v10 迁移完成：已添加 Hermes Agent 支持");
+    /// v9 -> v10 迁移：历史扩展列已移除，保留版本跳转。
+    fn migrate_v9_to_v10(_conn: &Connection) -> Result<(), AppError> {
+        log::info!("v9 -> v10 迁移完成：旧扩展列已停用");
         Ok(())
     }
 
@@ -1572,91 +1502,6 @@ impl Database {
             ("gpt-4.1", "GPT-4.1", "2", "8", "0.50", "0"),
             ("gpt-4.1-mini", "GPT-4.1 Mini", "0.40", "1.60", "0.10", "0"),
             ("gpt-4.1-nano", "GPT-4.1 Nano", "0.10", "0.40", "0.025", "0"),
-            // Gemini 3.5 系列
-            (
-                "gemini-3.5-flash",
-                "Gemini 3.5 Flash",
-                "1.50",
-                "9.00",
-                "0.15",
-                "0",
-            ),
-            // Gemini 3.1 系列
-            (
-                "gemini-3.1-pro-preview",
-                "Gemini 3.1 Pro Preview",
-                "2",
-                "12",
-                "0.20",
-                "0",
-            ),
-            (
-                "gemini-3.1-flash-lite",
-                "Gemini 3.1 Flash Lite",
-                "0.25",
-                "1.50",
-                "0.025",
-                "0",
-            ),
-            (
-                "gemini-3.1-flash-lite-preview",
-                "Gemini 3.1 Flash Lite Preview",
-                "0.25",
-                "1.50",
-                "0.025",
-                "0",
-            ),
-            // Gemini 3 系列
-            (
-                "gemini-3-pro-preview",
-                "Gemini 3 Pro Preview",
-                "2",
-                "12",
-                "0.2",
-                "0",
-            ),
-            (
-                "gemini-3-flash-preview",
-                "Gemini 3 Flash Preview",
-                "0.5",
-                "3",
-                "0.05",
-                "0",
-            ),
-            // Gemini 2.5 系列
-            (
-                "gemini-2.5-pro",
-                "Gemini 2.5 Pro",
-                "1.25",
-                "10",
-                "0.125",
-                "0",
-            ),
-            (
-                "gemini-2.5-flash",
-                "Gemini 2.5 Flash",
-                "0.3",
-                "2.5",
-                "0.03",
-                "0",
-            ),
-            (
-                "gemini-2.5-flash-lite",
-                "Gemini 2.5 Flash Lite",
-                "0.10",
-                "0.40",
-                "0.01",
-                "0",
-            ),
-            // Gemini 2.0 系列
-            (
-                "gemini-2.0-flash",
-                "Gemini 2.0 Flash",
-                "0.10",
-                "0.40",
-                "0.025",
-                "0",
-            ),
             // StepFun 系列
             (
                 "step-3.7-flash",
