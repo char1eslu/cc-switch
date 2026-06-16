@@ -440,10 +440,9 @@ pub fn repair_session(path: &Path, session_id: &str) -> Result<CodexOperationRep
     let now_index = iso_index(now);
     let title = meta
         .title
-        .as_deref()
+        .clone()
         .or_else(|| meta.project_dir.as_deref().and_then(path_basename))
-        .unwrap_or(session_id)
-        .to_string();
+        .unwrap_or_else(|| session_id.to_string());
 
     let state_db = state_db_path(&codex_home);
     if state_db.exists() {
@@ -555,13 +554,12 @@ pub fn branch_session(
 
     let new_session_id = Uuid::new_v4().to_string();
     let project_dir = meta.project_dir.clone().unwrap_or_default();
-    let title = format!(
-        "Branch: {}",
-        meta.title
-            .as_deref()
-            .or_else(|| path_basename(&project_dir))
-            .unwrap_or(session_id)
-    );
+    let base_title = meta
+        .title
+        .clone()
+        .or_else(|| path_basename(&project_dir))
+        .unwrap_or_else(|| session_id.to_string());
+    let title = format!("Branch: {base_title}");
     let new_path = codex_home
         .join("sessions")
         .join(now.format("%Y/%m/%d").to_string())
