@@ -133,6 +133,18 @@ export const sessionsApi = {
     return await invoke("trash_session", { providerId, sessionId, sourcePath });
   },
 
+  async searchCodexRaw(options: {
+    query: string;
+    projectDir?: string | null;
+  }): Promise<string[]> {
+    const { query, projectDir } = options;
+    return await invoke("search_codex_sessions_raw", { query, projectDir });
+  },
+
+  async revealPath(path: string): Promise<boolean> {
+    return await invoke("reveal_session_path", { path });
+  },
+
   async listCodexBackups(includeTrash = false): Promise<CodexBackupFile[]> {
     return await invoke("list_codex_backups", { includeTrash });
   },

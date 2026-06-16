@@ -1236,6 +1236,8 @@ pub fn run() {
             commands::trim_session,
             commands::branch_session,
             commands::trash_session,
+            commands::search_codex_sessions_raw,
+            commands::reveal_session_path,
             commands::list_codex_backups,
             commands::restore_codex_backup,
             commands::move_codex_backup_to_trash,

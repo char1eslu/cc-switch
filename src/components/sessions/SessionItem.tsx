@@ -1,4 +1,4 @@
-import { ChevronRight, Clock } from "lucide-react";
+import { ChevronRight, Clock, FolderOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -103,7 +103,22 @@ export function SessionItem({
               ? formatRelativeTime(lastActive, t)
               : t("common.unknown")}
           </span>
+          {session.codexStatus && (
+            <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[10px]">
+              {session.codexStatus}
+            </span>
+          )}
         </div>
+        {session.projectDir && (
+          <div className="mt-1 flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
+            <FolderOpen className="size-3 shrink-0" />
+            <span className="truncate font-mono">
+              {searchQuery
+                ? highlightText(session.projectDir, searchQuery)
+                : session.projectDir}
+            </span>
+          </div>
+        )}
       </button>
     </div>
   );

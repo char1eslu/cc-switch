@@ -8,11 +8,13 @@ import {
   Copy,
   RefreshCw,
   Search,
+  FileSearch,
   Play,
   Trash2,
   MessageSquare,
   Clock,
   FolderOpen,
+  FolderSearch,
   FileText,
   X,
   CheckSquare,
@@ -76,6 +78,15 @@ import {
 
 type ProviderFilter = "all" | "codex" | "claude";
 
+interface ProjectSummary {
+  path: string;
+  name: string;
+  totalCount: number;
+  repairCount: number;
+  availableCount: number;
+  latestAt: number;
+}
+
 export function SessionManagerPage({ appId }: { appId: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -91,11 +102,14 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [deleteTargets, setDeleteTargets] = useState<SessionMeta[] | null>(
     null,
   );
-  const [moveTarget, setMoveTarget] = useState<SessionMeta | null>(null);
+  const [moveTargets, setMoveTargets] = useState<SessionMeta[] | null>(null);
   const [moveProjectDir, setMoveProjectDir] = useState("");
   const [isMoving, setIsMoving] = useState(false);
   const [isRepairing, setIsRepairing] = useState(false);
   const [isTrashing, setIsTrashing] = useState(false);
+  const [isDeepSearching, setIsDeepSearching] = useState(false);
+  const [deepSearchIds, setDeepSearchIds] = useState<Set<string> | null>(null);
+  const [deepSearchQuery, setDeepSearchQuery] = useState("");
   const [backupDialogOpen, setBackupDialogOpen] = useState(false);
   const [codexBackups, setCodexBackups] = useState<
     Awaited<ReturnType<typeof sessionsApi.listCodexBackups>>
@@ -118,17 +132,125 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>(
     appId as ProviderFilter,
   );
+  const [projectFilter, setProjectFilter] = useState("all");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
+  const codexProjectSummaries = useMemo<ProjectSummary[]>(() => {
+    const grouped = new Map<string, ProjectSummary>();
+    sessions.forEach((session) => {
+      if (session.providerId !== "codex") return;
+      const path = session.projectDir?.trim();
+      if (!path) return;
+      const current =
+        grouped.get(path) ??
+        ({
+          path,
+          name: getBaseName(path) || path,
+          totalCount: 0,
+          repairCount: 0,
+          availableCount: 0,
+          latestAt: 0,
+        } satisfies ProjectSummary);
+      current.totalCount += 1;
+      if (session.needsRepair) {
+        current.repairCount += 1;
+      }
+      if (
+        session.archived !== true &&
+        session.fileExists !== false &&
+        session.isInSessionIndex !== false
+      ) {
+        current.availableCount += 1;
+      }
+      current.latestAt = Math.max(
+        current.latestAt,
+        session.lastActiveAt ?? session.createdAt ?? 0,
+      );
+      grouped.set(path, current);
+    });
+
+    return Array.from(grouped.values()).sort((a, b) => {
+      if (b.latestAt !== a.latestAt) return b.latestAt - a.latestAt;
+      return a.name.localeCompare(b.name);
+    });
+  }, [sessions]);
+
+  const scopedSessions = useMemo(() => {
+    return sessions.filter((session) => {
+      if (providerFilter !== "all" && session.providerId !== providerFilter) {
+        return false;
+      }
+      if (projectFilter !== "all" && session.projectDir !== projectFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [sessions, providerFilter, projectFilter]);
 
   // 使用 FlexSearch 全文搜索
   const { search: searchSessions } = useSessionSearch({
     sessions,
     providerFilter,
+    projectFilter,
   });
 
-  const filteredSessions = useMemo(() => {
+  const metadataFilteredSessions = useMemo(() => {
     return searchSessions(search);
   }, [searchSessions, search]);
+
+  const filteredSessions = useMemo(() => {
+    const query = search.trim();
+    if (
+      !deepSearchIds ||
+      query.length < 3 ||
+      deepSearchQuery !== query ||
+      providerFilter === "claude"
+    ) {
+      return metadataFilteredSessions;
+    }
+
+    const byKey = new Map(
+      metadataFilteredSessions.map((session) => [
+        getSessionKey(session),
+        session,
+      ]),
+    );
+    scopedSessions
+      .filter(
+        (session) =>
+          session.providerId === "codex" &&
+          deepSearchIds.has(session.sessionId),
+      )
+      .forEach((session) => byKey.set(getSessionKey(session), session));
+
+    return Array.from(byKey.values()).sort((a, b) => {
+      const aTs = a.lastActiveAt ?? a.createdAt ?? 0;
+      const bTs = b.lastActiveAt ?? b.createdAt ?? 0;
+      return bTs - aTs;
+    });
+  }, [
+    deepSearchIds,
+    deepSearchQuery,
+    metadataFilteredSessions,
+    providerFilter,
+    scopedSessions,
+    search,
+  ]);
+
+  useEffect(() => {
+    if (
+      projectFilter !== "all" &&
+      !codexProjectSummaries.some((project) => project.path === projectFilter)
+    ) {
+      setProjectFilter("all");
+    }
+  }, [codexProjectSummaries, projectFilter]);
+
+  useEffect(() => {
+    if (providerFilter === "claude" && projectFilter !== "all") {
+      setProjectFilter("all");
+    }
+  }, [projectFilter, providerFilter]);
 
   useEffect(() => {
     if (filteredSessions.length === 0) {
@@ -253,6 +375,61 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     },
     [handleCopy, t],
   );
+
+  const handleRevealPath = useCallback(
+    async (path?: string | null) => {
+      if (!path) return;
+      try {
+        await sessionsApi.revealPath(path);
+      } catch (error) {
+        toast.error(
+          extractErrorMessage(error) ||
+            t("sessionManager.revealFailed", {
+              defaultValue: "无法定位文件",
+            }),
+        );
+      }
+    },
+    [t],
+  );
+
+  const clearSearch = useCallback(() => {
+    setSearch("");
+    setDeepSearchIds(null);
+    setDeepSearchQuery("");
+  }, []);
+
+  const handleDeepSearch = useCallback(async () => {
+    const query = search.trim();
+    if (query.length < 3 || providerFilter === "claude" || isDeepSearching) {
+      return;
+    }
+
+    setIsDeepSearching(true);
+    try {
+      const ids = await sessionsApi.searchCodexRaw({
+        query,
+        projectDir: projectFilter === "all" ? undefined : projectFilter,
+      });
+      setDeepSearchIds(new Set(ids));
+      setDeepSearchQuery(query);
+      toast.success(
+        t("sessionManager.deepSearchSuccess", {
+          defaultValue: "深度搜索命中 {{count}} 个 Codex 会话",
+          count: ids.length,
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.deepSearchFailed", {
+            defaultValue: "深度搜索失败",
+          }),
+      );
+    } finally {
+      setIsDeepSearching(false);
+    }
+  }, [isDeepSearching, projectFilter, providerFilter, search, t]);
 
   const handleResume = async () => {
     if (!selectedSession?.resumeCommand) return;
@@ -401,6 +578,28 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     [selectedSessions],
   );
 
+  const selectedCodexSessions = useMemo(
+    () =>
+      selectedSessions.filter(
+        (session) =>
+          session.providerId === "codex" && Boolean(session.sourcePath),
+      ),
+    [selectedSessions],
+  );
+
+  const selectedRepairableCodexSessions = useMemo(
+    () => selectedCodexSessions.filter((session) => session.needsRepair),
+    [selectedCodexSessions],
+  );
+
+  const selectedMovableCodexSessions = useMemo(
+    () =>
+      selectedCodexSessions.filter(
+        (session) => session.archived !== true && session.fileExists !== false,
+      ),
+    [selectedCodexSessions],
+  );
+
   const codexProjectDirs = useMemo(() => {
     const dirs = new Set<string>();
     sessions.forEach((session) => {
@@ -413,19 +612,28 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     return Array.from(dirs).sort((a, b) => a.localeCompare(b));
   }, [sessions]);
 
+  const moveTargetsList = moveTargets ?? [];
+  const moveTarget = moveTargetsList[0] ?? null;
   const moveProjectOptions = useMemo(() => {
-    const current = moveTarget?.projectDir?.trim();
-    return codexProjectDirs.filter((dir) => dir !== current);
-  }, [codexProjectDirs, moveTarget]);
+    if (moveTargetsList.length === 0) return [];
+    return codexProjectDirs.filter(
+      (dir) =>
+        !moveTargetsList.every((session) => session.projectDir?.trim() === dir),
+    );
+  }, [codexProjectDirs, moveTargetsList]);
 
   const trimmedMoveProjectDir = moveProjectDir.trim();
   const canMoveSelectedSession =
     selectedSession?.providerId === "codex" &&
-    Boolean(selectedSession.sourcePath);
+    Boolean(selectedSession.sourcePath) &&
+    selectedSession.archived !== true &&
+    selectedSession.fileExists !== false;
   const canConfirmMove =
-    Boolean(moveTarget?.sourcePath) &&
+    moveTargetsList.length > 0 &&
     trimmedMoveProjectDir.length > 0 &&
-    trimmedMoveProjectDir !== moveTarget?.projectDir?.trim() &&
+    moveTargetsList.some(
+      (session) => session.projectDir?.trim() !== trimmedMoveProjectDir,
+    ) &&
     !isMoving;
 
   useEffect(() => {
@@ -494,43 +702,85 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
   const openMoveDialog = (session: SessionMeta) => {
     if (session.providerId !== "codex" || !session.sourcePath) return;
-    setMoveTarget(session);
+    setMoveTargets([session]);
+    setMoveProjectDir("");
+  };
+
+  const openBatchMoveDialog = () => {
+    if (selectedMovableCodexSessions.length === 0) return;
+    setMoveTargets(selectedMovableCodexSessions);
     setMoveProjectDir("");
   };
 
   const closeMoveDialog = () => {
     if (isMoving) return;
-    setMoveTarget(null);
+    setMoveTargets(null);
     setMoveProjectDir("");
   };
 
   const handleMoveConfirm = async () => {
-    if (!moveTarget?.sourcePath || !canConfirmMove) return;
+    if (!canConfirmMove) return;
+
+    const targets = moveTargetsList.filter(
+      (session) =>
+        session.sourcePath &&
+        session.projectDir?.trim() !== trimmedMoveProjectDir,
+    );
+    if (targets.length === 0) return;
 
     setIsMoving(true);
     try {
-      await sessionsApi.move({
-        providerId: moveTarget.providerId,
-        sessionId: moveTarget.sessionId,
-        sourcePath: moveTarget.sourcePath,
-        targetProjectDir: trimmedMoveProjectDir,
-      });
+      const movedKeys = new Set<string>();
+      const failures: string[] = [];
+
+      for (const target of targets) {
+        try {
+          await sessionsApi.move({
+            providerId: target.providerId,
+            sessionId: target.sessionId,
+            sourcePath: target.sourcePath!,
+            targetProjectDir: trimmedMoveProjectDir,
+          });
+          movedKeys.add(getSessionKey(target));
+        } catch (error) {
+          failures.push(
+            `${formatSessionTitle(target)}: ${extractErrorMessage(error)}`,
+          );
+        }
+      }
 
       queryClient.setQueryData<SessionMeta[]>(["sessions"], (current) =>
         (current ?? []).map((session) =>
-          getSessionKey(session) === getSessionKey(moveTarget)
+          movedKeys.has(getSessionKey(session))
             ? { ...session, projectDir: trimmedMoveProjectDir }
             : session,
         ),
       );
       await queryClient.invalidateQueries({ queryKey: ["sessions"] });
 
-      toast.success(
-        t("sessionManager.moveSuccess", {
-          defaultValue: "会话已移动",
-        }),
-      );
-      setMoveTarget(null);
+      if (movedKeys.size > 0) {
+        toast.success(
+          t("sessionManager.moveSuccess", {
+            defaultValue: "会话已移动",
+            count: movedKeys.size,
+          }),
+        );
+      }
+      if (failures.length > 0) {
+        toast.error(
+          t("sessionManager.movePartialFailed", {
+            defaultValue: "{{count}} 个会话移动失败",
+            count: failures.length,
+          }),
+          { description: failures[0] },
+        );
+      }
+      setSelectedSessionKeys((current) => {
+        const next = new Set(current);
+        movedKeys.forEach((key) => next.delete(key));
+        return next;
+      });
+      setMoveTargets(null);
       setMoveProjectDir("");
     } catch (error) {
       toast.error(
@@ -541,6 +791,117 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       );
     } finally {
       setIsMoving(false);
+    }
+  };
+
+  const handleBatchRepair = async () => {
+    const targets = selectedRepairableCodexSessions;
+    if (targets.length === 0 || isRepairing) return;
+
+    setIsRepairing(true);
+    const repairedKeys = new Set<string>();
+    const failures: string[] = [];
+    try {
+      for (const target of targets) {
+        try {
+          await sessionsApi.repair({
+            providerId: target.providerId,
+            sessionId: target.sessionId,
+            sourcePath: target.sourcePath!,
+          });
+          repairedKeys.add(getSessionKey(target));
+        } catch (error) {
+          failures.push(
+            `${formatSessionTitle(target)}: ${extractErrorMessage(error)}`,
+          );
+        }
+      }
+      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      if (repairedKeys.size > 0) {
+        toast.success(
+          t("sessionManager.batchRepairSuccess", {
+            defaultValue: "已修复 {{count}} 个会话索引",
+            count: repairedKeys.size,
+          }),
+        );
+      }
+      if (failures.length > 0) {
+        toast.error(
+          t("sessionManager.batchRepairFailed", {
+            defaultValue: "{{count}} 个会话修复失败",
+            count: failures.length,
+          }),
+          { description: failures[0] },
+        );
+      }
+      setSelectedSessionKeys((current) => {
+        const next = new Set(current);
+        repairedKeys.forEach((key) => next.delete(key));
+        return next;
+      });
+    } finally {
+      setIsRepairing(false);
+    }
+  };
+
+  const handleBatchTrash = async () => {
+    const targets = selectedCodexSessions;
+    if (targets.length === 0 || isTrashing) return;
+
+    setIsTrashing(true);
+    const trashedKeys = new Set<string>();
+    const failures: string[] = [];
+    try {
+      for (const target of targets) {
+        try {
+          await sessionsApi.trash({
+            providerId: target.providerId,
+            sessionId: target.sessionId,
+            sourcePath: target.sourcePath!,
+          });
+          trashedKeys.add(getSessionKey(target));
+          queryClient.removeQueries({
+            queryKey: ["sessionMessages", target.providerId, target.sourcePath],
+          });
+        } catch (error) {
+          failures.push(
+            `${formatSessionTitle(target)}: ${extractErrorMessage(error)}`,
+          );
+        }
+      }
+
+      if (trashedKeys.size > 0) {
+        queryClient.setQueryData<SessionMeta[]>(["sessions"], (current) =>
+          (current ?? []).filter(
+            (session) => !trashedKeys.has(getSessionKey(session)),
+          ),
+        );
+      }
+      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      if (trashedKeys.size > 0) {
+        toast.success(
+          t("sessionManager.batchTrashSuccess", {
+            defaultValue: "已移动 {{count}} 个会话到 Trash",
+            count: trashedKeys.size,
+          }),
+        );
+      }
+      if (failures.length > 0) {
+        toast.error(
+          t("sessionManager.batchTrashFailed", {
+            defaultValue: "{{count}} 个会话移动到 Trash 失败",
+            count: failures.length,
+          }),
+          { description: failures[0] },
+        );
+      }
+      setSelectedSessionKeys((current) => {
+        const next = new Set(current);
+        trashedKeys.forEach((key) => next.delete(key));
+        return next;
+      });
+    } finally {
+      setIsTrashing(false);
     }
   };
 
@@ -628,7 +989,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       await queryClient.invalidateQueries({ queryKey: ["sessions"] });
       toast.success(
         t("sessionManager.trashSuccess", {
-          defaultValue: "会话已移动到 Codex Keeper Trash",
+          defaultValue: "会话已移动到 Codex Wake Trash",
         }),
       );
     } catch (error) {
@@ -728,7 +1089,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                         onKeyDown={(e) => {
                           if (e.key === "Escape") {
                             setIsSearchOpen(false);
-                            setSearch("");
+                            clearSearch();
                           }
                         }}
                         onBlur={() => {
@@ -743,12 +1104,38 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                         className="absolute right-1 top-1/2 -translate-y-1/2 size-6"
                         onClick={() => {
                           setIsSearchOpen(false);
-                          setSearch("");
+                          clearSearch();
                         }}
                       >
                         <X className="size-3" />
                       </Button>
                     </div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-7"
+                          onClick={() => void handleDeepSearch()}
+                          disabled={
+                            search.trim().length < 3 ||
+                            providerFilter === "claude" ||
+                            isDeepSearching
+                          }
+                        >
+                          {isDeepSearching ? (
+                            <RefreshCw className="size-3.5 animate-spin" />
+                          ) : (
+                            <FileSearch className="size-3.5" />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {t("sessionManager.deepSearch", {
+                          defaultValue: "深度搜索 Codex JSONL",
+                        })}
+                      </TooltipContent>
+                    </Tooltip>
                     {selectionMode && (
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -914,6 +1301,78 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           </SelectContent>
                         </Select>
 
+                        {providerFilter !== "claude" &&
+                          codexProjectSummaries.length > 0 && (
+                            <Select
+                              value={projectFilter}
+                              onValueChange={(value) => setProjectFilter(value)}
+                            >
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <SelectTrigger className="h-7 w-[104px] border-0 bg-transparent px-2 text-xs hover:bg-muted">
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                      <FolderOpen className="size-3.5 shrink-0" />
+                                      <span className="truncate">
+                                        {projectFilter === "all"
+                                          ? t(
+                                              "sessionManager.providerFilterAll",
+                                            )
+                                          : getBaseName(projectFilter)}
+                                      </span>
+                                    </div>
+                                  </SelectTrigger>
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-xs">
+                                  {projectFilter === "all"
+                                    ? t("sessionManager.projectFilterAll", {
+                                        defaultValue: "全部项目",
+                                      })
+                                    : projectFilter}
+                                </TooltipContent>
+                              </Tooltip>
+                              <SelectContent className="max-w-[min(520px,calc(100vw-4rem))]">
+                                <SelectItem value="all">
+                                  <div className="flex items-center gap-2">
+                                    <FolderOpen className="size-3.5" />
+                                    <span>
+                                      {t("sessionManager.projectFilterAll", {
+                                        defaultValue: "全部项目",
+                                      })}
+                                    </span>
+                                    <Badge variant="secondary" className="ml-1">
+                                      {
+                                        sessions.filter(
+                                          (session) =>
+                                            session.providerId === "codex",
+                                        ).length
+                                      }
+                                    </Badge>
+                                  </div>
+                                </SelectItem>
+                                {codexProjectSummaries.map((project) => (
+                                  <SelectItem
+                                    key={project.path}
+                                    value={project.path}
+                                  >
+                                    <div className="flex max-w-[440px] items-center gap-2">
+                                      <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                                        {project.path}
+                                      </span>
+                                      <Badge variant="secondary">
+                                        {project.totalCount}
+                                      </Badge>
+                                      {project.repairCount > 0 && (
+                                        <Badge variant="outline">
+                                          {project.repairCount}
+                                        </Badge>
+                                      )}
+                                    </div>
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
@@ -973,27 +1432,79 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               })}
                             </Button>
                           </div>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            className="h-7 gap-1.5 px-2.5 whitespace-nowrap justify-self-start min-[520px]:justify-self-end"
-                            onClick={openBatchDeleteDialog}
-                            disabled={
-                              isDeleting ||
-                              selectedDeletableSessions.length === 0
-                            }
-                          >
-                            <Trash2 className="size-3.5" />
-                            <span className="text-xs">
-                              {isBatchDeleting
-                                ? t("sessionManager.batchDeleting", {
-                                    defaultValue: "删除中...",
-                                  })
-                                : t("sessionManager.deleteSelected", {
-                                    defaultValue: "批量删除",
-                                  })}
-                            </span>
-                          </Button>
+                          <div className="flex flex-wrap items-center gap-2 justify-self-start min-[520px]:justify-self-end">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 gap-1.5 px-2.5 whitespace-nowrap"
+                              onClick={() => void handleBatchRepair()}
+                              disabled={
+                                isRepairing ||
+                                selectedRepairableCodexSessions.length === 0
+                              }
+                            >
+                              <Wrench className="size-3.5" />
+                              <span className="text-xs">
+                                {t("sessionManager.repairSelected", {
+                                  defaultValue: "批量修复",
+                                })}
+                              </span>
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 gap-1.5 px-2.5 whitespace-nowrap"
+                              onClick={openBatchMoveDialog}
+                              disabled={
+                                isMoving ||
+                                selectedMovableCodexSessions.length === 0
+                              }
+                            >
+                              <FolderOpen className="size-3.5" />
+                              <span className="text-xs">
+                                {t("sessionManager.moveSelected", {
+                                  defaultValue: "批量移动",
+                                })}
+                              </span>
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 gap-1.5 px-2.5 whitespace-nowrap"
+                              onClick={() => void handleBatchTrash()}
+                              disabled={
+                                isTrashing || selectedCodexSessions.length === 0
+                              }
+                            >
+                              <Archive className="size-3.5" />
+                              <span className="text-xs">
+                                {t("sessionManager.trashSelected", {
+                                  defaultValue: "批量 Trash",
+                                })}
+                              </span>
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              className="h-7 gap-1.5 px-2.5 whitespace-nowrap"
+                              onClick={openBatchDeleteDialog}
+                              disabled={
+                                isDeleting ||
+                                selectedDeletableSessions.length === 0
+                              }
+                            >
+                              <Trash2 className="size-3.5" />
+                              <span className="text-xs">
+                                {isBatchDeleting
+                                  ? t("sessionManager.batchDeleting", {
+                                      defaultValue: "删除中...",
+                                    })
+                                  : t("sessionManager.deleteSelected", {
+                                      defaultValue: "批量删除",
+                                    })}
+                              </span>
+                            </Button>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -1205,6 +1716,37 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             </TooltipContent>
                           </Tooltip>
                         )}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1.5"
+                              onClick={() =>
+                                void handleRevealPath(
+                                  selectedSession.sourcePath ??
+                                    selectedSession.projectDir,
+                                )
+                              }
+                              disabled={
+                                !selectedSession.sourcePath &&
+                                !selectedSession.projectDir
+                              }
+                            >
+                              <FolderSearch className="size-3.5" />
+                              <span className="hidden 2xl:inline">
+                                {t("sessionManager.reveal", {
+                                  defaultValue: "定位",
+                                })}
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {t("sessionManager.revealTooltip", {
+                              defaultValue: "在 Finder 中定位会话文件",
+                            })}
+                          </TooltipContent>
+                        </Tooltip>
                         {selectedSession.providerId === "codex" && (
                           <>
                             <Tooltip>
@@ -1255,8 +1797,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               </TooltipTrigger>
                               <TooltipContent>
                                 {t("sessionManager.backupsTooltip", {
-                                  defaultValue:
-                                    "管理 Codex Keeper 备份和 Trash",
+                                  defaultValue: "管理 Codex Wake 备份和 Trash",
                                 })}
                               </TooltipContent>
                             </Tooltip>
@@ -1319,7 +1860,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             <TooltipContent>
                               {t("sessionManager.trashTooltip", {
                                 defaultValue:
-                                  "移动到 Codex Keeper Trash，可从备份面板恢复",
+                                  "移动到 Codex Wake Trash，可从备份面板恢复",
                               })}
                             </TooltipContent>
                           </Tooltip>
@@ -1547,7 +2088,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         }}
       />
       <Dialog
-        open={Boolean(moveTarget)}
+        open={Boolean(moveTargets)}
         onOpenChange={(open) => !open && closeMoveDialog()}
       >
         <DialogContent className="w-[min(680px,calc(100vw-3rem))] max-w-none overflow-hidden">
@@ -1558,18 +2099,38 @@ export function SessionManagerPage({ appId }: { appId: string }) {
               })}
             </DialogTitle>
             <DialogDescription>
-              {moveTarget
-                ? t("sessionManager.moveDescription", {
+              {moveTargetsList.length > 1
+                ? t("sessionManager.moveBatchDescription", {
                     defaultValue:
-                      "更新 Codex 本地状态和 JSONL 元数据，把“{{title}}”归到目标项目。",
-                    title: formatSessionTitle(moveTarget),
+                      "更新 {{count}} 个 Codex 会话的 SQLite 和 JSONL 项目路径。",
+                    count: moveTargetsList.length,
                   })
-                : ""}
+                : moveTarget
+                  ? t("sessionManager.moveDescription", {
+                      defaultValue:
+                        "更新 Codex 本地状态和 JSONL 元数据，把“{{title}}”归到目标项目。",
+                      title: formatSessionTitle(moveTarget),
+                    })
+                  : ""}
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid min-w-0 gap-4 overflow-hidden px-6 py-5">
-            {moveTarget?.projectDir && (
+            {moveTargetsList.length > 1 ? (
+              <div className="grid min-w-0 gap-1.5">
+                <Label>
+                  {t("sessionManager.selectedSessions", {
+                    defaultValue: "已选会话",
+                  })}
+                </Label>
+                <div className="rounded-md border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                  {t("sessionManager.selectedMoveCount", {
+                    defaultValue: "{{count}} 个 Codex 会话",
+                    count: moveTargetsList.length,
+                  })}
+                </div>
+              </div>
+            ) : moveTarget?.projectDir ? (
               <div className="grid min-w-0 gap-1.5">
                 <Label>
                   {t("sessionManager.currentProject", {
@@ -1580,7 +2141,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                   {moveTarget.projectDir}
                 </div>
               </div>
-            )}
+            ) : null}
 
             {moveProjectOptions.length > 0 && (
               <div className="grid min-w-0 gap-1.5">
@@ -1663,7 +2224,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           <DialogHeader>
             <DialogTitle>
               {t("sessionManager.codexBackupsTitle", {
-                defaultValue: "Codex Keeper 备份",
+                defaultValue: "Codex Wake 备份",
               })}
             </DialogTitle>
             <DialogDescription>

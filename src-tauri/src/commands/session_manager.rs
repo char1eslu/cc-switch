@@ -1,6 +1,10 @@
 #![allow(non_snake_case)]
 
 use crate::session_manager;
+use std::path::Path;
+use tauri::AppHandle;
+#[cfg(not(target_os = "macos"))]
+use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
 pub async fn list_sessions() -> Result<Vec<session_manager::SessionMeta>, String> {
@@ -160,6 +164,53 @@ pub async fn trash_session(
     })
     .await
     .map_err(|e| format!("Failed to move session to trash: {e}"))?
+}
+
+#[tauri::command]
+pub async fn search_codex_sessions_raw(
+    query: String,
+    projectDir: Option<String>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        session_manager::providers::codex::search_raw_session_ids(&query, projectDir.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Failed to search Codex sessions: {e}"))?
+}
+
+#[tauri::command]
+pub async fn reveal_session_path(app: AppHandle, path: String) -> Result<bool, String> {
+    let target = Path::new(&path);
+    if !target.exists() {
+        return Err(format!("Path does not exist: {path}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = &app;
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("Failed to reveal path in Finder: {e}"))?;
+        return Ok(true);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let open_path = if target.is_dir() {
+            target.to_path_buf()
+        } else {
+            target
+                .parent()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| format!("Path has no parent directory: {path}"))?
+        };
+        app.opener()
+            .open_path(open_path.to_string_lossy().to_string(), None::<String>)
+            .map_err(|e| format!("Failed to reveal path: {e}"))?;
+        Ok(true)
+    }
 }
 
 #[tauri::command]

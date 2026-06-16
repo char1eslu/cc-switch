@@ -5,6 +5,9 @@ import {
   addProvider,
   deleteProvider,
   deleteSession,
+  moveSession,
+  repairSession,
+  searchCodexRawSessions,
   getCurrentProviderId,
   getSessionMessages,
   getProviders,
@@ -151,6 +154,50 @@ export const handlers = [
       })),
     );
   }),
+
+  http.post(`${TAURI_ENDPOINT}/move_session`, async ({ request }) => {
+    const { providerId, sessionId, sourcePath, targetProjectDir } =
+      await withJson<{
+        providerId: string;
+        sessionId: string;
+        sourcePath: string;
+        targetProjectDir: string;
+      }>(request);
+    return success(
+      moveSession(providerId, sessionId, sourcePath, targetProjectDir),
+    );
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/repair_session`, async ({ request }) => {
+    const { providerId, sessionId, sourcePath } = await withJson<{
+      providerId: string;
+      sessionId: string;
+      sourcePath: string;
+    }>(request);
+    return success(repairSession(providerId, sessionId, sourcePath));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/trash_session`, async ({ request }) => {
+    const { providerId, sessionId, sourcePath } = await withJson<{
+      providerId: string;
+      sessionId: string;
+      sourcePath: string;
+    }>(request);
+    return success(deleteSession(providerId, sessionId, sourcePath));
+  }),
+
+  http.post(
+    `${TAURI_ENDPOINT}/search_codex_sessions_raw`,
+    async ({ request }) => {
+      const { query, projectDir } = await withJson<{
+        query: string;
+        projectDir?: string;
+      }>(request);
+      return success(searchCodexRawSessions(query, projectDir));
+    },
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/reveal_session_path`, () => success(true)),
 
   // MCP APIs
   http.post(`${TAURI_ENDPOINT}/get_mcp_config`, async ({ request }) => {

@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "CC Switch",
-    "description": "Claude / Codex デスクトップ管理と Codex Keeper セッションツール"
+    "description": "Claude / Codex デスクトップ管理と Codex Wake セッションツール"
   },
   "common": {
     "add": "追加",
@@ -848,7 +848,7 @@
   },
   "sessionManager": {
     "title": "セッション管理",
-    "subtitle": "Claude Code と Codex のセッションを管理し、Codex Keeper 形式のメンテナンスツールを提供",
+    "subtitle": "Claude Code と Codex のセッションを管理し、Codex Wake 形式のメンテナンスツールを提供",
     "searchPlaceholder": "内容・ディレクトリ・ID で検索",
     "searchSessions": "セッションを検索",
     "providerFilterAll": "すべて",

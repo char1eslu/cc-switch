@@ -349,6 +349,73 @@ export const deleteSession = (
   return true;
 };
 
+export const moveSession = (
+  providerId: string,
+  sessionId: string,
+  sourcePath: string,
+  targetProjectDir: string,
+) => {
+  sessionsState = sessionsState.map((session) =>
+    session.providerId === providerId &&
+    session.sessionId === sessionId &&
+    session.sourcePath === sourcePath
+      ? { ...session, projectDir: targetProjectDir }
+      : session,
+  );
+  return true;
+};
+
+export const repairSession = (
+  providerId: string,
+  sessionId: string,
+  sourcePath: string,
+) => {
+  sessionsState = sessionsState.map((session) =>
+    session.providerId === providerId &&
+    session.sessionId === sessionId &&
+    session.sourcePath === sourcePath
+      ? {
+          ...session,
+          codexStatus: "Available",
+          isInSessionIndex: true,
+          needsRepair: false,
+        }
+      : session,
+  );
+  return {
+    success: true,
+    sessionId,
+    timestamp: "20260616-000000",
+    backups: [],
+    changedFiles: [],
+  };
+};
+
+export const searchCodexRawSessions = (query: string, projectDir?: string) => {
+  const needle = query.trim().toLowerCase();
+  if (needle.length < 3) return [];
+
+  return sessionsState
+    .filter(
+      (session) =>
+        session.providerId === "codex" &&
+        (!projectDir || session.projectDir === projectDir),
+    )
+    .filter((session) => {
+      const messages = session.sourcePath
+        ? sessionMessagesState[
+            sessionMessageKey(session.providerId, session.sourcePath)
+          ]
+        : undefined;
+      return (
+        messages?.some((message) =>
+          message.content.toLowerCase().includes(needle),
+        ) ?? false
+      );
+    })
+    .map((session) => session.sessionId);
+};
+
 export const setSessionFixtures = (
   sessions: SessionMeta[],
   messages: Record<string, SessionMessage[]>,

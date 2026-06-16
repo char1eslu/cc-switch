@@ -5,6 +5,7 @@ import type { SessionMeta } from "@/types";
 interface UseSessionSearchOptions {
   sessions: SessionMeta[];
   providerFilter: string;
+  projectFilter?: string;
 }
 
 interface UseSessionSearchResult {
@@ -18,11 +19,19 @@ interface UseSessionSearchResult {
 export function useSessionSearch({
   sessions,
   providerFilter,
+  projectFilter = "all",
 }: UseSessionSearchOptions): UseSessionSearchResult {
-  const filteredByProvider = useMemo(() => {
-    if (providerFilter === "all") return sessions;
-    return sessions.filter((s) => s.providerId === providerFilter);
-  }, [sessions, providerFilter]);
+  const scopedSessions = useMemo(() => {
+    return sessions.filter((session) => {
+      if (providerFilter !== "all" && session.providerId !== providerFilter) {
+        return false;
+      }
+      if (projectFilter !== "all" && session.projectDir !== projectFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [sessions, providerFilter, projectFilter]);
 
   const index = useMemo(() => {
     const nextIndex = new FlexSearch.Index({
@@ -30,7 +39,7 @@ export function useSessionSearch({
       resolution: 9,
     });
 
-    filteredByProvider.forEach((session, idx) => {
+    scopedSessions.forEach((session, idx) => {
       const metaContent = [
         session.sessionId,
         session.title,
@@ -45,14 +54,14 @@ export function useSessionSearch({
     });
 
     return nextIndex;
-  }, [filteredByProvider]);
+  }, [scopedSessions]);
 
   const search = useCallback(
     (query: string): SessionMeta[] => {
       const needle = query.trim();
 
       if (!needle) {
-        return [...filteredByProvider].sort((a, b) => {
+        return [...scopedSessions].sort((a, b) => {
           const aTs = a.lastActiveAt ?? a.createdAt ?? 0;
           const bTs = b.lastActiveAt ?? b.createdAt ?? 0;
           return bTs - aTs;
@@ -60,12 +69,12 @@ export function useSessionSearch({
       }
 
       const results = index.search(needle, {
-        limit: filteredByProvider.length,
+        limit: scopedSessions.length,
       }) as number[];
 
-      return results.map((idx) => filteredByProvider[idx]);
+      return results.map((idx) => scopedSessions[idx]);
     },
-    [index, filteredByProvider],
+    [index, scopedSessions],
   );
 
   return { search };

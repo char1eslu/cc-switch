@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "CC Switch",
-    "description": "Claude / Codex 桌面管理器，內建 Codex Keeper 會話工具"
+    "description": "Claude / Codex 桌面管理器，內建 Codex Wake 會話工具"
   },
   "common": {
     "add": "新增",
@@ -819,7 +819,7 @@
   },
   "sessionManager": {
     "title": "工作階段管理",
-    "subtitle": "管理 Claude Code 和 Codex 工作階段紀錄，並提供 Codex Keeper 風格維護工具",
+    "subtitle": "管理 Claude Code 和 Codex 工作階段紀錄，並提供 Codex Wake 風格維護工具",
     "searchPlaceholder": "搜尋對話內容、目錄或 ID",
     "searchSessions": "搜尋工作階段",
     "providerFilterAll": "全部",

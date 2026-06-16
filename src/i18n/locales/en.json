@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "CC Switch",
-    "description": "Claude and Codex desktop manager with Codex Keeper session tools"
+    "description": "Claude and Codex desktop manager with Codex Wake session tools"
   },
   "common": {
     "add": "Add",
@@ -848,7 +848,7 @@
   },
   "sessionManager": {
     "title": "Session Manager",
-    "subtitle": "Manage Claude Code and Codex sessions, including Codex Keeper-style maintenance tools",
+    "subtitle": "Manage Claude Code and Codex sessions, including Codex Wake-style maintenance tools",
     "searchPlaceholder": "Search by content, directory, or ID",
     "searchSessions": "Search sessions",
     "providerFilterAll": "All",

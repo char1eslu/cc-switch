@@ -749,6 +749,38 @@ pub fn trash_session(path: &Path, session_id: &str) -> Result<CodexOperationRepo
     })
 }
 
+pub fn search_raw_session_ids(
+    query: &str,
+    project_dir: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let query = query.trim().to_lowercase();
+    if query.len() < 3 {
+        return Ok(Vec::new());
+    }
+
+    let project_dir = project_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let mut matched_ids = Vec::new();
+
+    for session in scan_sessions() {
+        if let Some(project_dir) = project_dir {
+            if session.project_dir.as_deref() != Some(project_dir) {
+                continue;
+            }
+        }
+
+        let Some(source_path) = session.source_path.as_deref() else {
+            continue;
+        };
+        if raw_file_contains(Path::new(source_path), &query)? {
+            matched_ids.push(session.session_id);
+        }
+    }
+
+    Ok(matched_ids)
+}
+
 pub fn list_backups(include_trash: bool) -> Result<Vec<CodexBackupFile>, String> {
     let codex_home = get_codex_config_dir();
     let root = if include_trash {
@@ -1386,6 +1418,30 @@ fn read_jsonl_lines(path: &Path) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
+fn raw_file_contains(path: &Path, lower_query: &str) -> Result<bool, String> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "Failed to open Codex session file {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+        if line.to_lowercase().contains(lower_query) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn backups_to_strings(backups: Vec<PathBuf>) -> Vec<String> {
     backups
         .into_iter()
@@ -1789,7 +1845,7 @@ fn backup_reason(stamp: &str, kind: &str) -> String {
     } else if kind == "chatFile" {
         "Created before a chat change"
     } else {
-        "Created by Codex Keeper"
+        "Created by Codex Wake"
     }
     .to_string()
 }

@@ -195,7 +195,7 @@ pub fn trash_session(
 ) -> Result<codex::CodexOperationReport, String> {
     if provider_id != "codex" {
         return Err(format!(
-            "Codex Keeper Trash is currently supported only for Codex, got {provider_id}"
+            "Codex Wake Trash is currently supported only for Codex, got {provider_id}"
         ));
     }
     codex::trash_session(Path::new(source_path), session_id)
