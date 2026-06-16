@@ -99,6 +99,14 @@ describe("session utils", () => {
         "<environment_context>\n<cwd>F:/project</cwd>",
       ),
     ).toBe(true);
+    expect(
+      shouldHideCodexMessageFromToc(
+        "<permissions instructions>\nFilesystem sandboxing...",
+      ),
+    ).toBe(true);
+    expect(
+      shouldHideCodexMessageFromToc("<app-context>\n# Codex desktop context"),
+    ).toBe(true);
     expect(shouldHideCodexMessageFromToc("# Context from my IDE setup:")).toBe(
       true,
     );

@@ -22,6 +22,7 @@ import {
   getRoleTone,
   highlightText,
 } from "./utils";
+import { SessionMarkdown } from "./SessionMarkdown";
 
 const COLLAPSE_THRESHOLD = 3000;
 const COLLAPSED_LENGTH = 1500;
@@ -56,14 +57,18 @@ export const SessionMessageItem = memo(function SessionMessageItem({
   const displayContent = collapsed
     ? message.content.slice(0, COLLAPSED_LENGTH) + "…"
     : message.content;
+  const normalizedRole = message.role.toLowerCase();
+  const shouldRenderMarkdown =
+    !searchQuery?.trim() &&
+    (normalizedRole === "assistant" || normalizedRole === "user");
 
   return (
     <div
       className={cn(
         "rounded-lg border px-3 py-2.5 relative group transition-shadow min-w-0",
-        message.role.toLowerCase() === "user"
+        normalizedRole === "user"
           ? "bg-primary/5 border-primary/20 ml-8"
-          : message.role.toLowerCase() === "assistant"
+          : normalizedRole === "assistant"
             ? "bg-blue-500/5 border-blue-500/20 mr-8"
             : "bg-muted/40 border-border/60",
         isActive && "ring-2 ring-primary ring-offset-2",
@@ -136,10 +141,18 @@ export const SessionMessageItem = memo(function SessionMessageItem({
           </span>
         )}
       </div>
-      <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-relaxed min-w-0">
-        {searchQuery
-          ? highlightText(displayContent, searchQuery)
-          : displayContent}
+      <div className="min-w-0">
+        {shouldRenderMarkdown ? (
+          <SessionMarkdown content={displayContent} />
+        ) : searchQuery ? (
+          <div className="whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+            {highlightText(displayContent, searchQuery)}
+          </div>
+        ) : (
+          <div className="whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+            {displayContent}
+          </div>
+        )}
       </div>
       {isLong && !hasSearchMatch && (
         <button

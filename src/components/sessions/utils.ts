@@ -4,6 +4,12 @@ import { SessionMeta } from "@/types";
 
 const CODEX_IDE_CONTEXT_PREFIX = "# Context from my IDE setup:";
 const CODEX_REQUEST_MARKER = "my request for codex";
+const CODEX_CONTEXT_PREFIXES = [
+  "# AGENTS.md instructions for ",
+  "<environment_context>",
+  "<permissions instructions>",
+  "<app-context>",
+];
 
 const getCodexRequestHeadingPayload = (lineText: string) => {
   if (!lineText.startsWith("#")) return null;
@@ -134,8 +140,7 @@ export const formatSessionTitle = (session: SessionMeta) => {
 export const shouldHideCodexMessageFromToc = (content: string) => {
   const trimmed = content.trim();
   return (
-    trimmed.startsWith("# AGENTS.md instructions for ") ||
-    trimmed.startsWith("<environment_context>") ||
+    CODEX_CONTEXT_PREFIXES.some((prefix) => trimmed.startsWith(prefix)) ||
     (trimmed.startsWith(CODEX_IDE_CONTEXT_PREFIX) &&
       !extractCodexPromptFromIdeContext(trimmed))
   );

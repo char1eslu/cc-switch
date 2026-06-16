@@ -168,9 +168,16 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     );
   const deleteSessionMutation = useDeleteSessionMutation();
   const isDeleting = deleteSessionMutation.isPending || isBatchDeleting;
+  const isCodexSession = selectedSession?.providerId === "codex";
+  const visibleMessages = useMemo(() => {
+    if (!isCodexSession) return messages;
+    return messages.filter(
+      (message) => !shouldHideCodexMessageFromToc(message.content),
+    );
+  }, [isCodexSession, messages]);
 
   const virtualizer = useVirtualizer({
-    count: messages.length,
+    count: visibleMessages.length,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 120,
     overscan: 5,
@@ -201,11 +208,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     });
   }, [sessions]);
 
-  const isCodexSession = selectedSession?.providerId === "codex";
-
   // 提取用户消息用于目录
   const userMessagesToc = useMemo(() => {
-    return messages
+    return visibleMessages
       .map((msg, index) => ({ msg, index }))
       .filter(({ msg }) => {
         if (msg.role.toLowerCase() !== "user") return false;
@@ -222,7 +227,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           ts: msg.ts,
         };
       });
-  }, [isCodexSession, messages]);
+  }, [isCodexSession, visibleMessages]);
 
   const scrollToMessage = (index: number) => {
     virtualizer.scrollToIndex(index, { align: "center", behavior: "smooth" });
@@ -1092,7 +1097,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                 <>
                   {/* 详情头部 */}
                   <CardHeader className="py-3 px-4 border-b shrink-0">
-                    <div className="flex items-start justify-between gap-4">
+                    <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-start 2xl:justify-between">
                       {/* 左侧：会话信息 */}
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 mb-1">
@@ -1208,7 +1213,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                       </div>
 
                       {/* 右侧：操作按钮组 */}
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex flex-wrap items-center gap-2">
                         {isMac() && (
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -1219,7 +1224,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                 disabled={!selectedSession.resumeCommand}
                               >
                                 <Play className="size-3.5" />
-                                <span className="hidden sm:inline">
+                                <span className="hidden 2xl:inline">
                                   {t("sessionManager.resume", {
                                     defaultValue: "恢复会话",
                                   })}
@@ -1251,7 +1256,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                   }
                                 >
                                   <Wrench className="size-3.5" />
-                                  <span className="hidden sm:inline">
+                                  <span className="hidden 2xl:inline">
                                     {selectedSession.needsRepair
                                       ? t("sessionManager.repairIndex", {
                                           defaultValue: "修复索引",
@@ -1278,7 +1283,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                   onClick={openBackupDialog}
                                 >
                                   <DatabaseBackup className="size-3.5" />
-                                  <span className="hidden sm:inline">
+                                  <span className="hidden 2xl:inline">
                                     {t("sessionManager.backups", {
                                       defaultValue: "备份",
                                     })}
@@ -1307,7 +1312,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               disabled={!canMoveSelectedSession || isMoving}
                             >
                               <FolderOpen className="size-3.5" />
-                              <span className="hidden sm:inline">
+                              <span className="hidden 2xl:inline">
                                 {isMoving
                                   ? t("sessionManager.moving", {
                                       defaultValue: "移动中...",
@@ -1341,7 +1346,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                 }
                               >
                                 <Archive className="size-3.5" />
-                                <span className="hidden sm:inline">
+                                <span className="hidden 2xl:inline">
                                   {t("sessionManager.trash", {
                                     defaultValue: "Trash",
                                   })}
@@ -1370,7 +1375,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               }
                             >
                               <Trash2 className="size-3.5" />
-                              <span className="hidden sm:inline">
+                              <span className="hidden 2xl:inline">
                                 {isDeleting
                                   ? t("sessionManager.deleting", {
                                       defaultValue: "删除中...",
@@ -1436,7 +1441,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               })}
                             </span>
                             <Badge variant="secondary" className="text-xs">
-                              {messages.length}
+                              {visibleMessages.length}
                             </Badge>
                           </div>
                         </div>
@@ -1448,7 +1453,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             <div className="flex items-center justify-center py-12">
                               <RefreshCw className="size-5 animate-spin text-muted-foreground" />
                             </div>
-                          ) : messages.length === 0 ? (
+                          ) : visibleMessages.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-12 text-center">
                               <MessageSquare className="size-8 text-muted-foreground/50 mb-2" />
                               <p className="text-sm text-muted-foreground">
@@ -1478,7 +1483,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                     }}
                                   >
                                     <SessionMessageItem
-                                      message={messages[virtualRow.index]}
+                                      message={
+                                        visibleMessages[virtualRow.index]
+                                      }
                                       isActive={
                                         activeMessageIndex === virtualRow.index
                                       }
@@ -1580,7 +1587,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         open={Boolean(moveTarget)}
         onOpenChange={(open) => !open && closeMoveDialog()}
       >
-        <DialogContent className="max-w-xl">
+        <DialogContent className="w-[min(680px,calc(100vw-3rem))] max-w-none overflow-hidden">
           <DialogHeader>
             <DialogTitle>
               {t("sessionManager.moveTitle", {
@@ -1598,29 +1605,29 @@ export function SessionManagerPage({ appId }: { appId: string }) {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="grid gap-4 px-6 py-5">
+          <div className="grid min-w-0 gap-4 overflow-hidden px-6 py-5">
             {moveTarget?.projectDir && (
-              <div className="grid gap-1.5">
+              <div className="grid min-w-0 gap-1.5">
                 <Label>
                   {t("sessionManager.currentProject", {
                     defaultValue: "当前项目",
                   })}
                 </Label>
-                <div className="rounded-md border bg-muted/50 px-3 py-2 font-mono text-xs break-all">
+                <div className="min-w-0 truncate rounded-md border bg-muted/50 px-3 py-2 font-mono text-xs">
                   {moveTarget.projectDir}
                 </div>
               </div>
             )}
 
             {moveProjectOptions.length > 0 && (
-              <div className="grid gap-1.5">
+              <div className="grid min-w-0 gap-1.5">
                 <Label>
                   {t("sessionManager.selectTargetProject", {
                     defaultValue: "选择已有项目",
                   })}
                 </Label>
                 <Select onValueChange={setMoveProjectDir}>
-                  <SelectTrigger>
+                  <SelectTrigger className="min-w-0 max-w-full overflow-hidden font-mono text-xs [&>span]:min-w-0 [&>span]:truncate">
                     <SelectValue
                       placeholder={t(
                         "sessionManager.selectProjectPlaceholder",
@@ -1630,10 +1637,12 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                       )}
                     />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-w-[min(640px,calc(100vw-4rem))]">
                     {moveProjectOptions.map((dir) => (
                       <SelectItem key={dir} value={dir}>
-                        <span className="font-mono text-xs">{dir}</span>
+                        <span className="block max-w-[min(560px,calc(100vw-6rem))] truncate font-mono text-xs">
+                          {dir}
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1641,7 +1650,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
               </div>
             )}
 
-            <div className="grid gap-1.5">
+            <div className="grid min-w-0 gap-1.5">
               <Label htmlFor="codex-session-target-project">
                 {t("sessionManager.targetProject", {
                   defaultValue: "目标项目路径",
@@ -1652,7 +1661,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                 value={moveProjectDir}
                 onChange={(event) => setMoveProjectDir(event.target.value)}
                 placeholder="/absolute/path/to/project"
-                className="font-mono text-xs"
+                className="min-w-0 max-w-full font-mono text-xs"
               />
               <p className="text-xs text-muted-foreground">
                 {t("sessionManager.moveSafetyHint", {
