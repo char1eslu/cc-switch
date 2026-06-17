@@ -586,8 +586,9 @@ base_url = "http://localhost:8080"
             let mut renamed = original.clone();
             renamed.id = "claude-copy".to_string();
 
-            let err = ProviderService::update(state, AppType::Claude, Some("missing-provider"), renamed)
-                .expect_err("stale originalId should be rejected");
+            let err =
+                ProviderService::update(state, AppType::Claude, Some("missing-provider"), renamed)
+                    .expect_err("stale originalId should be rejected");
 
             assert!(
                 err.to_string().contains("Original provider"),
@@ -829,14 +830,13 @@ impl ProviderService {
         // restore backup. Serialize them per app, then decide from the locked
         // current state so a just-started takeover cannot be overwritten by a
         // normal live write.
-        let _switch_guard =
-            if matches!(app_type, AppType::Claude | AppType::Codex) {
-                Some(futures::executor::block_on(
-                    state.proxy_service.lock_switch_for_app(app_type.as_str()),
-                ))
-            } else {
-                None
-            };
+        let _switch_guard = if matches!(app_type, AppType::Claude | AppType::Codex) {
+            Some(futures::executor::block_on(
+                state.proxy_service.lock_switch_for_app(app_type.as_str()),
+            ))
+        } else {
+            None
+        };
 
         // Backup or live placeholders mean the live file is owned by proxy
         // takeover, even if the proxy server is temporarily stopped or is in the
@@ -910,15 +910,13 @@ impl ProviderService {
                 // Only backfill when switching to a different provider
                 if let Ok(live_config) = read_live_settings(app_type.clone()) {
                     if let Some(mut current_provider) = providers.get(&current_id).cloned() {
-                        current_provider.settings_config =
-                            strip_common_config_from_live_settings(
-                                state.db.as_ref(),
-                                &app_type,
-                                &current_provider,
-                                live_config,
-                            );
-                        if let Err(e) =
-                            state.db.save_provider(app_type.as_str(), &current_provider)
+                        current_provider.settings_config = strip_common_config_from_live_settings(
+                            state.db.as_ref(),
+                            &app_type,
+                            &current_provider,
+                            live_config,
+                        );
+                        if let Err(e) = state.db.save_provider(app_type.as_str(), &current_provider)
                         {
                             log::warn!("Backfill failed: {e}");
                             result

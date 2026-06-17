@@ -73,12 +73,13 @@ static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
         .unwrap()
 });
-static PERMISSIONS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<permissions instructions>.*?</permissions instructions>\s*").unwrap());
-static AGENTS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)# AGENTS\.md instructions[^\n]*(?:\n|\r\n).*?</INSTRUCTIONS>\s*").unwrap());
-static EXTRA_BLANK_LINES_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\n{3,}").unwrap());
+static PERMISSIONS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<permissions instructions>.*?</permissions instructions>\s*").unwrap()
+});
+static AGENTS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)# AGENTS\.md instructions[^\n]*(?:\n|\r\n).*?</INSTRUCTIONS>\s*").unwrap()
+});
+static EXTRA_BLANK_LINES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n{3,}").unwrap());
 
 pub fn scan_sessions() -> Vec<SessionMeta> {
     let config_dir = get_codex_config_dir();
@@ -118,10 +119,17 @@ fn thread_trash_path(codex_home: &Path) -> PathBuf {
     backup_trash_path(codex_home).join("threads")
 }
 
-fn scan_sessions_from_sqlite(codex_home: &Path, state_db: &Path) -> Result<Vec<SessionMeta>, String> {
+fn scan_sessions_from_sqlite(
+    codex_home: &Path,
+    state_db: &Path,
+) -> Result<Vec<SessionMeta>, String> {
     let index = load_session_index(codex_home).unwrap_or_default();
-    let conn = Connection::open(state_db)
-        .map_err(|e| format!("Failed to open Codex state database {}: {e}", state_db.display()))?;
+    let conn = Connection::open(state_db).map_err(|e| {
+        format!(
+            "Failed to open Codex state database {}: {e}",
+            state_db.display()
+        )
+    })?;
     let mut stmt = conn
         .prepare(
             "select id, rollout_path, created_at, updated_at, cwd, title, first_user_message, preview, archived \
@@ -191,7 +199,9 @@ fn scan_sessions_from_sqlite(codex_home: &Path, state_db: &Path) -> Result<Vec<S
             summary,
             project_dir: Some(cwd),
             created_at: created_at.map(seconds_to_ms),
-            last_active_at: updated_at.map(seconds_to_ms).or(created_at.map(seconds_to_ms)),
+            last_active_at: updated_at
+                .map(seconds_to_ms)
+                .or(created_at.map(seconds_to_ms)),
             source_path: Some(source_path),
             resume_command: Some(format!("codex resume {session_id}")),
             codex_status: Some(codex_status.to_string()),
@@ -569,8 +579,12 @@ pub fn branch_session(
         ));
     let branched = branch_content(&kept_lines, &new_session_id, &iso_jsonl(now), &project_dir)?;
     if let Some(parent) = new_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create branch directory {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create branch directory {}: {e}",
+                parent.display()
+            )
+        })?;
     }
     crate::config::atomic_write(&new_path, branched.as_bytes()).map_err(|e| e.to_string())?;
 
@@ -637,7 +651,9 @@ pub fn trash_session(path: &Path, session_id: &str) -> Result<CodexOperationRepo
             return Err("Refusing to trash a Codex chat outside the sessions root".to_string());
         }
     } else if !path.is_absolute() || !path.starts_with(&sessions_root) {
-        return Err("Refusing to trash missing Codex metadata outside ~/.codex/sessions".to_string());
+        return Err(
+            "Refusing to trash missing Codex metadata outside ~/.codex/sessions".to_string(),
+        );
     }
 
     let stamp = format!("{}-trash-thread", Utc::now().format("%Y%m%d-%H%M%S"));
@@ -678,8 +694,12 @@ pub fn trash_session(path: &Path, session_id: &str) -> Result<CodexOperationRepo
     };
 
     let trash_dir = thread_trash_path(&codex_home).join(session_id);
-    fs::create_dir_all(&trash_dir)
-        .map_err(|e| format!("Failed to create trash directory {}: {e}", trash_dir.display()))?;
+    fs::create_dir_all(&trash_dir).map_err(|e| {
+        format!(
+            "Failed to create trash directory {}: {e}",
+            trash_dir.display()
+        )
+    })?;
     let trash_path = if file_exists {
         let file_name = path
             .file_name()
@@ -697,10 +717,7 @@ pub fn trash_session(path: &Path, session_id: &str) -> Result<CodexOperationRepo
         None
     };
 
-    let manifest_title = meta
-        .title
-        .clone()
-        .unwrap_or_else(|| session_id.to_string());
+    let manifest_title = meta.title.clone().unwrap_or_else(|| session_id.to_string());
     let manifest_cwd = meta.project_dir.clone().unwrap_or_default();
     let manifest = serde_json::json!({
         "version": 1,
@@ -758,9 +775,7 @@ pub fn search_raw_session_ids(
         return Ok(Vec::new());
     }
 
-    let project_dir = project_dir
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let project_dir = project_dir.map(str::trim).filter(|value| !value.is_empty());
     let mut matched_ids = Vec::new();
 
     for session in scan_sessions() {
@@ -796,9 +811,12 @@ pub fn list_backups(include_trash: bool) -> Result<Vec<CodexBackupFile>, String>
 
 pub fn restore_backup(backup_path: &Path, original_path: &Path) -> Result<bool, String> {
     let codex_home = get_codex_config_dir();
-    let backup_path = backup_path
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve backup path {}: {e}", backup_path.display()))?;
+    let backup_path = backup_path.canonicalize().map_err(|e| {
+        format!(
+            "Failed to resolve backup path {}: {e}",
+            backup_path.display()
+        )
+    })?;
     let codex_home_canonical = codex_home
         .canonicalize()
         .map_err(|e| format!("Failed to resolve Codex home {}: {e}", codex_home.display()))?;
@@ -813,11 +831,18 @@ pub fn restore_backup(backup_path: &Path, original_path: &Path) -> Result<bool, 
 
     let original_path = original_path.to_path_buf();
     if let Some(parent) = original_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create restore directory {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create restore directory {}: {e}",
+                parent.display()
+            )
+        })?;
     }
     if original_path.exists() {
-        backup_file(&original_path, &format!("{}-before-restore", Utc::now().format("%Y%m%d-%H%M%S")))?;
+        backup_file(
+            &original_path,
+            &format!("{}-before-restore", Utc::now().format("%Y%m%d-%H%M%S")),
+        )?;
     }
     fs::copy(&backup_path, &original_path).map_err(|e| {
         format!(
@@ -831,9 +856,12 @@ pub fn restore_backup(backup_path: &Path, original_path: &Path) -> Result<bool, 
 
 pub fn move_backup_to_trash(backup_path: &Path) -> Result<bool, String> {
     let codex_home = get_codex_config_dir();
-    let backup_path = backup_path
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve backup path {}: {e}", backup_path.display()))?;
+    let backup_path = backup_path.canonicalize().map_err(|e| {
+        format!(
+            "Failed to resolve backup path {}: {e}",
+            backup_path.display()
+        )
+    })?;
     let codex_home_canonical = codex_home
         .canonicalize()
         .map_err(|e| format!("Failed to resolve Codex home {}: {e}", codex_home.display()))?;
@@ -885,20 +913,26 @@ pub fn list_trashed_threads() -> Result<Vec<CodexTrashedThread>, String> {
 
 pub fn restore_trashed_thread(manifest_path: &Path) -> Result<bool, String> {
     let codex_home = get_codex_config_dir();
-    let manifest_path = manifest_path
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve trash manifest {}: {e}", manifest_path.display()))?;
+    let manifest_path = manifest_path.canonicalize().map_err(|e| {
+        format!(
+            "Failed to resolve trash manifest {}: {e}",
+            manifest_path.display()
+        )
+    })?;
     let thread_trash = thread_trash_path(&codex_home)
         .canonicalize()
         .map_err(|e| format!("Failed to resolve thread trash: {e}"))?;
     if !manifest_path.starts_with(&thread_trash) {
         return Err("Refusing to restore a chat outside Codex trash".to_string());
     }
-    let manifest: Value = serde_json::from_str(
-        &fs::read_to_string(&manifest_path)
-            .map_err(|e| format!("Failed to read trash manifest {}: {e}", manifest_path.display()))?,
-    )
-    .map_err(|e| format!("Failed to parse trash manifest: {e}"))?;
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).map_err(|e| {
+            format!(
+                "Failed to read trash manifest {}: {e}",
+                manifest_path.display()
+            )
+        })?)
+        .map_err(|e| format!("Failed to parse trash manifest: {e}"))?;
     let original_path = manifest
         .get("originalPath")
         .and_then(Value::as_str)
@@ -922,8 +956,12 @@ pub fn restore_trashed_thread(manifest_path: &Path) -> Result<bool, String> {
         backup_file(&session_index, &backup_suffix)?;
     }
     if let Some(parent) = original_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create restore directory {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create restore directory {}: {e}",
+                parent.display()
+            )
+        })?;
     }
     if let Some(trash_path) = trash_path {
         let trash_path = PathBuf::from(trash_path)
@@ -953,7 +991,10 @@ pub fn restore_trashed_thread(manifest_path: &Path) -> Result<bool, String> {
             insert_sqlite_record(&conn, record)?;
         }
     }
-    if let Some(entry) = manifest.get("sessionIndexEntry").filter(|value| !value.is_null()) {
+    if let Some(entry) = manifest
+        .get("sessionIndexEntry")
+        .filter(|value| !value.is_null())
+    {
         append_raw_session_index_entry(&session_index_path(&codex_home), entry)?;
     }
     delete_trash_directory(&manifest_path)?;
@@ -962,9 +1003,12 @@ pub fn restore_trashed_thread(manifest_path: &Path) -> Result<bool, String> {
 
 pub fn delete_trashed_thread(manifest_path: &Path) -> Result<bool, String> {
     let codex_home = get_codex_config_dir();
-    let manifest_path = manifest_path
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve trash manifest {}: {e}", manifest_path.display()))?;
+    let manifest_path = manifest_path.canonicalize().map_err(|e| {
+        format!(
+            "Failed to resolve trash manifest {}: {e}",
+            manifest_path.display()
+        )
+    })?;
     let thread_trash = thread_trash_path(&codex_home)
         .canonicalize()
         .map_err(|e| format!("Failed to resolve thread trash: {e}"))?;
@@ -1366,13 +1410,22 @@ fn update_sqlite_project(
     session_id: &str,
     target_project_dir: &str,
 ) -> Result<(), String> {
-    let conn = Connection::open(state_db)
-        .map_err(|e| format!("Failed to open Codex state database {}: {e}", state_db.display()))?;
+    let conn = Connection::open(state_db).map_err(|e| {
+        format!(
+            "Failed to open Codex state database {}: {e}",
+            state_db.display()
+        )
+    })?;
     conn.execute(
         "update threads set cwd = ?1 where id = ?2",
         params![target_project_dir, session_id],
     )
-    .map_err(|e| format!("Failed to update Codex state database {}: {e}", state_db.display()))?;
+    .map_err(|e| {
+        format!(
+            "Failed to update Codex state database {}: {e}",
+            state_db.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -1503,7 +1556,10 @@ fn update_session_meta_timestamp(path: &Path, timestamp: &str) -> Result<(), Str
         .map_err(|e| format!("Failed to decode Codex session metadata: {e}"))?;
     obj["timestamp"] = Value::String(timestamp.to_string());
     if let Some(payload) = obj.get_mut("payload").and_then(Value::as_object_mut) {
-        payload.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
+        payload.insert(
+            "timestamp".to_string(),
+            Value::String(timestamp.to_string()),
+        );
     }
 
     let first_line = serde_json::to_string(&obj)
@@ -1532,9 +1588,15 @@ fn branch_content(
         .and_then(Value::as_object_mut)
         .ok_or_else(|| "Codex session metadata is missing payload object".to_string())?;
     payload.insert("id".to_string(), Value::String(new_session_id.to_string()));
-    payload.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
+    payload.insert(
+        "timestamp".to_string(),
+        Value::String(timestamp.to_string()),
+    );
     payload.insert("cwd".to_string(), Value::String(cwd.to_string()));
-    payload.insert("thread_source".to_string(), Value::String("user".to_string()));
+    payload.insert(
+        "thread_source".to_string(),
+        Value::String("user".to_string()),
+    );
 
     let first_line = serde_json::to_string(&obj)
         .map_err(|e| format!("Failed to encode Codex branch metadata: {e}"))?;
@@ -1552,8 +1614,12 @@ fn upsert_session_index(
     if !session_index.exists() {
         return Ok(());
     }
-    let text = fs::read_to_string(session_index)
-        .map_err(|e| format!("Failed to read session index {}: {e}", session_index.display()))?;
+    let text = fs::read_to_string(session_index).map_err(|e| {
+        format!(
+            "Failed to read session index {}: {e}",
+            session_index.display()
+        )
+    })?;
     let mut lines = Vec::new();
     let mut updated = false;
     for line in text.lines() {
@@ -1601,8 +1667,12 @@ fn append_session_index(
     if !session_index.exists() {
         return Ok(());
     }
-    let mut text = fs::read_to_string(session_index)
-        .map_err(|e| format!("Failed to read session index {}: {e}", session_index.display()))?;
+    let mut text = fs::read_to_string(session_index).map_err(|e| {
+        format!(
+            "Failed to read session index {}: {e}",
+            session_index.display()
+        )
+    })?;
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
@@ -1622,8 +1692,12 @@ fn remove_session_index_entry(session_index: &Path, session_id: &str) -> Result<
     if !session_index.exists() {
         return Ok(());
     }
-    let text = fs::read_to_string(session_index)
-        .map_err(|e| format!("Failed to read session index {}: {e}", session_index.display()))?;
+    let text = fs::read_to_string(session_index).map_err(|e| {
+        format!(
+            "Failed to read session index {}: {e}",
+            session_index.display()
+        )
+    })?;
     let lines = text
         .lines()
         .filter(|line| {
@@ -1647,10 +1721,15 @@ fn insert_branched_sqlite_row(
     title: &str,
     now: DateTime<Utc>,
 ) -> Result<(), String> {
-    let conn = Connection::open(state_db)
-        .map_err(|e| format!("Failed to open Codex state database {}: {e}", state_db.display()))?;
-    let inserted = conn.execute(
-        "insert into threads (
+    let conn = Connection::open(state_db).map_err(|e| {
+        format!(
+            "Failed to open Codex state database {}: {e}",
+            state_db.display()
+        )
+    })?;
+    let inserted = conn
+        .execute(
+            "insert into threads (
             id, rollout_path, created_at, updated_at, source, model_provider, cwd, title,
             sandbox_policy, approval_mode, tokens_used, has_user_event, archived, archived_at,
             git_sha, git_branch, git_origin_url, cli_version, first_user_message,
@@ -1665,16 +1744,16 @@ fn insert_branched_sqlite_row(
             ?5, ?5, 'user', preview
         from threads
         where id = ?6",
-        params![
-            new_session_id,
-            rollout_path.to_string_lossy().to_string(),
-            now.timestamp(),
-            title,
-            now.timestamp_millis(),
-            source_session_id
-        ],
-    )
-    .map_err(|e| format!("Failed to insert Codex branch row: {e}"))?;
+            params![
+                new_session_id,
+                rollout_path.to_string_lossy().to_string(),
+                now.timestamp(),
+                title,
+                now.timestamp_millis(),
+                source_session_id
+            ],
+        )
+        .map_err(|e| format!("Failed to insert Codex branch row: {e}"))?;
     if inserted != 1 {
         return Err("Branch was not registered in the Codex state database".to_string());
     }
@@ -1682,8 +1761,12 @@ fn insert_branched_sqlite_row(
 }
 
 fn delete_sqlite_thread(state_db: &Path, session_id: &str) -> Result<(), String> {
-    let conn = Connection::open(state_db)
-        .map_err(|e| format!("Failed to open Codex state database {}: {e}", state_db.display()))?;
+    let conn = Connection::open(state_db).map_err(|e| {
+        format!(
+            "Failed to open Codex state database {}: {e}",
+            state_db.display()
+        )
+    })?;
     conn.execute("delete from threads where id = ?1", params![session_id])
         .map_err(|e| format!("Failed to roll back Codex branch row: {e}"))?;
     Ok(())
@@ -1744,11 +1827,21 @@ fn session_meta_from_sqlite_record(
     let created_at = record
         .get("created_at_ms")
         .and_then(Value::as_i64)
-        .or_else(|| record.get("created_at").and_then(Value::as_i64).map(seconds_to_ms));
+        .or_else(|| {
+            record
+                .get("created_at")
+                .and_then(Value::as_i64)
+                .map(seconds_to_ms)
+        });
     let last_active_at = record
         .get("updated_at_ms")
         .and_then(Value::as_i64)
-        .or_else(|| record.get("updated_at").and_then(Value::as_i64).map(seconds_to_ms));
+        .or_else(|| {
+            record
+                .get("updated_at")
+                .and_then(Value::as_i64)
+                .map(seconds_to_ms)
+        });
 
     Ok(SessionMeta {
         provider_id: PROVIDER_ID.to_string(),
@@ -1884,7 +1977,10 @@ fn backup_reason(stamp: &str, kind: &str) -> String {
     .to_string()
 }
 
-fn collect_trashed_threads(root: &Path, threads: &mut Vec<CodexTrashedThread>) -> Result<(), String> {
+fn collect_trashed_threads(
+    root: &Path,
+    threads: &mut Vec<CodexTrashedThread>,
+) -> Result<(), String> {
     for entry in fs::read_dir(root)
         .map_err(|e| format!("Failed to read thread trash {}: {e}", root.display()))?
         .flatten()
@@ -1893,12 +1989,14 @@ fn collect_trashed_threads(root: &Path, threads: &mut Vec<CodexTrashedThread>) -
         if path.is_dir() {
             let manifest_path = path.join("manifest.json");
             if manifest_path.exists() {
-                let manifest: Value = serde_json::from_str(
-                    &fs::read_to_string(&manifest_path).map_err(|e| {
-                        format!("Failed to read trash manifest {}: {e}", manifest_path.display())
-                    })?,
-                )
-                .map_err(|e| format!("Failed to parse trash manifest: {e}"))?;
+                let manifest: Value =
+                    serde_json::from_str(&fs::read_to_string(&manifest_path).map_err(|e| {
+                        format!(
+                            "Failed to read trash manifest {}: {e}",
+                            manifest_path.display()
+                        )
+                    })?)
+                    .map_err(|e| format!("Failed to parse trash manifest: {e}"))?;
                 let trash_path = manifest
                     .get("trashPath")
                     .and_then(Value::as_str)
@@ -1995,8 +2093,12 @@ fn append_raw_session_index_entry(session_index: &Path, entry: &Value) -> Result
     let Some(id) = entry.get("id").and_then(Value::as_str) else {
         return Ok(());
     };
-    let existing = fs::read_to_string(session_index)
-        .map_err(|e| format!("Failed to read session index {}: {e}", session_index.display()))?;
+    let existing = fs::read_to_string(session_index).map_err(|e| {
+        format!(
+            "Failed to read session index {}: {e}",
+            session_index.display()
+        )
+    })?;
     for line in existing.lines() {
         if serde_json::from_str::<Value>(line)
             .ok()
@@ -2020,8 +2122,12 @@ fn delete_trash_directory(manifest_path: &Path) -> Result<(), String> {
     let Some(directory) = manifest_path.parent() else {
         return Err("Invalid trash manifest path".to_string());
     };
-    fs::remove_dir_all(directory)
-        .map_err(|e| format!("Failed to delete trash directory {}: {e}", directory.display()))
+    fs::remove_dir_all(directory).map_err(|e| {
+        format!(
+            "Failed to delete trash directory {}: {e}",
+            directory.display()
+        )
+    })
 }
 
 #[cfg(test)]

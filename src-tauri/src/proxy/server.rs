@@ -9,13 +9,9 @@
 //! a direct (non-proxied) CLI request.
 
 use super::{
-    failover_switch::FailoverSwitchManager,
-    handlers,
-    log_codes::srv as log_srv,
-    provider_router::ProviderRouter,
-    providers::codex_chat_history::CodexChatHistoryStore,
-    types::*,
-    ProxyError,
+    failover_switch::FailoverSwitchManager, handlers, log_codes::srv as log_srv,
+    provider_router::ProviderRouter, providers::codex_chat_history::CodexChatHistoryStore,
+    types::*, ProxyError,
 };
 use crate::database::Database;
 use axum::{

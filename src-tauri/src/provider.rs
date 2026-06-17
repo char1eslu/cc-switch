@@ -750,7 +750,6 @@ requires_openai_auth = true"#
             in_failover_queue: false,
         })
     }
-
 }
 
 #[cfg(test)]

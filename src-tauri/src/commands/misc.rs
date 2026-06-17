@@ -4076,8 +4076,7 @@ mod tests {
         #[test]
         fn brew_formula_extraction() {
             assert_eq!(
-                brew_formula_from_path("/opt/homebrew/Cellar/codex/1.2.3/bin/codex")
-                    .as_deref(),
+                brew_formula_from_path("/opt/homebrew/Cellar/codex/1.2.3/bin/codex").as_deref(),
                 Some("codex")
             );
             // node 全局包不在 Cellar 下 → 不是 formula。

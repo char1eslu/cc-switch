@@ -16,10 +16,7 @@ pub struct AuthInfo {
 impl AuthInfo {
     /// 创建新的认证信息
     pub fn new(api_key: String, strategy: AuthStrategy) -> Self {
-        Self {
-            api_key,
-            strategy,
-        }
+        Self { api_key, strategy }
     }
 
     /// 返回遮蔽后的 API Key（用于日志输出）
@@ -44,7 +41,6 @@ impl AuthInfo {
             "***".to_string()
         }
     }
-
 }
 
 /// 认证策略

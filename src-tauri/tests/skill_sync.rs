@@ -37,7 +37,10 @@ fn import_from_apps_respects_explicit_app_selection() {
         &home.join(".claude").join("skills").join("shared-skill"),
         "Shared",
     );
-    write_skill(&home.join(".codex").join("skills").join("shared-skill"), "Shared");
+    write_skill(
+        &home.join(".codex").join("skills").join("shared-skill"),
+        "Shared",
+    );
 
     let state = create_test_state().expect("create test state");
 
@@ -382,7 +385,10 @@ fn migration_snapshot_overrides_multi_source_directory_inference() {
         &home.join(".claude").join("skills").join("demo-skill"),
         "Demo",
     );
-    write_skill(&home.join(".codex").join("skills").join("demo-skill"), "Demo");
+    write_skill(
+        &home.join(".codex").join("skills").join("demo-skill"),
+        "Demo",
+    );
 
     let state = create_test_state().expect("create test state");
     state

@@ -101,12 +101,7 @@ pub async fn move_session(
     let target_project_dir = targetProjectDir.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        session_manager::move_session(
-            &provider_id,
-            &session_id,
-            &source_path,
-            &target_project_dir,
-        )
+        session_manager::move_session(&provider_id, &session_id, &source_path, &target_project_dir)
     })
     .await
     .map_err(|e| format!("Failed to move session: {e}"))?
@@ -225,7 +220,10 @@ pub async fn list_codex_backups(
 }
 
 #[tauri::command]
-pub async fn restore_codex_backup(backupPath: String, originalPath: String) -> Result<bool, String> {
+pub async fn restore_codex_backup(
+    backupPath: String,
+    originalPath: String,
+) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
         session_manager::providers::codex::restore_backup(
             std::path::Path::new(&backupPath),

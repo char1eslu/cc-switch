@@ -2200,14 +2200,8 @@ fn should_try_pricing_prefix_match(model_id: &str) -> bool {
         return dash_count >= 1;
     }
 
-    const PREFIX_MATCH_FAMILIES: &[&str] = &[
-        "gpt-",
-        "deepseek-",
-        "qwen-",
-        "glm-",
-        "kimi-",
-        "minimax-",
-    ];
+    const PREFIX_MATCH_FAMILIES: &[&str] =
+        &["gpt-", "deepseek-", "qwen-", "glm-", "kimi-", "minimax-"];
 
     PREFIX_MATCH_FAMILIES
         .iter()

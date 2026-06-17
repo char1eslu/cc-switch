@@ -296,12 +296,7 @@ impl AppType {
 
     /// Return an iterator over all app types
     pub fn all() -> impl Iterator<Item = AppType> {
-        [
-            AppType::Claude,
-            AppType::ClaudeDesktop,
-            AppType::Codex,
-        ]
-        .into_iter()
+        [AppType::Claude, AppType::ClaudeDesktop, AppType::Codex].into_iter()
     }
 }
 
@@ -585,10 +580,7 @@ impl MultiAppConfig {
         log::info!("检测到已存在配置文件且 Prompt 列表为空，将尝试从现有提示词文件自动导入");
 
         let mut imported = false;
-        for app in [
-            AppType::Claude,
-            AppType::Codex,
-        ] {
+        for app in [AppType::Claude, AppType::Codex] {
             // 复用已有的单应用导入逻辑
             if Self::auto_import_prompt_if_exists(self, app)? {
                 imported = true;
@@ -685,10 +677,7 @@ impl MultiAppConfig {
         let mut conflicts = Vec::new();
 
         // 收集所有应用的 MCP
-        for app in [
-            AppType::Claude,
-            AppType::Codex,
-        ] {
+        for app in [AppType::Claude, AppType::Codex] {
             let old_servers = match app {
                 AppType::Claude => &self.mcp.claude.servers,
                 AppType::ClaudeDesktop => continue, // Claude Desktop 3P profiles don't use MCP here

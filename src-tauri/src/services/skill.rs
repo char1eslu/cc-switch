@@ -662,20 +662,19 @@ impl SkillService {
             };
 
             // 下载仓库
-            let (temp_dir, used_branch) =
-                timeout(REPO_DOWNLOAD_TIMEOUT, self.download_repo(&repo))
-                    .await
-                    .map_err(|_| {
-                        anyhow!(format_skill_error(
-                            "DOWNLOAD_TIMEOUT",
-                            &[
-                                ("owner", repo.owner.as_str()),
-                                ("name", repo.name.as_str()),
-                                ("timeout", REPO_DOWNLOAD_TIMEOUT_LABEL),
-                            ],
-                            Some("checkNetwork"),
-                        ))
-                    })??;
+            let (temp_dir, used_branch) = timeout(REPO_DOWNLOAD_TIMEOUT, self.download_repo(&repo))
+                .await
+                .map_err(|_| {
+                    anyhow!(format_skill_error(
+                        "DOWNLOAD_TIMEOUT",
+                        &[
+                            ("owner", repo.owner.as_str()),
+                            ("name", repo.name.as_str()),
+                            ("timeout", REPO_DOWNLOAD_TIMEOUT_LABEL),
+                        ],
+                        Some("checkNetwork"),
+                    ))
+                })??;
             repo_branch = used_branch;
 
             // 复制到 SSOT
@@ -929,10 +928,9 @@ impl SkillService {
             };
 
             for skill in group_skills {
-                let Some(remote_hash) = Self::find_remote_hash_for_skill(
-                    &remote_hashes,
-                    &skill.directory,
-                ) else {
+                let Some(remote_hash) =
+                    Self::find_remote_hash_for_skill(&remote_hashes, &skill.directory)
+                else {
                     continue;
                 };
 
@@ -980,20 +978,19 @@ impl SkillService {
         let ssot_dir = Self::get_ssot_dir()?;
 
         // 下载仓库
-        let (temp_dir, used_branch) =
-            timeout(REPO_DOWNLOAD_TIMEOUT, self.download_repo(&repo))
-                .await
-                .map_err(|_| {
-                    anyhow!(format_skill_error(
-                        "DOWNLOAD_TIMEOUT",
-                        &[
-                            ("owner", &owner),
-                            ("name", &name),
-                            ("timeout", REPO_DOWNLOAD_TIMEOUT_LABEL),
-                        ],
-                        Some("checkNetwork"),
-                    ))
-                })??;
+        let (temp_dir, used_branch) = timeout(REPO_DOWNLOAD_TIMEOUT, self.download_repo(&repo))
+            .await
+            .map_err(|_| {
+                anyhow!(format_skill_error(
+                    "DOWNLOAD_TIMEOUT",
+                    &[
+                        ("owner", &owner),
+                        ("name", &name),
+                        ("timeout", REPO_DOWNLOAD_TIMEOUT_LABEL),
+                    ],
+                    Some("checkNetwork"),
+                ))
+            })??;
 
         // 在解压的仓库中查找 Skill 源目录
         let mut remote_skills: Vec<DiscoverableSkill> = Vec::new();
@@ -1898,22 +1895,20 @@ impl SkillService {
             }
         }
 
-        let (temp_dir, resolved_branch) = timeout(
-            REPO_DISCOVERY_FALLBACK_TIMEOUT,
-            self.download_repo(repo),
-        )
-        .await
-        .map_err(|_| {
-            anyhow!(format_skill_error(
-                "DOWNLOAD_TIMEOUT",
-                &[
-                    ("owner", &repo.owner),
-                    ("name", &repo.name),
-                    ("timeout", "20")
-                ],
-                Some("checkNetwork"),
-            ))
-        })??;
+        let (temp_dir, resolved_branch) =
+            timeout(REPO_DISCOVERY_FALLBACK_TIMEOUT, self.download_repo(repo))
+                .await
+                .map_err(|_| {
+                    anyhow!(format_skill_error(
+                        "DOWNLOAD_TIMEOUT",
+                        &[
+                            ("owner", &repo.owner),
+                            ("name", &repo.name),
+                            ("timeout", "20")
+                        ],
+                        Some("checkNetwork"),
+                    ))
+                })??;
 
         let mut skills = Vec::new();
         let scan_dir = temp_dir.clone();
@@ -1992,10 +1987,7 @@ impl SkillService {
         Ok(skills)
     }
 
-    async fn fetch_repo_skill_hashes(
-        &self,
-        repo: &SkillRepo,
-    ) -> Result<HashMap<String, String>> {
+    async fn fetch_repo_skill_hashes(&self, repo: &SkillRepo) -> Result<HashMap<String, String>> {
         let (tree, _branch) = self.fetch_github_tree(repo).await?;
         if tree.truncated {
             return Err(anyhow::anyhow!("GitHub tree response was truncated"));
@@ -2007,22 +1999,20 @@ impl SkillService {
         &self,
         repo: &SkillRepo,
     ) -> Result<HashMap<String, String>> {
-        let (temp_dir, resolved_branch) = timeout(
-            REPO_DISCOVERY_FALLBACK_TIMEOUT,
-            self.download_repo(repo),
-        )
-        .await
-        .map_err(|_| {
-            anyhow!(format_skill_error(
-                "DOWNLOAD_TIMEOUT",
-                &[
-                    ("owner", &repo.owner),
-                    ("name", &repo.name),
-                    ("timeout", "20")
-                ],
-                Some("checkNetwork"),
-            ))
-        })??;
+        let (temp_dir, resolved_branch) =
+            timeout(REPO_DISCOVERY_FALLBACK_TIMEOUT, self.download_repo(repo))
+                .await
+                .map_err(|_| {
+                    anyhow!(format_skill_error(
+                        "DOWNLOAD_TIMEOUT",
+                        &[
+                            ("owner", &repo.owner),
+                            ("name", &repo.name),
+                            ("timeout", "20")
+                        ],
+                        Some("checkNetwork"),
+                    ))
+                })??;
 
         let mut resolved_repo = repo.clone();
         resolved_repo.branch = resolved_branch;
@@ -2093,7 +2083,10 @@ impl SkillService {
                 let relative = if prefix.is_empty() {
                     entry.path.as_str()
                 } else {
-                    entry.path.strip_prefix(&prefix).unwrap_or(entry.path.as_str())
+                    entry
+                        .path
+                        .strip_prefix(&prefix)
+                        .unwrap_or(entry.path.as_str())
                 };
                 if relative
                     .split('/')
@@ -2158,10 +2151,7 @@ impl SkillService {
             .map(|(_, hash)| hash)
     }
 
-    fn compute_local_git_tree_hash(
-        ssot_dir: &Path,
-        skill: &InstalledSkill,
-    ) -> Option<String> {
+    fn compute_local_git_tree_hash(ssot_dir: &Path, skill: &InstalledSkill) -> Option<String> {
         let local_dir = ssot_dir.join(&skill.directory);
         if !local_dir.exists() {
             return None;
@@ -2390,7 +2380,11 @@ impl SkillService {
                     .text()
                     .await?
             }
-            _ => return Err(anyhow::anyhow!("GitHub content response is missing content")),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "GitHub content response is missing content"
+                ))
+            }
         };
 
         Self::parse_skill_metadata_content(&text)

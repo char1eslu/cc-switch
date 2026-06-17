@@ -898,7 +898,10 @@ impl ProviderAdapter for ClaudeAdapter {
         // - "anthropic" (默认): 直接透传，无需转换
         // - "openai_chat": 需要 Anthropic ↔ OpenAI Chat Completions 格式转换
         // - "openai_responses": 需要 Anthropic ↔ OpenAI Responses API 格式转换
-        matches!(self.get_api_format(provider), "openai_chat" | "openai_responses")
+        matches!(
+            self.get_api_format(provider),
+            "openai_chat" | "openai_responses"
+        )
     }
 
     fn transform_request(
@@ -906,12 +909,7 @@ impl ProviderAdapter for ClaudeAdapter {
         body: serde_json::Value,
         provider: &Provider,
     ) -> Result<serde_json::Value, ProxyError> {
-        transform_claude_request_for_api_format(
-            body,
-            provider,
-            self.get_api_format(provider),
-            None,
-        )
+        transform_claude_request_for_api_format(body, provider, self.get_api_format(provider), None)
     }
 
     fn transform_response(&self, body: serde_json::Value) -> Result<serde_json::Value, ProxyError> {
@@ -1414,13 +1412,9 @@ mod tests {
             "max_tokens": 128
         });
 
-        let transformed = transform_claude_request_for_api_format(
-            body,
-            &provider,
-            "openai_responses",
-            None,
-        )
-        .unwrap();
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_responses", None)
+                .unwrap();
 
         assert_eq!(transformed["model"], "gpt-5.4");
         assert!(transformed.get("input").is_some());
@@ -1441,8 +1435,7 @@ mod tests {
             "stream": true
         });
         let transformed =
-            transform_claude_request_for_api_format(body, &provider, "openai_chat", None)
-                .unwrap();
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None).unwrap();
         assert_eq!(transformed["stream"], true);
         assert_eq!(transformed["stream_options"]["include_usage"], true);
     }
@@ -1459,8 +1452,7 @@ mod tests {
             "max_tokens": 128
         });
         let transformed =
-            transform_claude_request_for_api_format(body, &provider, "openai_chat", None)
-                .unwrap();
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None).unwrap();
         assert!(transformed.get("stream_options").is_none());
     }
 
@@ -1515,13 +1507,9 @@ mod tests {
             "max_tokens": 128
         });
 
-        let transformed = transform_claude_request_for_api_format(
-            body,
-            &provider,
-            "openai_responses",
-            None,
-        )
-        .unwrap();
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_responses", None)
+                .unwrap();
 
         assert!(transformed.get("prompt_cache_key").is_none());
     }
@@ -1575,13 +1563,9 @@ mod tests {
             "max_tokens": 128
         });
 
-        let transformed = transform_claude_request_for_api_format(
-            body,
-            &provider,
-            "openai_responses",
-            None,
-        )
-        .unwrap();
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_responses", None)
+                .unwrap();
 
         assert!(transformed.get("prompt_cache_key").is_none());
     }
@@ -1638,13 +1622,9 @@ mod tests {
             "max_tokens": 128
         });
 
-        let transformed = transform_claude_request_for_api_format(
-            body,
-            &provider,
-            "openai_responses",
-            None,
-        )
-        .unwrap();
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_responses", None)
+                .unwrap();
 
         assert_eq!(transformed["store"], json!(false));
         assert!(transformed.get("service_tier").is_none());
@@ -1676,8 +1656,7 @@ mod tests {
         });
 
         let transformed =
-            transform_claude_request_for_api_format(body, &provider, "openai_chat", None)
-                .unwrap();
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None).unwrap();
 
         assert!(transformed.get("prompt_cache_key").is_none());
     }
@@ -1704,8 +1683,7 @@ mod tests {
         });
 
         let transformed =
-            transform_claude_request_for_api_format(body, &provider, "openai_chat", None)
-                .unwrap();
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None).unwrap();
 
         assert_eq!(transformed["prompt_cache_key"], "claude-cache-route");
     }
@@ -1737,8 +1715,7 @@ mod tests {
         });
 
         let transformed =
-            transform_claude_request_for_api_format(body, &provider, "openai_chat", None)
-                .unwrap();
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None).unwrap();
 
         let msg = &transformed["messages"][0];
         assert!(msg.get("tool_calls").is_some());
@@ -1772,8 +1749,7 @@ mod tests {
         });
 
         let transformed =
-            transform_claude_request_for_api_format(body, &provider, "openai_chat", None)
-                .unwrap();
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None).unwrap();
 
         let msg = &transformed["messages"][0];
         assert_eq!(msg["reasoning_content"], "I should call the tool.");
@@ -1807,8 +1783,7 @@ mod tests {
         });
 
         let transformed =
-            transform_claude_request_for_api_format(body, &provider, "openai_chat", None)
-                .unwrap();
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None).unwrap();
 
         let msg = &transformed["messages"][0];
         assert_eq!(msg["reasoning_content"], "I should call the tool.");
@@ -1842,8 +1817,7 @@ mod tests {
         });
 
         let transformed =
-            transform_claude_request_for_api_format(body, &provider, "openai_chat", None)
-                .unwrap();
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None).unwrap();
 
         let msg = &transformed["messages"][0];
         assert_eq!(msg["reasoning_content"], "I should call the tool.");

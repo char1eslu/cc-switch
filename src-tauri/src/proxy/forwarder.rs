@@ -3010,11 +3010,8 @@ mod tests {
 
     #[test]
     fn rewrite_claude_transform_endpoint_uses_copilot_path() {
-        let (endpoint, passthrough_query) = rewrite_claude_transform_endpoint(
-            "/v1/messages?beta=true&x-id=1",
-            "anthropic",
-            true,
-        );
+        let (endpoint, passthrough_query) =
+            rewrite_claude_transform_endpoint("/v1/messages?beta=true&x-id=1", "anthropic", true);
 
         assert_eq!(endpoint, "/chat/completions?x-id=1");
         assert_eq!(passthrough_query.as_deref(), Some("x-id=1"));

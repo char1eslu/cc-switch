@@ -20,10 +20,7 @@ fn infer_server_type_from_toml(entry_tbl: &toml::value::Table) -> Option<&'stati
         Some("sse") => Some("sse"),
         Some(_) => None,
         None if entry_tbl.get("url").and_then(|v| v.as_str()).is_some() => Some("http"),
-        None if entry_tbl
-            .get("command")
-            .and_then(|v| v.as_str())
-            .is_some() => Some("stdio"),
+        None if entry_tbl.get("command").and_then(|v| v.as_str()).is_some() => Some("stdio"),
         None => None,
     }
 }

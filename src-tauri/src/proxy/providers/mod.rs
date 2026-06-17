@@ -322,7 +322,6 @@ mod tests {
         // Test deserialization
         let deserialized: ProviderType = serde_json::from_str("\"claude\"").unwrap();
         assert_eq!(deserialized, ProviderType::Claude);
-
     }
 
     #[test]
@@ -393,6 +392,5 @@ mod tests {
 
         let adapter = get_adapter_for_provider_type(&ProviderType::Codex);
         assert_eq!(adapter.name(), "Codex");
-
     }
 }

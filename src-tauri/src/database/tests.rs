@@ -723,7 +723,6 @@ fn schema_model_pricing_is_seeded_on_init() {
         "应该包含 GPT 模型定价，实际数量: {}",
         gpt_count
     );
-
 }
 
 #[test]

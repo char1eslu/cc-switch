@@ -19,10 +19,7 @@ const W_TIER_NAMES: &[&str] = &[
     crate::services::subscription::TIER_SEVEN_DAY_OPUS,
     crate::services::subscription::TIER_SEVEN_DAY_SONNET,
 ];
-const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[
-    ("h", H_TIER_NAMES),
-    ("w", W_TIER_NAMES),
-];
+const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[("h", H_TIER_NAMES), ("w", W_TIER_NAMES)];
 
 /// 每个 app 分区的子菜单句柄，用于 usage 更新时就地改 label 而非整菜单重建。
 /// `create_tray_menu` 每次重建都会整表覆盖写入，保证句柄始终指向当前活跃菜单。
