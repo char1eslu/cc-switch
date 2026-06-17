@@ -174,7 +174,8 @@ describe("App integration with MSW", () => {
     );
 
     fireEvent.click(screen.getByText("usage"));
-    expect(screen.getByTestId("usage-modal")).toBeInTheDocument();
+    // UsageScriptModal 经 React.lazy 异步加载，需用 findBy 等待挂载
+    expect(await screen.findByTestId("usage-modal")).toBeInTheDocument();
     fireEvent.click(screen.getByText("save-script"));
     fireEvent.click(screen.getByText("close-usage"));
 
@@ -254,5 +255,4 @@ describe("App integration with MSW", () => {
       expect(toastErrorMock).toHaveBeenCalled();
     });
   });
-
 });
