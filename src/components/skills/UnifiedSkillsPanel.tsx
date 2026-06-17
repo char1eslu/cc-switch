@@ -35,6 +35,7 @@ import { SKILLS_APP_IDS } from "@/config/appConfig";
 import { AppCountBar } from "@/components/common/AppCountBar";
 import { AppToggleGroup } from "@/components/common/AppToggleGroup";
 import { ListItemRow } from "@/components/common/ListItemRow";
+import { formatSkillError } from "@/lib/errors/skillErrorParser";
 import {
   Dialog,
   DialogContent,
@@ -62,6 +63,10 @@ function formatSkillBackupDate(unixSeconds: number): string {
   return Number.isNaN(date.getTime())
     ? String(unixSeconds)
     : date.toLocaleString();
+}
+
+function errorToString(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 const UnifiedSkillsPanel = React.forwardRef<
@@ -246,7 +251,12 @@ const UnifiedSkillsPanel = React.forwardRef<
         closeButton: true,
       });
     } catch (error) {
-      toast.error(t("skills.updateFailed"), { description: String(error) });
+      const formatted = formatSkillError(
+        errorToString(error),
+        t,
+        "skills.updateFailed",
+      );
+      toast.error(formatted.title, { description: formatted.description });
     }
   };
 
@@ -259,8 +269,13 @@ const UnifiedSkillsPanel = React.forwardRef<
         await updateSkillMutation.mutateAsync(update.id);
         successCount++;
       } catch (error) {
+        const formatted = formatSkillError(
+          errorToString(error),
+          t,
+          "skills.updateFailed",
+        );
         toast.error(t("skills.updateFailed"), {
-          description: `${update.name}: ${String(error)}`,
+          description: `${update.name}: ${formatted.description}`,
         });
       }
     }

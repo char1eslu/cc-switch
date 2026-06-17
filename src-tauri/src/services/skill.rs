@@ -266,7 +266,9 @@ struct SkillBackupMetadata {
 }
 
 const SKILL_BACKUP_RETAIN_COUNT: usize = 20;
-const REPO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+const REPO_DOWNLOAD_TIMEOUT_SECONDS: u64 = 300;
+const REPO_DOWNLOAD_TIMEOUT_LABEL: &str = "300";
+const REPO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(REPO_DOWNLOAD_TIMEOUT_SECONDS);
 const REPO_DISCOVERY_FALLBACK_TIMEOUT: Duration = Duration::from_secs(20);
 const REPO_METADATA_TIMEOUT: Duration = Duration::from_secs(10);
 const GITHUB_API_USER_AGENT: &str = "cc-switch";
@@ -669,7 +671,7 @@ impl SkillService {
                             &[
                                 ("owner", repo.owner.as_str()),
                                 ("name", repo.name.as_str()),
-                                ("timeout", "60"),
+                                ("timeout", REPO_DOWNLOAD_TIMEOUT_LABEL),
                             ],
                             Some("checkNetwork"),
                         ))
@@ -984,7 +986,11 @@ impl SkillService {
                 .map_err(|_| {
                     anyhow!(format_skill_error(
                         "DOWNLOAD_TIMEOUT",
-                        &[("owner", &owner), ("name", &name), ("timeout", "60")],
+                        &[
+                            ("owner", &owner),
+                            ("name", &name),
+                            ("timeout", REPO_DOWNLOAD_TIMEOUT_LABEL),
+                        ],
                         Some("checkNetwork"),
                     ))
                 })??;
