@@ -12,6 +12,9 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     steps:
+      - name: Configure Git defaults
+        run: git config --global init.defaultBranch main
+
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -87,3 +90,4 @@ jobs:
         with:
           name: CC-Switch-macOS-arm64-ad-hoc
           path: release-assets/CC-Switch-macOS-arm64-ad-hoc.zip
+          if-no-files-found: error
