@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, memo } from "react";
 import { GripVertical, ChevronDown, ChevronUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -112,7 +112,7 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
   return fallbackText;
 };
 
-export function ProviderCard({
+function ProviderCardComponent({
   provider,
   isCurrent,
   appId,
@@ -504,3 +504,7 @@ export function ProviderCard({
     </div>
   );
 }
+
+// memo 化：仅当 props 浅比较变化时才重渲染。配合 ProviderList 传入的稳定回调，
+// 避免搜索/单卡片状态变化时整列卡片重渲染（卡片内含 health badge、图标推断等开销）。
+export const ProviderCard = memo(ProviderCardComponent);

@@ -13,6 +13,12 @@ export default defineConfig(({ command }) => ({
     react(),
   ].filter(Boolean),
   base: "./",
+  // 生产构建时把 console.log / console.debug 标记为无副作用，minify 阶段移除；
+  // 保留 console.error / console.warn 以便排查线上问题。dev（serve）不受影响。
+  esbuild:
+    command === "build"
+      ? { pure: ["console.log", "console.debug"] }
+      : undefined,
   build: {
     outDir: "../dist",
     emptyOutDir: true,
