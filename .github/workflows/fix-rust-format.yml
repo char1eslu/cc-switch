@@ -1,0 +1,47 @@
+name: Fix Rust Format
+
+# 临时工具 workflow：在 runner 上用项目锁定的 1.95 toolchain 跑 cargo fmt，
+# 把格式化结果提交回 dev。修复后即可删除本文件。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  rustfmt:
+    name: cargo fmt and push
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: dev
+
+      # 不指定版本，让 rustup 读取 rust-toolchain.toml（channel 1.95 + rustfmt），
+      # 与 CI 的 cargo fmt --check 使用完全一致的 rustfmt 版本。
+      - name: Setup Rust (from rust-toolchain.toml)
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add rustfmt
+          rustfmt --version
+
+      - name: Run cargo fmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Verify formatting now passes
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+
+      - name: Commit and push if changed
+        run: |
+          if git diff --quiet; then
+            echo "No formatting changes needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style: cargo fmt 修复 Rust 格式（CI rustfmt 1.95）
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+          git push origin HEAD:dev
