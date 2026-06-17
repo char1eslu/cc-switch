@@ -2,7 +2,7 @@
 //!
 //! Handles reading and writing live configuration files for Claude and Codex.
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use toml_edit::{DocumentMut, Item, TableLike};
 
 use crate::app_config::AppType;
@@ -28,6 +28,7 @@ pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
     v
 }
 
+#[allow(dead_code)]
 pub(crate) fn provider_exists_in_live_config(
     _app_type: &AppType,
     _provider_id: &str,

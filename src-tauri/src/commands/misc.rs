@@ -837,6 +837,7 @@ async fn fetch_npm_latest_for_tool(
 }
 
 /// Helper function to fetch latest version from GitHub releases
+#[allow(dead_code)]
 async fn fetch_github_latest_version(client: &reqwest::Client, repo: &str) -> Option<String> {
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
     match client
@@ -860,6 +861,7 @@ async fn fetch_github_latest_version(client: &reqwest::Client, repo: &str) -> Op
 }
 
 /// Helper function to fetch latest version from PyPI
+#[allow(dead_code)]
 async fn fetch_pypi_latest_version(client: &reqwest::Client, package: &str) -> Option<String> {
     let url = format!("https://pypi.org/pypi/{package}/json");
     match client.get(&url).send().await {
@@ -1205,25 +1207,10 @@ fn push_unique_path(paths: &mut Vec<std::path::PathBuf>, path: std::path::PathBu
     }
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn push_env_single_dir(paths: &mut Vec<std::path::PathBuf>, value: Option<std::ffi::OsString>) {
     if let Some(raw) = value {
         push_unique_path(paths, std::path::PathBuf::from(raw));
-    }
-}
-
-fn extend_from_path_list(
-    paths: &mut Vec<std::path::PathBuf>,
-    value: Option<std::ffi::OsString>,
-    suffix: Option<&str>,
-) {
-    if let Some(raw) = value {
-        for p in std::env::split_paths(&raw) {
-            let dir = match suffix {
-                Some(s) => p.join(s),
-                None => p,
-            };
-            push_unique_path(paths, dir);
-        }
     }
 }
 
@@ -1376,6 +1363,9 @@ fn extend_mise_node_search_paths(paths: &mut Vec<std::path::PathBuf>, home: &Pat
 /// 单探兜底 (`scan_cli_version`) 与全量枚举 (`enumerate_tool_installations`) 共用，
 /// 确保两条路径看到的是同一组安装位置。
 fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
+    #[cfg(not(target_os = "windows"))]
+    let _ = tool;
+
     let home = dirs::home_dir().unwrap_or_default();
 
     // 常见的安装路径（原生安装优先）
@@ -3106,6 +3096,7 @@ fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), S
 ///
 /// **Security**：`command_line` 会被原样拼进 shell/batch 脚本，调用方必须
 /// 保证它是可信字符串（当前只由后端硬编码调用）。
+#[allow(dead_code)]
 pub(crate) fn launch_terminal_running(command_line: &str, label: &str) -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
     let pid = std::process::id();

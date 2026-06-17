@@ -30,12 +30,18 @@ jobs:
         uses: pnpm/action-setup@v6
         with:
           version: 10.12.3
+          dest: ~/setup-pnpm
           run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
 
       - name: Cache pnpm store
         uses: actions/cache@v5
         with:
-          path: ~/.local/share/pnpm/store
+          path: ${{ steps.pnpm-store.outputs.path }}
           key: macos-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: macos-pnpm-store-
 

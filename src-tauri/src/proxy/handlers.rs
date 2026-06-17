@@ -279,7 +279,7 @@ async fn handle_claude_transform(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,
     state: &ProxyState,
-    original_body: &Value,
+    _original_body: &Value,
     is_stream: bool,
     api_format: &str,
     connection_guard: Option<ActiveConnectionGuard>,

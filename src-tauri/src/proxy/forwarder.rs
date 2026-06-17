@@ -2340,6 +2340,7 @@ fn rewrite_claude_transform_endpoint(
     (rewritten, passthrough_query)
 }
 
+#[allow(dead_code)]
 fn merge_query_params(base_query: Option<&str>, extra_param: Option<&str>) -> Option<String> {
     let mut params: Vec<String> = base_query
         .into_iter()
@@ -2449,7 +2450,7 @@ fn should_preserve_exact_header_case(
     matches!(resolved_claude_api_format, None | Some("anthropic"))
 }
 
-fn is_streaming_request(endpoint: &str, body: &Value, headers: &axum::http::HeaderMap) -> bool {
+fn is_streaming_request(_endpoint: &str, body: &Value, headers: &axum::http::HeaderMap) -> bool {
     if body
         .get("stream")
         .and_then(|value| value.as_bool())

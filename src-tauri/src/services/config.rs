@@ -1,4 +1,4 @@
-use super::provider::{sanitize_claude_settings_for_live, ProviderService};
+use super::provider::sanitize_claude_settings_for_live;
 use crate::app_config::{AppType, MultiAppConfig};
 use crate::error::AppError;
 use crate::provider::Provider;

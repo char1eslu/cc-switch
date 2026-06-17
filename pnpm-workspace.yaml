@@ -1,4 +1,16 @@
 packages: []
 
+overrides:
+  baseline-browser-mapping: 2.10.37
+  browserslist: 4.28.2
+  caniuse-lite: 1.0.30001799
+  update-browserslist-db: 1.2.3
+
+allowBuilds:
+  esbuild: true
+  msw: true
+
 onlyBuiltDependencies:
+  - esbuild
+  - msw
   - '@tailwindcss/oxide'

@@ -617,6 +617,7 @@ impl ProviderService {
 
     /// Check whether a provider exists in live config, tolerating parse errors
     /// only for providers that are explicitly marked as DB-only.
+    #[allow(dead_code)]
     fn check_live_config_exists(
         app_type: &AppType,
         provider_id: &str,
@@ -629,6 +630,7 @@ impl ProviderService {
         }
     }
 
+    #[allow(dead_code)]
     fn provider_live_config_managed(provider: &Provider) -> Option<bool> {
         provider
             .meta
@@ -636,6 +638,7 @@ impl ProviderService {
             .and_then(|meta| meta.live_config_managed)
     }
 
+    #[allow(dead_code)]
     fn set_provider_live_config_managed(provider: &mut Provider, managed: bool) {
         provider
             .meta

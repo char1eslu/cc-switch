@@ -16,6 +16,26 @@ export default defineConfig(({ command }) => ({
   build: {
     outDir: "../dist",
     emptyOutDir: true,
+    chunkSizeWarningLimit: 4096,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom"],
+          codemirror: [
+            "codemirror",
+            "@codemirror/lang-javascript",
+            "@codemirror/lang-json",
+            "@codemirror/lang-markdown",
+            "@codemirror/lint",
+            "@codemirror/state",
+            "@codemirror/theme-one-dark",
+            "@codemirror/view",
+          ],
+          charts: ["recharts"],
+          markdown: ["react-markdown", "remark-gfm"],
+        },
+      },
+    },
   },
   server: {
     port: 3000,
@@ -29,4 +49,3 @@ export default defineConfig(({ command }) => ({
   clearScreen: false,
   envPrefix: ["VITE_", "TAURI_"],
 }));
-
