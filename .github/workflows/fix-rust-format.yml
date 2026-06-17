@@ -41,7 +41,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "style: cargo fmt 修复 Rust 格式（CI rustfmt 1.95）
-
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+          printf '%s\n\n%s\n' "style: cargo fmt 修复 Rust 格式（CI rustfmt 1.95）" "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>" > /tmp/fmtmsg.txt
+          git commit -F /tmp/fmtmsg.txt
           git push origin HEAD:dev
