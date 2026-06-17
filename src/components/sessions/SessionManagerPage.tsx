@@ -2246,7 +2246,10 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         open={Boolean(moveTargets)}
         onOpenChange={(open) => !open && closeMoveDialog()}
       >
-        <DialogContent className="w-[min(680px,calc(100vw-3rem))] max-w-none overflow-hidden">
+        <DialogContent
+          zIndex="top"
+          className="w-[min(680px,calc(100vw-3rem))] max-w-none overflow-hidden"
+        >
           <DialogHeader>
             <DialogTitle>
               {t("sessionManager.moveTitle", {
@@ -2375,7 +2378,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         </DialogContent>
       </Dialog>
       <Dialog open={backupDialogOpen} onOpenChange={setBackupDialogOpen}>
-        <DialogContent className="max-w-4xl">
+        <DialogContent zIndex="top" className="max-w-4xl">
           <DialogHeader>
             <DialogTitle>
               {t("sessionManager.codexBackupsTitle", {

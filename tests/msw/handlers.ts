@@ -246,6 +246,26 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/check_env_conflicts`, () => success([])),
 
+  http.post(`${TAURI_ENDPOINT}/get_common_config_snippet`, () =>
+    success(null),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/set_common_config_snippet`, () =>
+    success(undefined),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/auth_get_status`, async ({ request }) => {
+    const { authProvider } = await withJson<{
+      authProvider?: "github_copilot" | "codex_oauth";
+    }>(request);
+    return success({
+      provider: authProvider ?? "github_copilot",
+      authenticated: false,
+      default_account_id: null,
+      accounts: [],
+    });
+  }),
+
   http.post(`${TAURI_ENDPOINT}/save_settings`, async ({ request }) => {
     const { settings } = await withJson<{ settings: Settings }>(request);
     setSettings(settings);
