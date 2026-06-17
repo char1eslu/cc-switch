@@ -168,7 +168,6 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const [isLoadingVersion, setIsLoadingVersion] = useState(
     () => appVersionCache === null,
   );
-  const [isDownloading, setIsDownloading] = useState(false);
   const [toolVersions, setToolVersions] = useState<ToolVersion[]>(
     () => toolVersionsCache?.data ?? [],
   );
@@ -185,8 +184,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   );
   const [showInstallCommands, setShowInstallCommands] = useState(false);
 
-  const { hasUpdate, updateInfo, checkUpdate, resetDismiss, isChecking } =
-    useUpdate();
+  const { updateInfo, checkUpdate, isChecking } = useUpdate();
 
   const [wslShellByTool, setWslShellByTool] = useState<
     Record<string, WslShellPreference>
@@ -399,43 +397,6 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   }, [t, updateInfo?.availableVersion, version]);
 
   const handleCheckUpdate = useCallback(async () => {
-    if (hasUpdate) {
-      if (isPortable) {
-        try {
-          await settingsApi.checkUpdates();
-        } catch (error) {
-          console.error("[AboutSection] Portable update failed", error);
-        }
-        return;
-      }
-
-      setIsDownloading(true);
-      try {
-        resetDismiss();
-        const installed = await settingsApi.installUpdateAndRestart();
-        if (!installed) {
-          toast.success(t("settings.upToDate"), { closeButton: true });
-        }
-      } catch (error) {
-        console.error("[AboutSection] Update failed", error);
-        toast.error(t("settings.updateFailed"), {
-          description: extractErrorMessage(error) || undefined,
-          closeButton: true,
-        });
-        try {
-          await settingsApi.checkUpdates();
-        } catch (fallbackError) {
-          console.error(
-            "[AboutSection] Failed to open fallback updater",
-            fallbackError,
-          );
-        }
-      } finally {
-        setIsDownloading(false);
-      }
-      return;
-    }
-
     try {
       const available = await checkUpdate();
       if (!available) {
@@ -445,7 +406,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       console.error("[AboutSection] Check update failed", error);
       toast.error(t("settings.checkUpdateFailed"));
     }
-  }, [checkUpdate, hasUpdate, isPortable, resetDismiss, t]);
+  }, [checkUpdate, t]);
 
   const handleCopyInstallCommands = useCallback(async () => {
     try {
@@ -854,22 +815,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               type="button"
               size="sm"
               onClick={handleCheckUpdate}
-              disabled={isChecking || isDownloading}
+              disabled={isChecking}
               className="h-8 gap-1.5 text-xs"
             >
-              {isDownloading ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {t("settings.updating")}
-                </>
-              ) : hasUpdate ? (
-                <>
-                  <Download className="h-3.5 w-3.5" />
-                  {t("settings.updateTo", {
-                    version: updateInfo?.availableVersion ?? "",
-                  })}
-                </>
-              ) : isChecking ? (
+              {isChecking ? (
                 <>
                   <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                   {t("settings.checking")}
@@ -883,25 +832,6 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             </Button>
           </div>
         </div>
-
-        {hasUpdate && updateInfo && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            className="rounded-lg bg-primary/10 border border-primary/20 px-4 py-3 text-sm"
-          >
-            <p className="font-medium text-primary mb-1">
-              {t("settings.updateAvailable", {
-                version: updateInfo.availableVersion,
-              })}
-            </p>
-            {updateInfo.notes && (
-              <p className="text-muted-foreground line-clamp-3 leading-relaxed">
-                {updateInfo.notes}
-              </p>
-            )}
-          </motion.div>
-        )}
       </motion.div>
 
       <div className="space-y-3">

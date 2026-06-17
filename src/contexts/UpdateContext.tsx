@@ -2,7 +2,6 @@ import React, {
   createContext,
   useContext,
   useState,
-  useEffect,
   useCallback,
   useRef,
 } from "react";
@@ -36,25 +35,6 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const [isChecking, setIsChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDismissed, setIsDismissed] = useState(false);
-
-  // 从 localStorage 读取已关闭的版本
-  useEffect(() => {
-    const current = updateInfo?.availableVersion;
-    if (!current) return;
-
-    // 读取新键；若不存在，尝试迁移旧键
-    let dismissedVersion = localStorage.getItem(DISMISSED_VERSION_KEY);
-    if (!dismissedVersion) {
-      const legacy = localStorage.getItem(LEGACY_DISMISSED_KEY);
-      if (legacy) {
-        localStorage.setItem(DISMISSED_VERSION_KEY, legacy);
-        localStorage.removeItem(LEGACY_DISMISSED_KEY);
-        dismissedVersion = legacy;
-      }
-    }
-
-    setIsDismissed(dismissedVersion === current);
-  }, [updateInfo?.availableVersion]);
 
   const isCheckingRef = useRef(false);
 
@@ -114,16 +94,6 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem(DISMISSED_VERSION_KEY);
     localStorage.removeItem(LEGACY_DISMISSED_KEY);
   }, []);
-
-  // 应用启动时自动检查更新
-  useEffect(() => {
-    // 延迟1秒后检查，避免影响启动体验
-    const timer = setTimeout(() => {
-      checkUpdate().catch(console.error);
-    }, 1000);
-
-    return () => clearTimeout(timer);
-  }, [checkUpdate]);
 
   const value: UpdateContextValue = {
     hasUpdate,

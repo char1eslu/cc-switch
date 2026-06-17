@@ -786,7 +786,6 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-single-instance",
  "tauri-plugin-store",
- "tauri-plugin-updater",
  "tauri-plugin-window-state",
  "tempfile",
  "thiserror 2.0.18",
@@ -5656,39 +5655,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "tauri-plugin-updater"
-version = "2.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fe8e9bebd88fc222938ffdfbdcfa0307081423bd01e3252fc337d8bde81fc61"
-dependencies = [
- "base64 0.22.1",
- "dirs 6.0.0",
- "flate2",
- "futures-util",
- "http",
- "infer",
- "log",
- "minisign-verify",
- "osakit",
- "percent-encoding",
- "reqwest 0.13.2",
- "rustls",
- "semver",
- "serde",
- "serde_json",
- "tar",
- "tauri",
- "tauri-plugin",
- "tempfile",
- "thiserror 2.0.18",
- "time",
- "tokio",
- "url",
- "windows-sys 0.60.2",
- "zip 4.6.1",
 ]
 
 [[package]]
