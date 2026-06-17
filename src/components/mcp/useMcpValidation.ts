@@ -1,5 +1,9 @@
 import { useTranslation } from "react-i18next";
-import { validateToml, tomlToMcpServer } from "@/utils/tomlUtils";
+import {
+  validateToml,
+  tomlToMcpServer,
+  inferMcpServerType,
+} from "@/utils/tomlUtils";
 
 export function useMcpValidation() {
   const { t } = useTranslation();
@@ -72,7 +76,7 @@ export function useMcpValidation() {
             return t("mcp.error.singleServerObjectRequired");
           }
 
-          const typ = (obj as any)?.type;
+          const typ = inferMcpServerType(obj);
           if (typ === "stdio" && !(obj as any)?.command?.trim()) {
             return t("mcp.error.commandRequired");
           }
@@ -80,8 +84,8 @@ export function useMcpValidation() {
             return t("mcp.wizard.urlRequired");
           }
         }
-      } catch {
-        // Parse errors already covered by base validation
+      } catch (e: any) {
+        return `${t("mcp.error.jsonInvalid")}: ${e?.message || String(e)}`;
       }
     }
 

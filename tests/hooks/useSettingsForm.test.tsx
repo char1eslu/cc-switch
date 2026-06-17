@@ -58,7 +58,7 @@ describe("useSettingsForm Hook", () => {
     expect(changeLanguageSpy).toHaveBeenCalledWith("en");
   });
 
-  it("should support japanese language preference from server data", async () => {
+  it("should fall back unsupported japanese preference to simplified chinese", async () => {
     useSettingsQueryMock.mockReturnValue({
       data: {
         showInTray: true,
@@ -66,7 +66,7 @@ describe("useSettingsForm Hook", () => {
         enableClaudePluginIntegration: false,
         claudeConfigDir: "/Users/demo",
         codexConfigDir: null,
-        language: "ja",
+        language: "ja" as any,
       },
       isLoading: false,
     });
@@ -74,14 +74,14 @@ describe("useSettingsForm Hook", () => {
     const { result } = renderHook(() => useSettingsForm());
 
     await waitFor(() => {
-      expect(result.current.settings?.language).toBe("ja");
+      expect(result.current.settings?.language).toBe("zh");
     });
 
-    expect(result.current.initialLanguage).toBe("ja");
-    expect(changeLanguageSpy).toHaveBeenCalledWith("ja");
+    expect(result.current.initialLanguage).toBe("zh");
+    expect(changeLanguageSpy).not.toHaveBeenCalled();
   });
 
-  it("should support traditional chinese language preference aliases", async () => {
+  it("should fall back traditional chinese aliases to simplified chinese", async () => {
     useSettingsQueryMock.mockReturnValue({
       data: {
         showInTray: true,
@@ -89,7 +89,7 @@ describe("useSettingsForm Hook", () => {
         enableClaudePluginIntegration: false,
         claudeConfigDir: "/Users/demo",
         codexConfigDir: null,
-        language: "zh-Hant",
+        language: "zh-Hant" as any,
       },
       isLoading: false,
     });
@@ -97,11 +97,11 @@ describe("useSettingsForm Hook", () => {
     const { result } = renderHook(() => useSettingsForm());
 
     await waitFor(() => {
-      expect(result.current.settings?.language).toBe("zh-TW");
+      expect(result.current.settings?.language).toBe("zh");
     });
 
-    expect(result.current.initialLanguage).toBe("zh-TW");
-    expect(changeLanguageSpy).toHaveBeenCalledWith("zh-TW");
+    expect(result.current.initialLanguage).toBe("zh");
+    expect(changeLanguageSpy).not.toHaveBeenCalled();
   });
 
   it("should prioritize reading language from local storage in readPersistedLanguage", () => {

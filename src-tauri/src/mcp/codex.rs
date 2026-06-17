@@ -13,6 +13,57 @@ use crate::error::AppError;
 
 use super::validation::{extract_server_spec, validate_server_spec};
 
+fn infer_server_type_from_toml(entry_tbl: &toml::value::Table) -> Option<&'static str> {
+    match entry_tbl.get("type").and_then(|v| v.as_str()) {
+        Some("stdio") => Some("stdio"),
+        Some("http") | Some("streamable-http") => Some("http"),
+        Some("sse") => Some("sse"),
+        Some(_) => None,
+        None if entry_tbl.get("url").and_then(|v| v.as_str()).is_some() => Some("http"),
+        None if entry_tbl
+            .get("command")
+            .and_then(|v| v.as_str())
+            .is_some() => Some("stdio"),
+        None => None,
+    }
+}
+
+fn infer_server_type_from_json(spec: &Value) -> &'static str {
+    match spec.get("type").and_then(|v| v.as_str()) {
+        Some("stdio") => "stdio",
+        Some("http") | Some("streamable-http") => "http",
+        Some("sse") => "sse",
+        _ if spec.get("url").and_then(|v| v.as_str()).is_some() => "http",
+        _ => "stdio",
+    }
+}
+
+fn toml_value_to_json(value: &toml::Value) -> Option<Value> {
+    match value {
+        toml::Value::String(s) => Some(json!(s)),
+        toml::Value::Integer(i) => Some(json!(i)),
+        toml::Value::Float(f) => Some(json!(f)),
+        toml::Value::Boolean(b) => Some(json!(b)),
+        toml::Value::Datetime(dt) => Some(json!(dt.to_string())),
+        toml::Value::Array(arr) => {
+            let values = arr
+                .iter()
+                .filter_map(toml_value_to_json)
+                .collect::<Vec<_>>();
+            Some(Value::Array(values))
+        }
+        toml::Value::Table(tbl) => {
+            let mut obj = serde_json::Map::new();
+            for (key, value) in tbl {
+                if let Some(json_value) = toml_value_to_json(value) {
+                    obj.insert(key.clone(), json_value);
+                }
+            }
+            Some(Value::Object(obj))
+        }
+    }
+}
+
 fn should_sync_codex_mcp() -> bool {
     // Codex 未安装/未初始化时：~/.codex 目录不存在。
     // 按用户偏好：目录缺失时跳过写入/删除，不创建任何文件或目录。
@@ -71,11 +122,10 @@ pub fn import_from_codex(config: &mut MultiAppConfig) -> Result<usize, AppError>
                 continue;
             };
 
-            // type 缺省为 stdio
-            let typ = entry_tbl
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("stdio");
+            let Some(typ) = infer_server_type_from_toml(entry_tbl) else {
+                log::warn!("跳过未知类型的 Codex MCP 项 '{id}'");
+                continue;
+            };
 
             // 构建 JSON 规范
             let mut spec = serde_json::Map::new();
@@ -84,7 +134,7 @@ pub fn import_from_codex(config: &mut MultiAppConfig) -> Result<usize, AppError>
             // 核心字段（需要手动处理的字段）
             let core_fields = match typ {
                 "stdio" => vec!["type", "command", "args", "env", "cwd"],
-                "http" | "sse" => vec!["type", "url", "http_headers"],
+                "http" | "sse" => vec!["type", "url", "http_headers", "headers"],
                 _ => vec!["type"],
             };
 
@@ -143,10 +193,7 @@ pub fn import_from_codex(config: &mut MultiAppConfig) -> Result<usize, AppError>
                         }
                     }
                 }
-                _ => {
-                    log::warn!("跳过未知类型 '{typ}' 的 Codex MCP 项 '{id}'");
-                    return changed;
-                }
+                _ => unreachable!("server type was normalized before import"),
             }
 
             // 2. 处理扩展字段和其他未知字段（通用 TOML → JSON 转换）
@@ -156,53 +203,7 @@ pub fn import_from_codex(config: &mut MultiAppConfig) -> Result<usize, AppError>
                     continue;
                 }
 
-                // 通用 TOML 值到 JSON 值转换
-                let json_val = match toml_val {
-                    toml::Value::String(s) => Some(json!(s)),
-                    toml::Value::Integer(i) => Some(json!(i)),
-                    toml::Value::Float(f) => Some(json!(f)),
-                    toml::Value::Boolean(b) => Some(json!(b)),
-                    toml::Value::Array(arr) => {
-                        // 只支持简单类型数组
-                        let json_arr: Vec<serde_json::Value> = arr
-                            .iter()
-                            .filter_map(|item| match item {
-                                toml::Value::String(s) => Some(json!(s)),
-                                toml::Value::Integer(i) => Some(json!(i)),
-                                toml::Value::Float(f) => Some(json!(f)),
-                                toml::Value::Boolean(b) => Some(json!(b)),
-                                _ => None,
-                            })
-                            .collect();
-                        if !json_arr.is_empty() {
-                            Some(serde_json::Value::Array(json_arr))
-                        } else {
-                            log::debug!("跳过复杂数组字段 '{key}' (TOML → JSON)");
-                            None
-                        }
-                    }
-                    toml::Value::Table(tbl) => {
-                        // 浅层表转为 JSON 对象（仅支持字符串值）
-                        let mut json_obj = serde_json::Map::new();
-                        for (k, v) in tbl.iter() {
-                            if let Some(s) = v.as_str() {
-                                json_obj.insert(k.clone(), json!(s));
-                            }
-                        }
-                        if !json_obj.is_empty() {
-                            Some(serde_json::Value::Object(json_obj))
-                        } else {
-                            log::debug!("跳过复杂对象字段 '{key}' (TOML → JSON)");
-                            None
-                        }
-                    }
-                    toml::Value::Datetime(_) => {
-                        log::debug!("跳过日期时间字段 '{key}' (TOML → JSON)");
-                        None
-                    }
-                };
-
-                if let Some(val) = json_val {
+                if let Some(val) = toml_value_to_json(toml_val) {
                     spec.insert(key.clone(), val);
                     log::debug!("导入扩展字段 '{key}' = {toml_val:?}");
                 }
@@ -275,13 +276,13 @@ pub fn import_from_codex(config: &mut MultiAppConfig) -> Result<usize, AppError>
 /// - 唯一正确格式：[mcp_servers] 顶层表（Codex 官方标准）
 /// - 自动清理错误格式：[mcp.servers]（如果存在）
 /// - 读取现有 config.toml；若语法无效则报错，不尝试覆盖
-/// - 仅更新 `mcp_servers` 表，保留其它键
-/// - 仅写入启用项；无启用项时清理 mcp_servers 表
+/// - 仅更新已启用项，保留 Codex live 中尚未由 CC Switch 管理的其它 MCP
+/// - 无启用项时不删除现有 live MCP，避免破坏用户手写配置
 pub fn sync_enabled_to_codex(config: &MultiAppConfig) -> Result<(), AppError> {
     if !should_sync_codex_mcp() {
         return Ok(());
     }
-    use toml_edit::{Item, Table};
+    use toml_edit::Item;
 
     // 1) 收集启用项（Codex 维度）
     let enabled = collect_enabled_servers(&config.mcp.codex);
@@ -308,13 +309,11 @@ pub fn sync_enabled_to_codex(config: &MultiAppConfig) -> Result<(), AppError> {
         }
     }
 
-    // 5) 构造目标 servers 表（稳定的键顺序）
-    if enabled.is_empty() {
-        // 无启用项：移除 mcp_servers 表
-        doc.as_table_mut().remove("mcp_servers");
-    } else {
-        // 构建 servers 表
-        let mut servers_tbl = Table::new();
+    // 5) 增量更新启用项，保留 live 中其它未管理 MCP
+    if !enabled.is_empty() {
+        if !doc.contains_key("mcp_servers") {
+            doc["mcp_servers"] = toml_edit::table();
+        }
         let mut ids: Vec<_> = enabled.keys().cloned().collect();
         ids.sort();
         for id in ids {
@@ -322,15 +321,13 @@ pub fn sync_enabled_to_codex(config: &MultiAppConfig) -> Result<(), AppError> {
             // 复用通用转换函数（已包含扩展字段支持）
             match json_server_to_toml_table(spec) {
                 Ok(table) => {
-                    servers_tbl[&id[..]] = Item::Table(table);
+                    doc["mcp_servers"][&id[..]] = Item::Table(table);
                 }
                 Err(err) => {
                     log::error!("跳过无效的 MCP 服务器 '{id}': {err}");
                 }
             }
         }
-        // 使用唯一正确的格式：[mcp_servers]
-        doc["mcp_servers"] = Item::Table(servers_tbl);
     }
 
     // 6) 写回（仅改 TOML，不触碰 auth.json）；toml_edit 会尽量保留未改区域的注释/空白/顺序
@@ -352,20 +349,15 @@ pub fn sync_single_server_to_codex(
     }
     use toml_edit::Item;
 
-    // 读取现有的 config.toml
+    // 读取现有的 config.toml；若已有配置语法无效，直接报错，不覆盖用户文件。
     let config_path = crate::codex_config::get_codex_config_path();
 
     let mut doc = if config_path.exists() {
         let content =
             std::fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
-        // 尝试解析现有配置，如果失败则创建新文档（容错处理）
-        match content.parse::<toml_edit::DocumentMut>() {
-            Ok(doc) => doc,
-            Err(e) => {
-                log::warn!("解析 Codex config.toml 失败: {e}，将创建新配置");
-                toml_edit::DocumentMut::new()
-            }
-        }
+        content
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| AppError::McpValidation(format!("解析 config.toml 失败: {e}")))?
     } else {
         toml_edit::DocumentMut::new()
     };
@@ -560,13 +552,13 @@ fn json_server_to_toml_table(spec: &Value) -> Result<toml_edit::Table, AppError>
     use toml_edit::{Array, Item, Table};
 
     let mut t = Table::new();
-    let typ = spec.get("type").and_then(|v| v.as_str()).unwrap_or("stdio");
+    let typ = infer_server_type_from_json(spec);
     t["type"] = toml_edit::value(typ);
 
     // 定义核心字段（已在下方处理，跳过通用转换）
     let core_fields = match typ {
         "stdio" => vec!["type", "command", "args", "env", "cwd"],
-        "http" | "sse" => vec!["type", "url", "http_headers"],
+        "http" | "sse" => vec!["type", "url", "headers", "http_headers"],
         _ => vec!["type"],
     };
 
@@ -636,7 +628,12 @@ fn json_server_to_toml_table(spec: &Value) -> Result<toml_edit::Table, AppError>
             let url = spec.get("url").and_then(|v| v.as_str()).unwrap_or("");
             t["url"] = toml_edit::value(url);
 
-            if let Some(headers) = spec.get("headers").and_then(|v| v.as_object()) {
+            let headers = spec
+                .get("headers")
+                .and_then(|v| v.as_object())
+                .or_else(|| spec.get("http_headers").and_then(|v| v.as_object()));
+
+            if let Some(headers) = headers {
                 let mut h_tbl = Table::new();
                 for (k, v) in headers.iter() {
                     if let Some(s) = v.as_str() {
@@ -674,4 +671,75 @@ fn json_server_to_toml_table(spec: &Value) -> Result<toml_edit::Table, AppError>
     }
 
     Ok(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn infers_http_for_codex_url_only_entries() {
+        let value: toml::Value = r#"
+url = "https://example.test/mcp"
+
+[http_headers]
+Authorization = "Bearer token"
+"#
+        .parse()
+        .expect("valid toml");
+        let table = value.as_table().expect("table");
+
+        assert_eq!(infer_server_type_from_toml(table), Some("http"));
+    }
+
+    #[test]
+    fn writes_http_headers_for_codex_from_internal_headers() {
+        let table = json_server_to_toml_table(&json!({
+            "type": "http",
+            "url": "https://example.test/mcp",
+            "headers": {
+                "Authorization": "Bearer token"
+            }
+        }))
+        .expect("toml table");
+
+        let headers = table
+            .get("http_headers")
+            .and_then(|item| item.as_table())
+            .expect("http_headers table");
+        let authorization = headers
+            .get("Authorization")
+            .and_then(|item| item.as_value())
+            .and_then(|value| value.as_str());
+
+        assert!(table.get("headers").is_none());
+        assert_eq!(authorization, Some("Bearer token"));
+    }
+
+    #[test]
+    fn preserves_nested_toml_values_when_importing_extensions() {
+        let value: toml::Value = r#"
+startup_timeout_sec = 20
+
+[metadata]
+enabled = true
+retries = [1, 2, 3]
+"#
+        .parse()
+        .expect("valid toml");
+
+        let json_value = toml_value_to_json(&value).expect("json value");
+
+        assert_eq!(
+            json_value,
+            json!({
+                "startup_timeout_sec": 20,
+                "metadata": {
+                    "enabled": true,
+                    "retries": [1, 2, 3]
+                }
+            })
+        );
+    }
 }

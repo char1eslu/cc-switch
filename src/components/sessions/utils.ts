@@ -109,6 +109,22 @@ export const getProviderIconName = (providerId: string) => {
   return providerId;
 };
 
+export const getCodexStatusLabel = (
+  status: string,
+  t: (key: string, options?: Record<string, unknown>) => string,
+) => {
+  const normalized = status.toLowerCase();
+  if (normalized === "available") return t("sessionManager.statusAvailable");
+  if (normalized === "archived") return t("sessionManager.statusArchived");
+  if (normalized === "missing file") {
+    return t("sessionManager.statusMissingFile");
+  }
+  if (normalized === "not indexed") {
+    return t("sessionManager.statusNotIndexed");
+  }
+  return status;
+};
+
 export const getRoleTone = (role: string) => {
   const normalized = role.toLowerCase();
   if (normalized === "assistant") return "text-blue-500";

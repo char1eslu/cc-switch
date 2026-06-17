@@ -22,19 +22,138 @@ impl PromptService {
         state: &AppState,
         app: AppType,
     ) -> Result<IndexMap<String, Prompt>, AppError> {
+        Self::sync_live_file_to_db(state, app.clone())?;
         state.db.get_prompts(app.as_str())
+    }
+
+    fn sync_live_file_to_db(state: &AppState, app: AppType) -> Result<(), AppError> {
+        let target_path = prompt_file_path(&app)?;
+        if !target_path.exists() {
+            Self::disable_enabled_prompts(state, &app)?;
+            return Ok(());
+        }
+
+        let live_content =
+            std::fs::read_to_string(&target_path).map_err(|e| AppError::io(&target_path, e))?;
+        if live_content.trim().is_empty() {
+            Self::disable_enabled_prompts(state, &app)?;
+            return Ok(());
+        }
+
+        let mut prompts = state.db.get_prompts(app.as_str())?;
+        if let Some((matching_enabled_id, _)) = prompts
+            .iter()
+            .find(|(_, prompt)| prompt.enabled && prompt.content == live_content)
+        {
+            Self::disable_other_enabled_prompts(state, &app, matching_enabled_id)?;
+            return Ok(());
+        }
+
+        let timestamp = get_unix_timestamp()?;
+        if let Some((enabled_id, enabled_prompt)) = prompts
+            .iter_mut()
+            .find(|(_, prompt)| prompt.enabled)
+            .map(|(id, prompt)| (id.clone(), prompt))
+        {
+            enabled_prompt.content = live_content;
+            enabled_prompt.updated_at = Some(timestamp);
+            state.db.save_prompt(app.as_str(), enabled_prompt)?;
+            Self::disable_other_enabled_prompts(state, &app, &enabled_id)?;
+            log::info!("同步 live 提示词内容到已启用项: {enabled_id}");
+            return Ok(());
+        }
+
+        if let Some((matching_id, matching_prompt)) = prompts
+            .iter_mut()
+            .find(|(_, prompt)| prompt.content.trim() == live_content.trim())
+            .map(|(id, prompt)| (id.clone(), prompt))
+        {
+            matching_prompt.enabled = true;
+            matching_prompt.updated_at = Some(timestamp);
+            state.db.save_prompt(app.as_str(), matching_prompt)?;
+            Self::disable_other_enabled_prompts(state, &app, &matching_id)?;
+            log::info!("同步 live 提示词内容，启用已有项: {matching_id}");
+            return Ok(());
+        }
+
+        let id = format!("auto-imported-{timestamp}");
+        let prompt = Prompt {
+            id: id.clone(),
+            name: format!(
+                "Auto-imported Prompt {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M")
+            ),
+            content: live_content,
+            description: Some("Automatically imported from live prompt file".to_string()),
+            enabled: true,
+            created_at: Some(timestamp),
+            updated_at: Some(timestamp),
+        };
+        state.db.save_prompt(app.as_str(), &prompt)?;
+        Self::disable_other_enabled_prompts(state, &app, &id)?;
+        log::info!("同步 live 提示词内容，创建已启用项: {id}");
+
+        Ok(())
+    }
+
+    fn disable_other_enabled_prompts(
+        state: &AppState,
+        app: &AppType,
+        enabled_id: &str,
+    ) -> Result<(), AppError> {
+        Self::disable_enabled_prompts_except(state, app, Some(enabled_id))
+    }
+
+    fn disable_enabled_prompts(state: &AppState, app: &AppType) -> Result<(), AppError> {
+        Self::disable_enabled_prompts_except(state, app, None)
+    }
+
+    fn disable_enabled_prompts_except(
+        state: &AppState,
+        app: &AppType,
+        enabled_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        let prompts = state.db.get_prompts(app.as_str())?;
+        for mut prompt in prompts.into_values() {
+            if enabled_id != Some(prompt.id.as_str()) && prompt.enabled {
+                prompt.enabled = false;
+                state.db.save_prompt(app.as_str(), &prompt)?;
+            }
+        }
+
+        Ok(())
     }
 
     pub fn upsert_prompt(
         state: &AppState,
         app: AppType,
-        _id: &str,
-        prompt: Prompt,
+        id: &str,
+        mut prompt: Prompt,
     ) -> Result<(), AppError> {
-        // 检查是否为已启用的提示词
+        prompt.id = id.to_string();
+
+        let prompts_to_disable: Vec<Prompt> = if prompt.enabled {
+            state
+                .db
+                .get_prompts(app.as_str())?
+                .into_values()
+                .filter(|existing| existing.id != prompt.id && existing.enabled)
+                .map(|mut existing| {
+                    existing.enabled = false;
+                    existing
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let is_enabled = prompt.enabled;
 
         state.db.save_prompt(app.as_str(), &prompt)?;
+
+        for prompt_to_disable in prompts_to_disable {
+            state.db.save_prompt(app.as_str(), &prompt_to_disable)?;
+        }
 
         if is_enabled {
             // 启用提示词：写入内容到文件
@@ -238,5 +357,160 @@ impl PromptService {
 
         log::info!("自动导入完成: {}", app.as_str());
         Ok(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::Database;
+    use crate::store::AppState;
+    use serial_test::serial;
+    use std::env;
+    use std::fs;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
+
+    fn test_state() -> AppState {
+        let db = Arc::new(Database::init().expect("init database"));
+        AppState::new(db)
+    }
+
+    fn prompt(id: &str, content: &str, enabled: bool) -> Prompt {
+        Prompt {
+            id: id.to_string(),
+            name: id.to_string(),
+            content: content.to_string(),
+            description: None,
+            enabled,
+            created_at: Some(1),
+            updated_at: Some(1),
+        }
+    }
+
+    fn write_live_prompt(app: &AppType, content: &str) {
+        let path = prompt_file_path(app).expect("prompt path");
+        fs::create_dir_all(path.parent().expect("prompt parent")).expect("create prompt parent");
+        fs::write(path, content).expect("write live prompt");
+    }
+
+    #[test]
+    #[serial]
+    fn upsert_enabled_prompt_disables_other_enabled_prompts() {
+        let _home = TempHome::new();
+        let state = test_state();
+
+        PromptService::upsert_prompt(&state, AppType::Codex, "one", prompt("one", "one", true))
+            .expect("insert first enabled prompt");
+        PromptService::upsert_prompt(&state, AppType::Codex, "two", prompt("two", "two", true))
+            .expect("insert second enabled prompt");
+
+        let prompts = state
+            .db
+            .get_prompts(AppType::Codex.as_str())
+            .expect("get prompts");
+
+        assert_eq!(prompts.values().filter(|prompt| prompt.enabled).count(), 1);
+        assert!(prompts.get("two").expect("second prompt").enabled);
+    }
+
+    #[test]
+    #[serial]
+    fn get_prompts_syncs_live_file_into_existing_enabled_prompt() {
+        let _home = TempHome::new();
+        let state = test_state();
+
+        state
+            .db
+            .save_prompt(AppType::Codex.as_str(), &prompt("active", "old", true))
+            .expect("seed prompt");
+        write_live_prompt(&AppType::Codex, "live content");
+
+        let prompts =
+            PromptService::get_prompts(&state, AppType::Codex).expect("get synced prompts");
+        let active = prompts.get("active").expect("active prompt");
+
+        assert!(active.enabled);
+        assert_eq!(active.content, "live content");
+    }
+
+    #[test]
+    #[serial]
+    fn get_prompts_imports_live_file_when_db_has_no_prompt() {
+        let _home = TempHome::new();
+        let state = test_state();
+
+        write_live_prompt(&AppType::Claude, "claude live content");
+
+        let prompts =
+            PromptService::get_prompts(&state, AppType::Claude).expect("get synced prompts");
+
+        assert_eq!(prompts.len(), 1);
+        let prompt = prompts.values().next().expect("imported prompt");
+        assert!(prompt.enabled);
+        assert_eq!(prompt.content, "claude live content");
+    }
+
+    #[test]
+    #[serial]
+    fn get_prompts_disables_db_when_live_file_is_empty() {
+        let _home = TempHome::new();
+        let state = test_state();
+
+        state
+            .db
+            .save_prompt(AppType::Claude.as_str(), &prompt("active", "old", true))
+            .expect("seed prompt");
+        write_live_prompt(&AppType::Claude, "  \n");
+
+        let prompts =
+            PromptService::get_prompts(&state, AppType::Claude).expect("get synced prompts");
+
+        assert!(prompts.values().all(|prompt| !prompt.enabled));
     }
 }

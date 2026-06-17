@@ -7,6 +7,27 @@ use std::path::{Path, PathBuf};
 use crate::config::{atomic_write, get_claude_mcp_path, get_default_claude_mcp_path};
 use crate::error::AppError;
 
+fn normalize_mcp_spec_for_claude(obj: &mut Map<String, Value>) {
+    if !obj.contains_key("type") && obj.get("url").and_then(|v| v.as_str()).is_some() {
+        obj.insert("type".into(), Value::String("http".into()));
+    }
+
+    if !obj.contains_key("headers") {
+        if let Some(headers) = obj.remove("http_headers") {
+            obj.insert("headers".into(), headers);
+        }
+    } else {
+        obj.remove("http_headers");
+    }
+
+    if matches!(
+        obj.get("type").and_then(|v| v.as_str()),
+        Some("streamable-http")
+    ) {
+        obj.insert("type".into(), Value::String("http".into()));
+    }
+}
+
 /// 需要在 Windows 上用 cmd /c 包装的命令
 /// 这些命令在 Windows 上实际是 .cmd 批处理文件，需要通过 cmd /c 来执行
 #[cfg(windows)]
@@ -425,6 +446,7 @@ pub fn set_mcp_servers_map(
         obj.remove("tags");
         obj.remove("homepage");
         obj.remove("docs");
+        normalize_mcp_spec_for_claude(&mut obj);
 
         // Windows 平台自动包装 npx/npm 等命令为 cmd /c 格式（WSL 路径除外）
         if !is_wsl_target {
@@ -516,6 +538,25 @@ mod tests {
 
         assert!(!obj.contains_key("command"));
         assert_eq!(obj["url"], "https://example.com/mcp");
+    }
+
+    #[test]
+    fn test_normalize_mcp_spec_for_claude_converts_codex_http_headers() {
+        let mut obj = json!({
+            "url": "https://example.com/mcp",
+            "http_headers": {
+                "Authorization": "Bearer token"
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        normalize_mcp_spec_for_claude(&mut obj);
+
+        assert_eq!(obj["type"], "http");
+        assert_eq!(obj["headers"]["Authorization"], "Bearer token");
+        assert!(!obj.contains_key("http_headers"));
     }
 
     #[test]

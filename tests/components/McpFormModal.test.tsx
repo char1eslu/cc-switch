@@ -269,6 +269,37 @@ describe("McpFormModal", () => {
     expect(message).toBe("mcp.error.commandRequired");
   });
 
+  it("JSON 模式保存 url-only HTTP 配置并规范化 headers", async () => {
+    renderForm();
+
+    fireEvent.change(screen.getByPlaceholderText("mcp.form.titlePlaceholder"), {
+      target: { value: "pubmed" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("mcp.form.jsonPlaceholder"), {
+      target: {
+        value: JSON.stringify({
+          url: "https://example.test/mcp",
+          http_headers: {
+            Authorization: "Bearer token",
+          },
+        }),
+      },
+    });
+
+    fireEvent.click(screen.getByText("common.add"));
+
+    await waitFor(() => expect(upsertMock).toHaveBeenCalledTimes(1));
+    const [entry] = upsertMock.mock.calls.at(-1) ?? [];
+    expect(entry.server).toMatchObject({
+      type: "http",
+      url: "https://example.test/mcp",
+      headers: {
+        Authorization: "Bearer token",
+      },
+    });
+    expect(entry.server.http_headers).toBeUndefined();
+  });
+
   it("支持向导生成配置并自动填充 ID", async () => {
     renderForm();
     fireEvent.click(screen.getByText("mcp.form.useWizard"));

@@ -35,24 +35,11 @@ function normalizeLanguageTag(language: string): string {
   return language.toLowerCase().replace(/_/g, "-");
 }
 
-function isTraditionalChineseLanguage(normalizedLanguage: string): boolean {
-  return (
-    normalizedLanguage === "zh-tw" ||
-    normalizedLanguage.startsWith("zh-hant") ||
-    normalizedLanguage.startsWith("zh-hk") ||
-    normalizedLanguage.startsWith("zh-mo")
-  );
-}
-
 export function getLocaleFromLanguage(language: string): string {
   if (!language) return "en-US";
   const normalized = normalizeLanguageTag(language);
   if (normalized === "zh") return "zh-CN";
-  if (isTraditionalChineseLanguage(normalized)) {
-    return "zh-TW";
-  }
   if (normalized.startsWith("zh")) return "zh-CN";
-  if (normalized.startsWith("ja")) return "ja-JP";
   return "en-US";
 }
 
@@ -68,7 +55,7 @@ export function getResolvedLang(i18n: I18nLike): string {
 /**
  * Token 数量的紧凑显示。
  *
- * Why: 中日文用户期待 "亿/万" 量纲；英文用户期待 K/M/B。共用同一份格式化
+ * Why: 中文用户期待 "亿/万" 量纲；英文用户期待 K/M/B。共用同一份格式化
  * 逻辑避免 Hero 卡和分应用卡显示不一致。`compactDecimals=2` 用于 Hero
  * 大数副标（更精确），默认 1 位用于卡片副字段。
  */
@@ -80,12 +67,7 @@ export function formatTokensShort(
   if (!Number.isFinite(value) || value <= 0) return "0";
   const decimals = compactDecimals;
   const normalizedLang = normalizeLanguageTag(lang);
-  if (isTraditionalChineseLanguage(normalizedLang)) {
-    if (value >= 1e8) return `${(value / 1e8).toFixed(2)} 億`;
-    if (value >= 1e4) return `${(value / 1e4).toFixed(decimals)} 萬`;
-    return value.toLocaleString("zh-TW");
-  }
-  if (normalizedLang.startsWith("zh") || normalizedLang.startsWith("ja")) {
+  if (normalizedLang.startsWith("zh")) {
     if (value >= 1e8) return `${(value / 1e8).toFixed(2)} 亿`;
     if (value >= 1e4) return `${(value / 1e4).toFixed(decimals)} 万`;
     return value.toLocaleString();

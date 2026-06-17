@@ -18,6 +18,8 @@ import {
   tomlToMcpServer,
   extractIdFromToml,
   mcpServerToToml,
+  normalizeMcpServerSpec,
+  inferMcpServerType,
 } from "@/utils/tomlUtils";
 import { normalizeTomlText } from "@/utils/textNormalization";
 import { parseSmartMcpJson } from "@/utils/formatters";
@@ -325,7 +327,20 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
       } else {
         try {
           const result = parseSmartMcpJson(formConfig);
-          serverSpec = result.config as McpServerSpec;
+          const rawSpec = result.config as McpServerSpec;
+          const inferredType = inferMcpServerType(rawSpec);
+          if (
+            (inferredType === "stdio" && !rawSpec.command?.trim()) ||
+            ((inferredType === "http" || inferredType === "sse") &&
+              !rawSpec.url?.trim())
+          ) {
+            serverSpec = {
+              ...rawSpec,
+              type: inferredType as McpServerSpec["type"],
+            };
+          } else {
+            serverSpec = normalizeMcpServerSpec(rawSpec);
+          }
         } catch (e: any) {
           const errorMessage = e?.message || String(e);
           setConfigError(t("mcp.error.jsonInvalid") + ": " + errorMessage);
@@ -544,7 +559,6 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                     {t("mcp.unifiedPanel.apps.codex")}
                   </label>
                 </div>
-
               </div>
             </div>
 

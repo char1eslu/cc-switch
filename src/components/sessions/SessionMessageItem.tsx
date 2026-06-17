@@ -89,7 +89,7 @@ export const SessionMessageItem = memo(function SessionMessageItem({
             </TooltipTrigger>
             <TooltipContent>
               {t("sessionManager.trimFromHere", {
-                defaultValue: "从这里裁剪",
+                defaultValue: "Trim from here",
               })}
             </TooltipContent>
           </Tooltip>
@@ -108,7 +108,7 @@ export const SessionMessageItem = memo(function SessionMessageItem({
             </TooltipTrigger>
             <TooltipContent>
               {t("sessionManager.branchFromHere", {
-                defaultValue: "从这里分支",
+                defaultValue: "Branch from here",
               })}
             </TooltipContent>
           </Tooltip>
@@ -126,7 +126,7 @@ export const SessionMessageItem = memo(function SessionMessageItem({
           </TooltipTrigger>
           <TooltipContent>
             {t("sessionManager.copyMessage", {
-              defaultValue: "复制内容",
+              defaultValue: "Copy content",
             })}
           </TooltipContent>
         </Tooltip>
@@ -165,14 +165,14 @@ export const SessionMessageItem = memo(function SessionMessageItem({
             <>
               <ChevronUp className="size-3" />
               {t("sessionManager.collapseContent", {
-                defaultValue: "收起",
+                defaultValue: "Collapse",
               })}
             </>
           ) : (
             <>
               <ChevronDown className="size-3" />
               {t("sessionManager.expandContent", {
-                defaultValue: "展开完整内容",
+                defaultValue: "Expand full content",
               })}
               <span className="text-muted-foreground/60">
                 ({Math.round(message.content.length / 1000)}k)

@@ -345,7 +345,7 @@ export interface Settings {
   // User has confirmed the common config first-run notice
   commonConfigConfirmed?: boolean;
   // 首选语言（可选，默认中文）
-  language?: "en" | "zh" | "zh-TW" | "ja";
+  language?: "en" | "zh";
 
   // 主页面显示的应用（默认全部显示）
   visibleApps?: VisibleApps;
@@ -430,7 +430,7 @@ export interface SessionMessage {
 // MCP 服务器连接参数（宽松：允许扩展字段）
 export interface McpServerSpec {
   // 可选：社区常见 .mcp.json 中 stdio 配置可不写 type
-  type?: "stdio" | "http" | "sse";
+  type?: "stdio" | "http" | "streamable-http" | "sse";
   // stdio 字段
   command?: string;
   args?: string[];

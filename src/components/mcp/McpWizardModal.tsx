@@ -178,7 +178,9 @@ const McpWizardModal: React.FC<McpWizardModalProps> = ({
     setWizardTitle(title);
 
     const resolvedType =
-      initialServer?.type ?? (initialServer?.url ? "http" : "stdio");
+      initialServer?.type === "streamable-http"
+        ? "http"
+        : (initialServer?.type ?? (initialServer?.url ? "http" : "stdio"));
 
     setWizardType(resolvedType);
 

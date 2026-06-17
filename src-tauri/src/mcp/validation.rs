@@ -4,22 +4,30 @@ use serde_json::Value;
 
 use crate::error::AppError;
 
-/// 基础校验：允许 stdio/http/sse；或省略 type（视为 stdio）。对应必填字段存在
+fn normalized_type(spec: &Value) -> &str {
+    match spec.get("type").and_then(|x| x.as_str()) {
+        Some("streamable-http") => "http",
+        Some(t) => t,
+        None if spec.get("url").and_then(|x| x.as_str()).is_some() => "http",
+        None => "stdio",
+    }
+}
+
+/// 基础校验：允许 stdio/http/sse；或省略 type 时从 command/url 推断。
 pub fn validate_server_spec(spec: &Value) -> Result<(), AppError> {
     if !spec.is_object() {
         return Err(AppError::McpValidation(
             "MCP 服务器连接定义必须为 JSON 对象".into(),
         ));
     }
-    let t_opt = spec.get("type").and_then(|x| x.as_str());
-    // 支持三种：stdio/http/sse；若缺省 type 则按 stdio 处理（与社区常见 .mcp.json 一致）
-    let is_stdio = t_opt.map(|t| t == "stdio").unwrap_or(true);
-    let is_http = t_opt.map(|t| t == "http").unwrap_or(false);
-    let is_sse = t_opt.map(|t| t == "sse").unwrap_or(false);
+    let typ = normalized_type(spec);
+    let is_stdio = typ == "stdio";
+    let is_http = typ == "http";
+    let is_sse = typ == "sse";
 
     if !(is_stdio || is_http || is_sse) {
         return Err(AppError::McpValidation(
-            "MCP 服务器 type 必须是 'stdio'、'http' 或 'sse'（或省略表示 stdio）".into(),
+            "MCP 服务器 type 必须是 'stdio'、'http'、'streamable-http' 或 'sse'（或省略并提供 command/url）".into(),
         ));
     }
 
@@ -66,4 +74,29 @@ pub fn extract_server_spec(entry: &Value) -> Result<Value, AppError> {
     }
 
     Ok(server.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn validates_url_only_server_as_http() {
+        let spec = json!({
+            "url": "https://example.test/mcp"
+        });
+
+        assert!(validate_server_spec(&spec).is_ok());
+    }
+
+    #[test]
+    fn validates_streamable_http_as_http() {
+        let spec = json!({
+            "type": "streamable-http",
+            "url": "https://example.test/mcp"
+        });
+
+        assert!(validate_server_spec(&spec).is_ok());
+    }
 }

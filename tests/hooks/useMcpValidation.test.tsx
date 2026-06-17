@@ -14,6 +14,12 @@ vi.mock("react-i18next", () => ({
 vi.mock("@/utils/tomlUtils", () => ({
   validateToml: (...args: unknown[]) => validateTomlMock(...args),
   tomlToMcpServer: (...args: unknown[]) => tomlToMcpServerMock(...args),
+  inferMcpServerType: vi.fn((config: any) => {
+    const hasUrl = Object.prototype.hasOwnProperty.call(config ?? {}, "url");
+    return config?.type === "streamable-http"
+      ? "http"
+      : config?.type || (hasUrl ? "http" : "stdio");
+  }),
 }));
 
 describe("useMcpValidation", () => {
@@ -144,6 +150,20 @@ describe("useMcpValidation", () => {
       expect(validateJsonConfig('{"type":"http","url":""}')).toBe(
         "mcp.wizard.urlRequired",
       );
+    });
+
+    it("infers http for url-only json config", () => {
+      const { validateJsonConfig } = getHookResult();
+      expect(validateJsonConfig('{"url":"https://example.test/mcp"}')).toBe("");
+    });
+
+    it("normalizes streamable-http json config as http", () => {
+      const { validateJsonConfig } = getHookResult();
+      expect(
+        validateJsonConfig(
+          '{"type":"streamable-http","url":"https://example.test/mcp"}',
+        ),
+      ).toBe("");
     });
 
     it("requires url for sse type", () => {

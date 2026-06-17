@@ -75,20 +75,12 @@ const renderPage = () => {
 };
 
 const openSearch = () => {
-  const searchButton = Array.from(screen.getAllByRole("button")).find(
-    (button) => button.querySelector(".lucide-search"),
-  );
-
-  if (!searchButton) {
-    throw new Error("Search button not found");
-  }
-
-  fireEvent.click(searchButton);
+  fireEvent.click(screen.getByRole("button", { name: /search sessions/i }));
 };
 
 const closeSearch = () => {
-  const closeButton = Array.from(screen.getAllByRole("button")).find(
-    (button) => button.querySelector(".lucide-x"),
+  const closeButton = Array.from(screen.getAllByRole("button")).find((button) =>
+    button.querySelector(".lucide-x"),
   );
 
   if (!closeButton) {
@@ -149,13 +141,15 @@ describe("SessionManagerPage", () => {
       ).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+    fireEvent.click(screen.getByRole("button", { name: /delete session/i }));
 
     const dialog = screen.getByTestId("confirm-dialog");
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByText(/Alpha Session/)).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: /删除会话/i }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /delete session/i }),
+    );
 
     await waitFor(() =>
       expect(
@@ -189,10 +183,12 @@ describe("SessionManagerPage", () => {
       ).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+    fireEvent.click(screen.getByRole("button", { name: /delete session/i }));
 
     const dialog = screen.getByTestId("confirm-dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: /删除会话/i }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /delete session/i }),
+    );
 
     await waitFor(() =>
       expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument(),
@@ -221,13 +217,13 @@ describe("SessionManagerPage", () => {
       ).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
-    fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
-    fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
+    fireEvent.click(screen.getByRole("button", { name: /batch management/i }));
+    fireEvent.click(screen.getByRole("button", { name: /select all/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
 
     const dialog = screen.getByTestId("confirm-dialog");
     fireEvent.click(
-      within(dialog).getByRole("button", { name: /删除所选会话/i }),
+      within(dialog).getByRole("button", { name: /delete selected/i }),
     );
 
     await waitFor(() =>
@@ -236,7 +232,7 @@ describe("SessionManagerPage", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /批量删除/i }),
+        screen.getByRole("button", { name: /^delete$/i }),
       ).not.toBeDisabled(),
     );
 
@@ -252,7 +248,7 @@ describe("SessionManagerPage", () => {
       ).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
+    fireEvent.click(screen.getByRole("button", { name: /batch management/i }));
     openSearch();
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "NoSuchSession" },
@@ -260,7 +256,9 @@ describe("SessionManagerPage", () => {
 
     await waitFor(() => expect(screen.queryByText("Alpha Session")).toBeNull());
 
-    expect(screen.getByRole("button", { name: /退出批量管理/i })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /exit batch management/i }),
+    ).toBeVisible();
   });
 
   it("drops hidden selections when search narrows the result set", async () => {
@@ -272,10 +270,10 @@ describe("SessionManagerPage", () => {
       ).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
-    fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
+    fireEvent.click(screen.getByRole("button", { name: /batch management/i }));
+    fireEvent.click(screen.getByRole("button", { name: /select all/i }));
 
-    expect(screen.getByText("已选 2 项")).toBeInTheDocument();
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
 
     openSearch();
     fireEvent.change(screen.getByRole("textbox"), {
@@ -289,7 +287,7 @@ describe("SessionManagerPage", () => {
     closeSearch();
 
     await waitFor(() =>
-      expect(screen.getByText("已选 1 项")).toBeInTheDocument(),
+      expect(screen.getByText("1 selected")).toBeInTheDocument(),
     );
   });
 
@@ -311,13 +309,13 @@ describe("SessionManagerPage", () => {
       ).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
-    fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
-    fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
+    fireEvent.click(screen.getByRole("button", { name: /batch management/i }));
+    fireEvent.click(screen.getByRole("button", { name: /select all/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
 
     const dialog = screen.getByTestId("confirm-dialog");
     fireEvent.click(
-      within(dialog).getByRole("button", { name: /删除所选会话/i }),
+      within(dialog).getByRole("button", { name: /delete selected/i }),
     );
 
     await waitFor(() => {

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const mcpServerSpecSchema = z
   .object({
-    type: z.enum(["stdio", "http", "sse"]).optional(),
+    type: z.enum(["stdio", "http", "streamable-http", "sse"]).optional(),
     command: z.string().trim().optional(),
     args: z.array(z.string()).optional(),
     env: z.record(z.string(), z.string()).optional(),
@@ -11,7 +11,10 @@ const mcpServerSpecSchema = z
     headers: z.record(z.string(), z.string()).optional(),
   })
   .superRefine((server, ctx) => {
-    const type = server.type ?? "stdio";
+    const type =
+      server.type === "streamable-http"
+        ? "http"
+        : (server.type ?? (server.url ? "http" : "stdio"));
     if (type === "stdio" && !server.command?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

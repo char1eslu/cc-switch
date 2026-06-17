@@ -12,6 +12,7 @@ import type { SessionMeta } from "@/types";
 import {
   formatRelativeTime,
   formatSessionTitle,
+  getCodexStatusLabel,
   getProviderIconName,
   getProviderLabel,
   getSessionKey,
@@ -59,7 +60,7 @@ export function SessionItem({
             checked={isChecked}
             disabled={isCheckDisabled}
             aria-label={t("sessionManager.selectForBatch", {
-              defaultValue: "选择会话",
+              defaultValue: "Select session",
             })}
             onCheckedChange={(checked) => onToggleChecked(Boolean(checked))}
           />
@@ -104,8 +105,8 @@ export function SessionItem({
               : t("common.unknown")}
           </span>
           {session.codexStatus && (
-            <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[10px]">
-              {session.codexStatus}
+            <span className="ml-auto shrink-0 whitespace-nowrap rounded-full bg-muted px-1.5 py-0.5 text-[10px]">
+              {getCodexStatusLabel(session.codexStatus, t)}
             </span>
           )}
         </div>

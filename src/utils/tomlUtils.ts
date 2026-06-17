@@ -40,6 +40,26 @@ export const mcpServerToToml = (server: McpServerSpec): string => {
   return stringifyToml(obj).trim();
 };
 
+export const normalizeMcpServerSpec = (config: any): McpServerSpec => {
+  return normalizeServerConfig(config);
+};
+
+export const inferMcpServerType = (
+  config: any,
+): "stdio" | "http" | "sse" | string => {
+  if (!config || typeof config !== "object") {
+    return "stdio";
+  }
+  const rawType = (config.type as string | undefined) || "";
+  if (rawType === "streamable-http") {
+    return "http";
+  }
+  if (rawType) {
+    return rawType;
+  }
+  return Object.prototype.hasOwnProperty.call(config, "url") ? "http" : "stdio";
+};
+
 /**
  * 将 TOML 文本转换为 McpServerSpec 对象（单个服务器配置）
  * 支持两种格式：
@@ -103,7 +123,7 @@ function normalizeServerConfig(config: any): McpServerSpec {
     throw new Error("服务器配置必须是对象");
   }
 
-  const type = (config.type as string) || "stdio";
+  const type = inferMcpServerType(config);
 
   // 已知字段列表（用于后续排除）
   const knownFields = new Set<string>();
@@ -157,15 +177,23 @@ function normalizeServerConfig(config: any): McpServerSpec {
     };
     knownFields.add("type");
     knownFields.add("url");
+    knownFields.add("headers");
+    knownFields.add("http_headers");
 
     // 可选字段
-    if (config.headers && typeof config.headers === "object") {
+    const rawHeaders =
+      config.headers && typeof config.headers === "object"
+        ? config.headers
+        : config.http_headers && typeof config.http_headers === "object"
+          ? config.http_headers
+          : null;
+
+    if (rawHeaders) {
       const headers: Record<string, string> = {};
-      for (const [k, v] of Object.entries(config.headers)) {
+      for (const [k, v] of Object.entries(rawHeaders)) {
         headers[k] = String(v);
       }
       server.headers = headers;
-      knownFields.add("headers");
     }
 
     // 保留所有未知字段

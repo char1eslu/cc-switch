@@ -93,7 +93,7 @@
 - Local proxy、failover、usage dashboard、model test。
 - WebDAV / S3 config sync。
 - Deep Link import。
-- 多语言 UI、深浅色主题和 Tauri 桌面壳。
+- 简体中文 / English UI、深浅色主题和 Tauri 桌面壳。
 
 ## 构建和下载
 

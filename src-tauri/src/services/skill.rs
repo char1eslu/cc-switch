@@ -6,13 +6,14 @@
 //! - 数据库存储安装记录和启用状态
 
 use anyhow::{anyhow, Context, Result};
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::timeout;
 
 use crate::app_config::{AppType, InstalledSkill, SkillApps, UnmanagedSkill};
@@ -265,6 +266,10 @@ struct SkillBackupMetadata {
 }
 
 const SKILL_BACKUP_RETAIN_COUNT: usize = 20;
+const REPO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+const REPO_DISCOVERY_FALLBACK_TIMEOUT: Duration = Duration::from_secs(20);
+const REPO_METADATA_TIMEOUT: Duration = Duration::from_secs(10);
+const GITHUB_API_USER_AGENT: &str = "cc-switch";
 
 /// 技能元数据 (从 SKILL.md 解析)
 #[derive(Debug, Clone, Deserialize)]
@@ -286,6 +291,29 @@ pub struct ImportSkillSelection {
 struct LegacySkillMigrationRow {
     directory: String,
     app_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubTreeResponse {
+    tree: Vec<GithubTreeEntry>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubTreeEntry {
+    path: String,
+    #[serde(rename = "type")]
+    entry_type: String,
+    sha: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubContentResponse {
+    content: Option<String>,
+    encoding: Option<String>,
+    #[serde(rename = "download_url")]
+    download_url: Option<String>,
 }
 
 // ========== ~/.agents/ lock 文件解析 ==========
@@ -632,22 +660,20 @@ impl SkillService {
             };
 
             // 下载仓库
-            let (temp_dir, used_branch) = timeout(
-                std::time::Duration::from_secs(60),
-                self.download_repo(&repo),
-            )
-            .await
-            .map_err(|_| {
-                anyhow!(format_skill_error(
-                    "DOWNLOAD_TIMEOUT",
-                    &[
-                        ("owner", &repo.owner),
-                        ("name", &repo.name),
-                        ("timeout", "60")
-                    ],
-                    Some("checkNetwork"),
-                ))
-            })??;
+            let (temp_dir, used_branch) =
+                timeout(REPO_DOWNLOAD_TIMEOUT, self.download_repo(&repo))
+                    .await
+                    .map_err(|_| {
+                        anyhow!(format_skill_error(
+                            "DOWNLOAD_TIMEOUT",
+                            &[
+                                ("owner", repo.owner.as_str()),
+                                ("name", repo.name.as_str()),
+                                ("timeout", "60"),
+                            ],
+                            Some("checkNetwork"),
+                        ))
+                    })??;
             repo_branch = used_branch;
 
             // 复制到 SSOT
@@ -881,83 +907,44 @@ impl SkillService {
                 enabled: true,
             };
 
-            // 下载仓库 ZIP
-            let (temp_dir, _used_branch) = match timeout(
-                std::time::Duration::from_secs(60),
-                self.download_repo(&repo),
-            )
-            .await
-            {
-                Ok(Ok(result)) => result,
-                Ok(Err(e)) => {
-                    log::warn!("检查更新时下载 {}/{} 失败: {e}", owner, name);
-                    continue;
-                }
-                Err(_) => {
-                    log::warn!("检查更新时下载 {}/{} 超时", owner, name);
-                    continue;
+            // Prefer GitHub metadata APIs so update checks do not download whole repositories.
+            let remote_hashes = match self.fetch_repo_skill_hashes(&repo).await {
+                Ok(result) => result,
+                Err(err) => {
+                    log::warn!(
+                        "通过 GitHub API 检查 {}/{} 更新失败，将回退 ZIP: {err}",
+                        owner,
+                        name
+                    );
+                    match self.fetch_repo_skill_hashes_from_zip(&repo).await {
+                        Ok(result) => result,
+                        Err(err) => {
+                            log::warn!("检查更新时下载 {}/{} 失败: {err}", owner, name);
+                            continue;
+                        }
+                    }
                 }
             };
 
-            // 扫描仓库中的所有 Skill 目录
-            let mut remote_skills: Vec<DiscoverableSkill> = Vec::new();
-            let _ = self.scan_dir_recursive(&temp_dir, &temp_dir, &repo, &mut remote_skills);
-
             for skill in group_skills {
-                // 在远程仓库中找到匹配的 Skill 目录
-                let remote_match = remote_skills.iter().find(|rs| {
-                    // 匹配方式：安装名称的最后一段
-                    let remote_install_name =
-                        rs.directory.rsplit('/').next().unwrap_or(&rs.directory);
-                    remote_install_name.eq_ignore_ascii_case(&skill.directory)
-                });
-
-                let remote_skill_dir = match remote_match {
-                    Some(rs) => match Self::resolve_skill_source_dir(&temp_dir, &rs.directory) {
-                        Some(path) => path,
-                        None => continue,
-                    },
-                    None => continue,
+                let Some(remote_hash) = Self::find_remote_hash_for_skill(
+                    &remote_hashes,
+                    &skill.directory,
+                ) else {
+                    continue;
                 };
 
-                let remote_hash = match Self::compute_dir_hash(&remote_skill_dir) {
-                    Ok(h) => h,
-                    Err(e) => {
-                        log::warn!("计算远程哈希失败 {}: {e}", skill.id);
-                        continue;
-                    }
-                };
+                let local_hash = Self::compute_local_git_tree_hash(&ssot_dir, skill);
 
-                // 本地哈希：优先数据库，否则实时计算
-                let local_hash = match &skill.content_hash {
-                    Some(h) => Some(h.clone()),
-                    None => {
-                        let local_dir = ssot_dir.join(&skill.directory);
-                        if local_dir.exists() {
-                            match Self::compute_dir_hash(&local_dir) {
-                                Ok(h) => {
-                                    let _ = db.update_skill_hash(&skill.id, &h, 0);
-                                    Some(h)
-                                }
-                                Err(_) => None,
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                };
-
-                if local_hash.as_deref() != Some(&remote_hash) {
+                if local_hash.as_deref() != Some(remote_hash) {
                     updates.push(SkillUpdateInfo {
                         id: skill.id.clone(),
                         name: skill.name.clone(),
                         current_hash: local_hash,
-                        remote_hash,
+                        remote_hash: remote_hash.clone(),
                     });
                 }
             }
-
-            let _ = fs::remove_dir_all(&temp_dir);
         }
 
         Ok(updates)
@@ -991,18 +978,16 @@ impl SkillService {
         let ssot_dir = Self::get_ssot_dir()?;
 
         // 下载仓库
-        let (temp_dir, used_branch) = timeout(
-            std::time::Duration::from_secs(60),
-            self.download_repo(&repo),
-        )
-        .await
-        .map_err(|_| {
-            anyhow!(format_skill_error(
-                "DOWNLOAD_TIMEOUT",
-                &[("owner", &owner), ("name", &name), ("timeout", "60")],
-                Some("checkNetwork"),
-            ))
-        })??;
+        let (temp_dir, used_branch) =
+            timeout(REPO_DOWNLOAD_TIMEOUT, self.download_repo(&repo))
+                .await
+                .map_err(|_| {
+                    anyhow!(format_skill_error(
+                        "DOWNLOAD_TIMEOUT",
+                        &[("owner", &owner), ("name", &name), ("timeout", "60")],
+                        Some("checkNetwork"),
+                    ))
+                })??;
 
         // 在解压的仓库中查找 Skill 源目录
         let mut remote_skills: Vec<DiscoverableSkill> = Vec::new();
@@ -1896,20 +1881,33 @@ impl SkillService {
 
     /// 从仓库获取技能列表
     async fn fetch_repo_skills(&self, repo: &SkillRepo) -> Result<Vec<DiscoverableSkill>> {
-        let (temp_dir, resolved_branch) =
-            timeout(std::time::Duration::from_secs(60), self.download_repo(repo))
-                .await
-                .map_err(|_| {
-                    anyhow!(format_skill_error(
-                        "DOWNLOAD_TIMEOUT",
-                        &[
-                            ("owner", &repo.owner),
-                            ("name", &repo.name),
-                            ("timeout", "60")
-                        ],
-                        Some("checkNetwork"),
-                    ))
-                })??;
+        match self.fetch_repo_skills_via_api(repo).await {
+            Ok(skills) => return Ok(skills),
+            Err(err) => {
+                log::warn!(
+                    "通过 GitHub API 获取仓库 {}/{} skills 失败，将回退 ZIP: {err}",
+                    repo.owner,
+                    repo.name
+                );
+            }
+        }
+
+        let (temp_dir, resolved_branch) = timeout(
+            REPO_DISCOVERY_FALLBACK_TIMEOUT,
+            self.download_repo(repo),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(format_skill_error(
+                "DOWNLOAD_TIMEOUT",
+                &[
+                    ("owner", &repo.owner),
+                    ("name", &repo.name),
+                    ("timeout", "20")
+                ],
+                Some("checkNetwork"),
+            ))
+        })??;
 
         let mut skills = Vec::new();
         let scan_dir = temp_dir.clone();
@@ -1920,6 +1918,289 @@ impl SkillService {
         let _ = fs::remove_dir_all(&temp_dir);
 
         Ok(skills)
+    }
+
+    async fn fetch_repo_skills_via_api(&self, repo: &SkillRepo) -> Result<Vec<DiscoverableSkill>> {
+        let (tree, branch) = self.fetch_github_tree(repo).await?;
+        if tree.truncated {
+            return Err(anyhow::anyhow!("GitHub tree response was truncated"));
+        }
+
+        let skill_paths = Self::select_top_level_skill_paths(&tree.tree);
+
+        let fetches = skill_paths.iter().map(|skill_path| async {
+            let directory = skill_path
+                .strip_suffix("/SKILL.md")
+                .unwrap_or(skill_path.as_str())
+                .trim_end_matches('/');
+            let directory = if directory.is_empty() {
+                repo.name.as_str()
+            } else {
+                directory
+            };
+            let metadata = self
+                .fetch_skill_metadata_from_github(repo, &branch, skill_path)
+                .await?;
+            Ok(DiscoverableSkill {
+                key: format!("{}/{}:{}", repo.owner, repo.name, directory),
+                name: metadata.name.unwrap_or_else(|| directory.to_string()),
+                description: metadata.description.unwrap_or_default(),
+                directory: directory.to_string(),
+                readme_url: Some(Self::build_skill_doc_url(
+                    &repo.owner,
+                    &repo.name,
+                    &branch,
+                    skill_path,
+                )),
+                repo_owner: repo.owner.clone(),
+                repo_name: repo.name.clone(),
+                repo_branch: branch.clone(),
+            })
+        });
+
+        let results: Vec<Result<DiscoverableSkill>> = futures::future::join_all(fetches).await;
+        let mut skills = Vec::new();
+        let mut error_count = 0;
+        for result in results {
+            match result {
+                Ok(skill) => skills.push(skill),
+                Err(err) => {
+                    error_count += 1;
+                    log::warn!(
+                        "解析仓库 {}/{} skill 元数据失败: {err}",
+                        repo.owner,
+                        repo.name
+                    );
+                }
+            }
+        }
+
+        if skills.is_empty() && !skill_paths.is_empty() && error_count > 0 {
+            return Err(anyhow::anyhow!(
+                "All GitHub content metadata requests failed for {}/{}",
+                repo.owner,
+                repo.name
+            ));
+        }
+
+        Ok(skills)
+    }
+
+    async fn fetch_repo_skill_hashes(
+        &self,
+        repo: &SkillRepo,
+    ) -> Result<HashMap<String, String>> {
+        let (tree, _branch) = self.fetch_github_tree(repo).await?;
+        if tree.truncated {
+            return Err(anyhow::anyhow!("GitHub tree response was truncated"));
+        }
+        Ok(Self::compute_remote_hashes_from_tree(repo, tree.tree))
+    }
+
+    async fn fetch_repo_skill_hashes_from_zip(
+        &self,
+        repo: &SkillRepo,
+    ) -> Result<HashMap<String, String>> {
+        let (temp_dir, resolved_branch) = timeout(
+            REPO_DISCOVERY_FALLBACK_TIMEOUT,
+            self.download_repo(repo),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(format_skill_error(
+                "DOWNLOAD_TIMEOUT",
+                &[
+                    ("owner", &repo.owner),
+                    ("name", &repo.name),
+                    ("timeout", "20")
+                ],
+                Some("checkNetwork"),
+            ))
+        })??;
+
+        let mut resolved_repo = repo.clone();
+        resolved_repo.branch = resolved_branch;
+        let mut remote_skills: Vec<DiscoverableSkill> = Vec::new();
+        let _ = self.scan_dir_recursive(&temp_dir, &temp_dir, &resolved_repo, &mut remote_skills);
+
+        let mut hashes = HashMap::new();
+        for skill in remote_skills {
+            let Some(remote_skill_dir) =
+                Self::resolve_skill_source_dir(&temp_dir, &skill.directory)
+            else {
+                continue;
+            };
+            match Self::compute_dir_git_tree_hash(&remote_skill_dir) {
+                Ok(hash) => {
+                    hashes.insert(skill.directory, hash);
+                }
+                Err(err) => {
+                    log::warn!("计算远程哈希失败 {}: {err}", skill.key);
+                }
+            }
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+        Ok(hashes)
+    }
+
+    fn compute_remote_hashes_from_tree(
+        repo: &SkillRepo,
+        entries: Vec<GithubTreeEntry>,
+    ) -> HashMap<String, String> {
+        use sha2::{Digest, Sha256};
+
+        let mut skill_dirs: Vec<String> = Self::select_top_level_skill_paths(&entries)
+            .into_iter()
+            .map(|path| {
+                path.strip_suffix("/SKILL.md")
+                    .filter(|path| !path.is_empty())
+                    .unwrap_or(repo.name.as_str())
+                    .to_string()
+            })
+            .collect();
+        skill_dirs.sort();
+
+        let mut hashes = HashMap::new();
+        for skill_dir in skill_dirs {
+            let prefix = if skill_dir == repo.name {
+                String::new()
+            } else {
+                format!("{}/", skill_dir.trim_end_matches('/'))
+            };
+
+            let mut skill_files: Vec<&GithubTreeEntry> = entries
+                .iter()
+                .filter(|entry| {
+                    entry.entry_type == "blob"
+                        && if prefix.is_empty() {
+                            true
+                        } else {
+                            entry.path.starts_with(&prefix)
+                        }
+                })
+                .collect();
+            skill_files.sort_by(|a, b| a.path.cmp(&b.path));
+
+            let mut hasher = Sha256::new();
+            for entry in skill_files {
+                let relative = if prefix.is_empty() {
+                    entry.path.as_str()
+                } else {
+                    entry.path.strip_prefix(&prefix).unwrap_or(entry.path.as_str())
+                };
+                if relative
+                    .split('/')
+                    .any(|segment| segment.starts_with('.') || segment.is_empty())
+                {
+                    continue;
+                }
+                hasher.update(relative.as_bytes());
+                hasher.update(b"\0");
+                hasher.update(entry.sha.as_bytes());
+                hasher.update(b"\0");
+            }
+
+            hashes.insert(skill_dir, format!("{:x}", hasher.finalize()));
+        }
+
+        hashes
+    }
+
+    fn select_top_level_skill_paths(entries: &[GithubTreeEntry]) -> Vec<String> {
+        let mut paths: Vec<String> = entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_type == "blob"
+                    && (entry.path == "SKILL.md" || entry.path.ends_with("/SKILL.md"))
+            })
+            .map(|entry| entry.path.clone())
+            .collect();
+        paths.sort();
+        if paths.iter().any(|path| path == "SKILL.md") {
+            return vec!["SKILL.md".to_string()];
+        }
+
+        let mut selected: Vec<String> = Vec::new();
+        for path in paths {
+            let parent = path.strip_suffix("SKILL.md").unwrap_or(path.as_str());
+            if selected.iter().any(|selected_path| {
+                let selected_parent = selected_path
+                    .strip_suffix("SKILL.md")
+                    .unwrap_or(selected_path.as_str());
+                !selected_parent.is_empty() && parent.starts_with(selected_parent)
+            }) {
+                continue;
+            }
+            selected.push(path);
+        }
+
+        selected
+    }
+
+    fn find_remote_hash_for_skill<'a>(
+        remote_hashes: &'a HashMap<String, String>,
+        install_directory: &str,
+    ) -> Option<&'a String> {
+        remote_hashes
+            .iter()
+            .find(|(remote_dir, _)| {
+                let remote_install_name =
+                    remote_dir.rsplit('/').next().unwrap_or(remote_dir.as_str());
+                remote_install_name.eq_ignore_ascii_case(install_directory)
+            })
+            .map(|(_, hash)| hash)
+    }
+
+    fn compute_local_git_tree_hash(
+        ssot_dir: &Path,
+        skill: &InstalledSkill,
+    ) -> Option<String> {
+        let local_dir = ssot_dir.join(&skill.directory);
+        if !local_dir.exists() {
+            return None;
+        }
+
+        match Self::compute_dir_git_tree_hash(&local_dir) {
+            Ok(hash) => Some(hash),
+            Err(err) => {
+                log::warn!("计算本地哈希失败 {}: {err}", skill.id);
+                None
+            }
+        }
+    }
+
+    fn compute_dir_git_tree_hash(dir: &Path) -> Result<String> {
+        use sha2::{Digest, Sha256};
+
+        let mut files: Vec<PathBuf> = Vec::new();
+        Self::collect_files_for_hash(dir, dir, &mut files)?;
+        files.sort();
+
+        let mut hasher = Sha256::new();
+        for file_path in &files {
+            let relative = file_path.strip_prefix(dir).unwrap_or(file_path);
+            let rel_str = relative.to_string_lossy().replace('\\', "/");
+            let content = fs::read(file_path)
+                .with_context(|| format!("读取文件失败: {}", file_path.display()))?;
+            let blob_sha = Self::compute_git_blob_sha(&content);
+
+            hasher.update(rel_str.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(blob_sha.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        Ok(format!("{:x}", hasher.finalize()))
+    }
+
+    fn compute_git_blob_sha(content: &[u8]) -> String {
+        use sha1::{Digest, Sha1};
+
+        let mut hasher = Sha1::new();
+        hasher.update(format!("blob {}\0", content.len()).as_bytes());
+        hasher.update(content);
+        format!("{:x}", hasher.finalize())
     }
 
     /// 递归扫描目录查找 SKILL.md
@@ -2002,9 +2283,120 @@ impl SkillService {
         Self::parse_skill_metadata_static(path)
     }
 
+    async fn fetch_github_tree(&self, repo: &SkillRepo) -> Result<(GithubTreeResponse, String)> {
+        let client = crate::proxy::http_client::get();
+        let mut branches = Vec::new();
+        if !repo.branch.is_empty() && !repo.branch.eq_ignore_ascii_case("HEAD") {
+            branches.push(repo.branch.as_str());
+        }
+        if !branches.contains(&"main") {
+            branches.push("main");
+        }
+        if !branches.contains(&"master") {
+            branches.push("master");
+        }
+
+        let mut last_error = None;
+        for branch in branches {
+            let url = format!(
+                "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+                repo.owner, repo.name, branch
+            );
+            let result = client
+                .get(&url)
+                .header(reqwest::header::USER_AGENT, GITHUB_API_USER_AGENT)
+                .timeout(REPO_METADATA_TIMEOUT)
+                .send()
+                .await;
+
+            match result {
+                Ok(response) if response.status().is_success() => {
+                    let tree = response.json::<GithubTreeResponse>().await?;
+                    return Ok((tree, branch.to_string()));
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    last_error = Some(anyhow::anyhow!(
+                        "GitHub tree request failed with HTTP {}",
+                        status
+                    ));
+                    if status != reqwest::StatusCode::NOT_FOUND {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    if err.is_timeout() || err.is_connect() {
+                        return Err(err.into());
+                    }
+                    last_error = Some(err.into());
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("GitHub tree request failed")))
+    }
+
+    async fn fetch_skill_metadata_from_github(
+        &self,
+        repo: &SkillRepo,
+        branch: &str,
+        path: &str,
+    ) -> Result<SkillMetadata> {
+        let client = crate::proxy::http_client::get();
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/contents/{}",
+            repo.owner, repo.name, path
+        );
+        let response = client
+            .get(url)
+            .header(reqwest::header::USER_AGENT, GITHUB_API_USER_AGENT)
+            .query(&[("ref", branch)])
+            .timeout(REPO_METADATA_TIMEOUT)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "GitHub content request failed with HTTP {}",
+                response.status()
+            ));
+        }
+
+        let content = response.json::<GithubContentResponse>().await?;
+        let text = match (
+            content.content.as_deref(),
+            content.encoding.as_deref(),
+            content.download_url.as_deref(),
+        ) {
+            (Some(encoded), Some("base64"), _) => {
+                let normalized = encoded.replace(['\n', '\r'], "");
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(normalized.as_bytes())
+                    .context("failed to decode GitHub content")?;
+                String::from_utf8(bytes).context("GitHub content is not valid UTF-8")?
+            }
+            (_, _, Some(download_url)) => {
+                client
+                    .get(download_url)
+                    .header(reqwest::header::USER_AGENT, GITHUB_API_USER_AGENT)
+                    .timeout(REPO_METADATA_TIMEOUT)
+                    .send()
+                    .await?
+                    .text()
+                    .await?
+            }
+            _ => return Err(anyhow::anyhow!("GitHub content response is missing content")),
+        };
+
+        Self::parse_skill_metadata_content(&text)
+    }
+
     /// 静态方法：解析技能元数据
     fn parse_skill_metadata_static(path: &Path) -> Result<SkillMetadata> {
         let content = fs::read_to_string(path)?;
+        Self::parse_skill_metadata_content(&content)
+    }
+
+    fn parse_skill_metadata_content(content: &str) -> Result<SkillMetadata> {
         let content = content.trim_start_matches('\u{feff}');
 
         let parts: Vec<&str> = content.splitn(3, "---").collect();

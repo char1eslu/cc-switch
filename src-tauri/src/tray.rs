@@ -52,22 +52,6 @@ impl TrayTexts {
                 quit: "Quit",
                 _auto_label: "Auto (Failover)",
             },
-            "ja" => Self {
-                show_main: "メインウィンドウを開く",
-                open_website: "公式サイトを開く",
-                no_providers_label: "(プロバイダーなし)",
-                lightweight_mode: "軽量モード",
-                quit: "終了",
-                _auto_label: "自動 (フェイルオーバー)",
-            },
-            "zh-TW" => Self {
-                show_main: "開啟主介面",
-                open_website: "開啟官方網站",
-                no_providers_label: "(無供應商)",
-                lightweight_mode: "輕量模式",
-                quit: "退出",
-                _auto_label: "自動 (故障轉移)",
-            },
             _ => Self {
                 show_main: "打开主界面",
                 open_website: "打开官方网站",
