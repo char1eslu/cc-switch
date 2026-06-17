@@ -9,11 +9,7 @@ export interface AppConfig {
   badgeClass: string;
 }
 
-export const APP_IDS: AppId[] = [
-  "claude",
-  "claude-desktop",
-  "codex",
-];
+export const APP_IDS: AppId[] = ["claude", "claude-desktop", "codex"];
 
 /** App IDs shown in Skills panels. */
 export const SKILLS_APP_IDS: AppId[] = ["claude", "codex"];

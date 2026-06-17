@@ -151,9 +151,7 @@ const normalizeCodexChatReasoningForSave = (
   };
 };
 
-const normalizePricingSource = (
-  value?: string,
-): PricingModelSourceOption =>
+const normalizePricingSource = (value?: string): PricingModelSourceOption =>
   value === "request" || value === "response" ? value : "inherit";
 
 export interface ProviderFormProps {
@@ -217,8 +215,7 @@ function ProviderFormCustom({
   const isEditMode = Boolean(initialData);
   const selectedPresetId = "custom";
   const category: ProviderCategory = initialData?.category ?? "custom";
-  const nonOfficialCategory =
-    category === "official" ? "custom" : category;
+  const nonOfficialCategory = category === "official" ? "custom" : category;
   const { data: settingsData } = useSettingsQuery();
   const showCommonConfigNotice =
     settingsData != null && settingsData.commonConfigConfirmed !== true;
@@ -251,8 +248,7 @@ function ProviderFormCustom({
   const [isEndpointModalOpen, setIsEndpointModalOpen] = useState(false);
   const [isCodexEndpointModalOpen, setIsCodexEndpointModalOpen] =
     useState(false);
-  const [isCommonConfigModalOpen, setIsCommonConfigModalOpen] =
-    useState(false);
+  const [isCommonConfigModalOpen, setIsCommonConfigModalOpen] = useState(false);
   const [softIssues, setSoftIssues] = useState<string[] | null>(null);
   const [pendingFormValues, setPendingFormValues] =
     useState<ProviderFormData | null>(null);
@@ -826,8 +822,7 @@ function ProviderFormCustom({
         pricingConfig.enabled && pricingConfig.pricingModelSource !== "inherit"
           ? pricingConfig.pricingModelSource
           : undefined,
-      apiFormat:
-        appId === "claude" ? localApiFormat : localCodexApiFormat,
+      apiFormat: appId === "claude" ? localApiFormat : localCodexApiFormat,
       apiKeyField:
         appId === "claude" && localApiKeyField !== "ANTHROPIC_AUTH_TOKEN"
           ? localApiKeyField

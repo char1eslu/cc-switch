@@ -13,14 +13,7 @@ export const iconMetadata: Record<string, IconMetadata> = {
     name: "apikeyfun",
     displayName: "APIKEY.FUN",
     category: "ai-provider",
-    keywords: [
-      "apikeyfun",
-      "api key",
-      "gateway",
-      "relay",
-      "claude",
-      "codex",
-    ],
+    keywords: ["apikeyfun", "api key", "gateway", "relay", "claude", "codex"],
     defaultColor: "#9C3F00",
   },
   apinebula: {
@@ -56,14 +49,7 @@ export const iconMetadata: Record<string, IconMetadata> = {
     name: "sudocode",
     displayName: "SudoCode",
     category: "ai-provider",
-    keywords: [
-      "sudocode",
-      "sudo code",
-      "gateway",
-      "relay",
-      "claude",
-      "codex",
-    ],
+    keywords: ["sudocode", "sudo code", "gateway", "relay", "claude", "codex"],
     defaultColor: "#111111",
   },
   alibaba: {

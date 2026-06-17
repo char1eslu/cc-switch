@@ -185,7 +185,9 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = ["claude", "codex"];
  *
  * Mirror of the Rust `CACHE_INCLUSIVE_APP_TYPES` whitelist.
  */
-export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set(["codex"]);
+export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([
+  "codex",
+]);
 
 /** Subset of request-log fields needed to derive cache-normalized input. */
 export interface CacheNormalizableLog {

@@ -229,8 +229,7 @@ function ProviderCardComponent({
     : isCurrent;
 
   const shouldUseGreen = isProxyTakeover && isActiveProvider;
-  const shouldUseBlue =
-    !isProxyTakeover && isActiveProvider;
+  const shouldUseBlue = !isProxyTakeover && isActiveProvider;
 
   return (
     <div
@@ -357,7 +356,6 @@ function ProviderCardComponent({
                     ⭐
                   </span>
                 )}
-
             </div>
 
             {displayUrl && (

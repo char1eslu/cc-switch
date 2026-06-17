@@ -118,11 +118,7 @@ const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 
 const STORAGE_KEY = "cc-switch-last-app";
-const VALID_APPS: AppId[] = [
-  "claude",
-  "claude-desktop",
-  "codex",
-];
+const VALID_APPS: AppId[] = ["claude", "claude-desktop", "codex"];
 
 const getInitialApp = (): AppId => {
   const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
@@ -733,10 +729,7 @@ function App() {
           );
         case "skillsDiscovery":
           return (
-            <SkillsPage
-              ref={skillsPageRef}
-              initialApp={sharedFeatureApp}
-            />
+            <SkillsPage ref={skillsPageRef} initialApp={sharedFeatureApp} />
           );
         case "mcp":
           return (
@@ -1017,23 +1010,23 @@ function App() {
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
             {currentView === "providers" && (
-                <div
-                  className="flex shrink-0 items-center gap-1.5"
-                  style={{ WebkitAppRegion: "no-drag" } as any}
-                >
-                  {activeApp === "claude-desktop" ? (
-                    <ClaudeDesktopRouteToggle />
-                  ) : (
-                    settingsData?.enableLocalProxy && (
-                      <ProxyToggle activeApp={activeApp} />
-                    )
+              <div
+                className="flex shrink-0 items-center gap-1.5"
+                style={{ WebkitAppRegion: "no-drag" } as any}
+              >
+                {activeApp === "claude-desktop" ? (
+                  <ClaudeDesktopRouteToggle />
+                ) : (
+                  settingsData?.enableLocalProxy && (
+                    <ProxyToggle activeApp={activeApp} />
+                  )
+                )}
+                {activeApp !== "claude-desktop" &&
+                  settingsData?.enableFailoverToggle && (
+                    <FailoverToggle activeApp={activeApp} />
                   )}
-                  {activeApp !== "claude-desktop" &&
-                    settingsData?.enableFailoverToggle && (
-                      <FailoverToggle activeApp={activeApp} />
-                    )}
-                </div>
-              )}
+              </div>
+            )}
             <div
               ref={toolbarRef}
               className="flex flex-1 min-w-0 overflow-x-hidden items-center py-4 pr-2"
@@ -1163,48 +1156,48 @@ function App() {
                           transition={{ duration: 0.15 }}
                         >
                           <>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("skills")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("skills.manage")}
-                              >
-                                <Wrench className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("prompts")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("prompts.manage")}
-                              >
-                                <Book className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("sessions")}
-                                className={cn(
-                                  "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5",
-                                  "transition-all duration-200 ease-in-out overflow-hidden",
-                                  hasSessionSupport
-                                    ? "opacity-100 w-8 scale-100 px-2"
-                                    : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
-                                )}
-                                title={t("sessionManager.title")}
-                              >
-                                <History className="flex-shrink-0 w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("mcp")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("mcp.title")}
-                              >
-                                <McpIcon size={16} />
-                              </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setCurrentView("skills")}
+                              className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
+                              title={t("skills.manage")}
+                            >
+                              <Wrench className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setCurrentView("prompts")}
+                              className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
+                              title={t("prompts.manage")}
+                            >
+                              <Book className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setCurrentView("sessions")}
+                              className={cn(
+                                "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5",
+                                "transition-all duration-200 ease-in-out overflow-hidden",
+                                hasSessionSupport
+                                  ? "opacity-100 w-8 scale-100 px-2"
+                                  : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
+                              )}
+                              title={t("sessionManager.title")}
+                            >
+                              <History className="flex-shrink-0 w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setCurrentView("mcp")}
+                              className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
+                              title={t("mcp.title")}
+                            >
+                              <McpIcon size={16} />
+                            </Button>
                           </>
                         </motion.div>
                       </AnimatePresence>

@@ -444,7 +444,6 @@ export function ProxyPanel({
                       status={status}
                     />
                   )}
-
                 </div>
               )}
             </div>
