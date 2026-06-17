@@ -11,6 +11,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import type { SessionMeta } from "@/types";
 import {
   formatRelativeTime,
+  formatCodexProjectName,
   formatSessionTitle,
   getCodexStatusLabel,
   getProviderIconName,
@@ -44,6 +45,10 @@ export function SessionItem({
   const title = formatSessionTitle(session);
   const lastActive = session.lastActiveAt || session.createdAt || undefined;
   const sessionKey = getSessionKey(session);
+  const projectLabel =
+    session.providerId === "codex"
+      ? formatCodexProjectName(session.projectDir)
+      : (session.projectDir ?? "");
 
   return (
     <div
@@ -115,8 +120,8 @@ export function SessionItem({
             <FolderOpen className="size-3 shrink-0" />
             <span className="truncate font-mono">
               {searchQuery
-                ? highlightText(session.projectDir, searchQuery)
-                : session.projectDir}
+                ? highlightText(projectLabel, searchQuery)
+                : projectLabel}
             </span>
           </div>
         )}

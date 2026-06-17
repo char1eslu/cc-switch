@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import FlexSearch from "flexsearch";
 import type { SessionMeta } from "@/types";
+import { isSessionInProjectFilter } from "@/components/sessions/utils";
 
 interface UseSessionSearchOptions {
   sessions: SessionMeta[];
@@ -26,7 +27,7 @@ export function useSessionSearch({
       if (providerFilter !== "all" && session.providerId !== providerFilter) {
         return false;
       }
-      if (projectFilter !== "all" && session.projectDir !== projectFilter) {
+      if (!isSessionInProjectFilter(session, projectFilter)) {
         return false;
       }
       return true;

@@ -2,6 +2,9 @@ import type { ReactNode } from "react";
 import { createElement } from "react";
 import { SessionMeta } from "@/types";
 
+export const CODEX_CHATS_PROJECT_ID = "__chats__";
+export const CODEX_CHATS_PROJECT_LABEL = "Chats";
+
 const CODEX_IDE_CONTEXT_PREFIX = "# Context from my IDE setup:";
 const CODEX_REQUEST_MARKER = "my request for codex";
 const CODEX_CONTEXT_PREFIXES = [
@@ -68,6 +71,44 @@ export const getBaseName = (value?: string | null) => {
   const normalized = trimmed.replace(/[\\/]+$/, "");
   const parts = normalized.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || trimmed;
+};
+
+const normalizeProjectPath = (value?: string | null) => {
+  if (!value) return "";
+  return value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+};
+
+export const isCodexChatsProjectDir = (value?: string | null) => {
+  const normalized = normalizeProjectPath(value);
+  return (
+    /^\/Users\/[^/]+\/Documents\/Codex(?:\/|$)/.test(normalized) ||
+    /^\/home\/[^/]+\/Documents\/Codex(?:\/|$)/.test(normalized) ||
+    /^[A-Za-z]:\/Users\/[^/]+\/Documents\/Codex(?:\/|$)/.test(normalized)
+  );
+};
+
+export const getCodexProjectFilterKey = (value?: string | null) => {
+  const normalized = normalizeProjectPath(value);
+  if (!normalized) return "";
+  return isCodexChatsProjectDir(normalized)
+    ? CODEX_CHATS_PROJECT_ID
+    : normalized;
+};
+
+export const isSessionInProjectFilter = (
+  session: SessionMeta,
+  projectFilter: string,
+) => {
+  return (
+    projectFilter === "all" ||
+    getCodexProjectFilterKey(session.projectDir) === projectFilter
+  );
+};
+
+export const formatCodexProjectName = (value?: string | null) => {
+  return isCodexChatsProjectDir(value)
+    ? CODEX_CHATS_PROJECT_LABEL
+    : getBaseName(value);
 };
 
 export const formatTimestamp = (value?: number) => {

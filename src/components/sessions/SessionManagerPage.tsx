@@ -65,15 +65,20 @@ import { SessionItem } from "./SessionItem";
 import { SessionMessageItem } from "./SessionMessageItem";
 import { SessionTocDialog, SessionTocSidebar } from "./SessionToc";
 import {
+  CODEX_CHATS_PROJECT_LABEL,
+  CODEX_CHATS_PROJECT_ID,
   extractCodexPromptPreview,
+  formatCodexProjectName,
   formatSessionMessagePreview,
   formatSessionTitle,
   formatTimestamp,
   getBaseName,
   getCodexStatusLabel,
+  getCodexProjectFilterKey,
   getProviderIconName,
   getProviderLabel,
   getSessionKey,
+  isSessionInProjectFilter,
   shouldHideCodexMessageFromToc,
 } from "./utils";
 
@@ -82,6 +87,7 @@ type ProviderFilter = "all" | "codex" | "claude";
 interface ProjectSummary {
   path: string;
   name: string;
+  displayPath: string;
   totalCount: number;
   repairCount: number;
   availableCount: number;
@@ -140,13 +146,15 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     const grouped = new Map<string, ProjectSummary>();
     sessions.forEach((session) => {
       if (session.providerId !== "codex") return;
-      const path = session.projectDir?.trim();
+      const rawPath = session.projectDir?.trim();
+      const path = getCodexProjectFilterKey(rawPath);
       if (!path) return;
       const current =
         grouped.get(path) ??
         ({
           path,
-          name: getBaseName(path) || path,
+          name: formatCodexProjectName(rawPath) || path,
+          displayPath: path === CODEX_CHATS_PROJECT_ID ? "" : path,
           totalCount: 0,
           repairCount: 0,
           availableCount: 0,
@@ -171,6 +179,8 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     });
 
     return Array.from(grouped.values()).sort((a, b) => {
+      if (a.path === CODEX_CHATS_PROJECT_ID) return -1;
+      if (b.path === CODEX_CHATS_PROJECT_ID) return 1;
       if (b.latestAt !== a.latestAt) return b.latestAt - a.latestAt;
       return a.name.localeCompare(b.name);
     });
@@ -181,7 +191,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       if (providerFilter !== "all" && session.providerId !== providerFilter) {
         return false;
       }
-      if (projectFilter !== "all" && session.projectDir !== projectFilter) {
+      if (!isSessionInProjectFilter(session, projectFilter)) {
         return false;
       }
       return true;
@@ -408,9 +418,15 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
     setIsDeepSearching(true);
     try {
+      const selectedProject = codexProjectSummaries.find(
+        (project) => project.path === projectFilter,
+      );
       const ids = await sessionsApi.searchCodexRaw({
         query,
-        projectDir: projectFilter === "all" ? undefined : projectFilter,
+        projectDir:
+          projectFilter === "all" || projectFilter === CODEX_CHATS_PROJECT_ID
+            ? undefined
+            : selectedProject?.displayPath || projectFilter,
       });
       setDeepSearchIds(new Set(ids));
       setDeepSearchQuery(query);
@@ -430,7 +446,14 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     } finally {
       setIsDeepSearching(false);
     }
-  }, [isDeepSearching, projectFilter, providerFilter, search, t]);
+  }, [
+    codexProjectSummaries,
+    isDeepSearching,
+    projectFilter,
+    providerFilter,
+    search,
+    t,
+  ]);
 
   const handleResume = async () => {
     if (!selectedSession?.resumeCommand) return;
@@ -606,7 +629,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     sessions.forEach((session) => {
       if (session.providerId !== "codex") return;
       const dir = session.projectDir?.trim();
-      if (dir) {
+      if (dir && getCodexProjectFilterKey(dir) !== CODEX_CHATS_PROJECT_ID) {
         dirs.add(dir);
       }
     });
@@ -760,6 +783,8 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       await queryClient.invalidateQueries({ queryKey: ["sessions"] });
 
       if (movedKeys.size > 0) {
+        setProviderFilter("codex");
+        setProjectFilter(getCodexProjectFilterKey(trimmedMoveProjectDir));
         toast.success(
           t("sessionManager.moveSuccess", {
             defaultValue: "Session moved",
@@ -1072,7 +1097,13 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       >
         <div className="flex-1 overflow-hidden flex flex-col gap-4">
           {/* 主内容区域 - 左右分栏 */}
-          <div className="flex-1 overflow-hidden grid gap-4 md:grid-cols-[320px_1fr]">
+          <div
+            className={
+              backupDialogOpen || Boolean(moveTargets) || Boolean(deleteTargets)
+                ? "flex-1 overflow-hidden grid gap-4 md:grid-cols-[320px_1fr] opacity-40"
+                : "flex-1 overflow-hidden grid gap-4 md:grid-cols-[320px_1fr]"
+            }
+          >
             {/* 左侧会话列表 */}
             <Card className="flex flex-col flex-1 min-h-0 overflow-hidden">
               <CardHeader className="py-2 px-3 border-b">
@@ -1171,7 +1202,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <CardTitle className="text-sm font-medium whitespace-nowrap">
                           {t("sessionManager.sessionList")}
@@ -1180,7 +1211,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           {filteredSessions.length}
                         </Badge>
                       </div>
-                      <div className="flex items-center gap-1 shrink-0">
+                      <div className="flex flex-wrap items-center justify-end gap-1 shrink-0">
                         {(selectionMode ||
                           deletableFilteredSessions.length > 0) && (
                           <Tooltip>
@@ -1319,13 +1350,17 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             >
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <SelectTrigger className="h-7 w-[116px] border-0 bg-transparent px-2 text-xs hover:bg-muted">
+                                  <SelectTrigger className="h-7 w-[104px] max-w-[104px] border-0 bg-transparent px-2 text-xs hover:bg-muted">
                                     <div className="flex min-w-0 items-center gap-1.5">
                                       <FolderOpen className="size-3.5 shrink-0" />
                                       <span className="truncate">
                                         {projectFilter === "all"
                                           ? t("sessionManager.projectFilterAll")
-                                          : getBaseName(projectFilter)}
+                                          : (codexProjectSummaries.find(
+                                              (project) =>
+                                                project.path === projectFilter,
+                                            )?.name ??
+                                            getBaseName(projectFilter))}
                                       </span>
                                     </div>
                                   </SelectTrigger>
@@ -1335,7 +1370,11 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                     ? t("sessionManager.projectFilterAll", {
                                         defaultValue: "All projects",
                                       })
-                                    : projectFilter}
+                                    : codexProjectSummaries.find(
+                                        (project) =>
+                                          project.path === projectFilter,
+                                      )?.displayPath ||
+                                      CODEX_CHATS_PROJECT_LABEL}
                                 </TooltipContent>
                               </Tooltip>
                               <SelectContent className="w-[min(620px,calc(100vw-3rem))] max-w-[min(620px,calc(100vw-3rem))]">
@@ -1367,9 +1406,11 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                         <div className="truncate text-sm">
                                           {project.name}
                                         </div>
-                                        <div className="truncate font-mono text-xs text-muted-foreground">
-                                          {project.path}
-                                        </div>
+                                        {project.displayPath && (
+                                          <div className="truncate font-mono text-xs text-muted-foreground">
+                                            {project.displayPath}
+                                          </div>
+                                        )}
                                       </div>
                                       <div className="flex shrink-0 items-center gap-1">
                                         <Badge variant="secondary">
@@ -1739,7 +1780,11 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                 >
                                   <FolderOpen className="size-3" />
                                   <span className="truncate max-w-[200px]">
-                                    {getBaseName(selectedSession.projectDir)}
+                                    {selectedSession.providerId === "codex"
+                                      ? formatCodexProjectName(
+                                          selectedSession.projectDir,
+                                        )
+                                      : getBaseName(selectedSession.projectDir)}
                                   </span>
                                 </button>
                               </TooltipTrigger>
@@ -1904,8 +1949,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               </TooltipTrigger>
                               <TooltipContent>
                                 {t("sessionManager.backupsTooltip", {
-                                  defaultValue:
-                                    "Manage Codex Wake backups and Trash",
+                                  defaultValue: "Manage backups and Trash",
                                 })}
                               </TooltipContent>
                             </Tooltip>
@@ -2335,15 +2379,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           <DialogHeader>
             <DialogTitle>
               {t("sessionManager.codexBackupsTitle", {
-                defaultValue: "Codex Wake backups",
+                defaultValue: "Backups",
               })}
             </DialogTitle>
-            <DialogDescription>
-              {t("sessionManager.codexBackupsDescription", {
-                defaultValue:
-                  "Manage local backups created by Repair, Move, Trim, Branch, and Trash operations.",
-              })}
-            </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-4 px-6 py-5 max-h-[65vh] overflow-y-auto">
@@ -2354,15 +2392,54 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                   count: codexBackups.length,
                 })}
               </Badge>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void refreshCodexBackups()}
-                disabled={isLoadingBackups}
-              >
-                <RefreshCw className="size-3.5 mr-1.5" />
-                {t("common.refresh", { defaultValue: "Refresh" })}
-              </Button>
+              <div className="flex items-center gap-2">
+                {codexBackups.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={async () => {
+                      try {
+                        await Promise.all(
+                          codexBackups.map((backup) =>
+                            sessionsApi.moveCodexBackupToTrash(
+                              backup.backupPath,
+                            ),
+                          ),
+                        );
+                        await refreshCodexBackups();
+                        toast.success(
+                          t("sessionManager.trashAllBackupsSuccess", {
+                            defaultValue: "Moved all backups to Trash",
+                          }),
+                        );
+                      } catch (error) {
+                        toast.error(
+                          extractErrorMessage(error) ||
+                            t("sessionManager.trashBackupFailed", {
+                              defaultValue: "Failed to move backup to Trash",
+                            }),
+                        );
+                      }
+                    }}
+                    disabled={isLoadingBackups}
+                  >
+                    <Trash2 className="size-3.5 mr-1.5" />
+                    {t("sessionManager.trashAllBackups", {
+                      defaultValue: "Trash all",
+                    })}
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void refreshCodexBackups()}
+                  disabled={isLoadingBackups}
+                >
+                  <RefreshCw className="size-3.5 mr-1.5" />
+                  {t("common.refresh", { defaultValue: "Refresh" })}
+                </Button>
+              </div>
             </div>
 
             <div className="grid gap-2">

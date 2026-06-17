@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  CODEX_CHATS_PROJECT_ID,
   extractCodexPromptPreview,
+  formatCodexProjectName,
   formatSessionMessagePreview,
+  getCodexProjectFilterKey,
   shouldHideCodexMessageFromToc,
 } from "@/components/sessions/utils";
 
@@ -122,5 +125,12 @@ describe("session utils", () => {
     expect(formatSessionMessagePreview("a".repeat(51))).toBe(
       `${"a".repeat(50)}...`,
     );
+  });
+
+  it("maps Codex chat cwd paths to the Chats project", () => {
+    const cwd = "/Users/mock/Documents/Codex/session";
+
+    expect(getCodexProjectFilterKey(cwd)).toBe(CODEX_CHATS_PROJECT_ID);
+    expect(formatCodexProjectName(cwd)).toBe("Chats");
   });
 });

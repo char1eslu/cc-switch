@@ -328,4 +328,65 @@ describe("SessionManagerPage", () => {
     });
     invalidateSpy.mockRestore();
   });
+
+  it("moves a chat session to the target project and switches the project filter", async () => {
+    const sessions: SessionMeta[] = [
+      {
+        providerId: "codex",
+        sessionId: "chat-session",
+        title: "Chat Session",
+        summary: "Chat summary",
+        projectDir: "/Users/mock/Documents/Codex",
+        createdAt: 2,
+        lastActiveAt: 20,
+        sourcePath: "/mock/codex/chat-session.jsonl",
+        resumeCommand: "codex resume chat-session",
+      },
+      {
+        providerId: "codex",
+        sessionId: "project-session",
+        title: "Project Session",
+        summary: "Project summary",
+        projectDir: "/work/project",
+        createdAt: 1,
+        lastActiveAt: 10,
+        sourcePath: "/mock/codex/project-session.jsonl",
+        resumeCommand: "codex resume project-session",
+      },
+    ];
+    setSessionFixtures(sessions, {
+      "codex:/mock/codex/chat-session.jsonl": [
+        { role: "user", content: "chat", ts: 20 },
+      ],
+      "codex:/mock/codex/project-session.jsonl": [
+        { role: "user", content: "project", ts: 10 },
+      ],
+    });
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Chat Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    expect(screen.getAllByText("Chats").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: /^move$/i }));
+    fireEvent.change(screen.getByLabelText(/target project path/i), {
+      target: { value: "/work/project" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^move session$/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Chat Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    expect(screen.getAllByText("project")).not.toHaveLength(0);
+    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(toastSuccessMock).toHaveBeenCalled();
+  });
 });

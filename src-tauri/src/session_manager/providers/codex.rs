@@ -409,7 +409,7 @@ fn move_session_with_home(
         update_sqlite_project(&state_db, session_id, target_project_dir)?;
     }
 
-    update_session_meta_project(path, target_project_dir)?;
+    update_session_project(path, target_project_dir)?;
 
     Ok(true)
 }
@@ -1376,32 +1376,66 @@ fn update_sqlite_project(
     Ok(())
 }
 
-fn update_session_meta_project(path: &Path, target_project_dir: &str) -> Result<(), String> {
+fn update_session_project(path: &Path, target_project_dir: &str) -> Result<(), String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read Codex session file {}: {e}", path.display()))?;
-    let (first_line, rest) = text
-        .split_once('\n')
-        .map(|(first, rest)| (first, Some(rest)))
-        .unwrap_or((text.as_str(), None));
+    let had_trailing_newline = text.ends_with('\n');
+    let mut lines = Vec::new();
+    let mut updated_meta = false;
 
-    let mut obj: Value = serde_json::from_str(first_line)
-        .map_err(|e| format!("Failed to decode Codex session metadata: {e}"))?;
-    let payload = obj
-        .get_mut("payload")
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| "Codex session metadata is missing payload object".to_string())?;
-    payload.insert(
-        "cwd".to_string(),
-        Value::String(target_project_dir.to_string()),
-    );
+    for line in text.lines() {
+        let mut value: Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) => {
+                lines.push(line.to_string());
+                continue;
+            }
+        };
 
-    let first_line = serde_json::to_string(&obj)
-        .map_err(|e| format!("Failed to encode Codex session metadata: {e}"))?;
-    let updated = match rest {
-        Some(rest) => format!("{first_line}\n{rest}"),
-        None => format!("{first_line}\n"),
-    };
+        match value.get("type").and_then(Value::as_str) {
+            Some("session_meta") => {
+                let payload = value
+                    .get_mut("payload")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| {
+                        "Codex session metadata is missing payload object".to_string()
+                    })?;
+                payload.insert(
+                    "cwd".to_string(),
+                    Value::String(target_project_dir.to_string()),
+                );
+                updated_meta = true;
+                lines.push(
+                    serde_json::to_string(&value)
+                        .map_err(|e| format!("Failed to encode Codex session metadata: {e}"))?,
+                );
+            }
+            Some("turn_context") => {
+                if let Some(payload) = value.get_mut("payload").and_then(Value::as_object_mut) {
+                    payload.insert(
+                        "cwd".to_string(),
+                        Value::String(target_project_dir.to_string()),
+                    );
+                    lines.push(
+                        serde_json::to_string(&value)
+                            .map_err(|e| format!("Failed to encode Codex turn context: {e}"))?,
+                    );
+                } else {
+                    lines.push(line.to_string());
+                }
+            }
+            _ => lines.push(line.to_string()),
+        }
+    }
 
+    if !updated_meta {
+        return Err("Codex session metadata is missing session_meta line".to_string());
+    }
+
+    let mut updated = lines.join("\n");
+    if had_trailing_newline || !updated.is_empty() {
+        updated.push('\n');
+    }
     crate::config::atomic_write(path, updated.as_bytes()).map_err(|e| e.to_string())
 }
 
@@ -2076,6 +2110,7 @@ mod tests {
             &session_path,
             concat!(
                 "{\"timestamp\":\"2026-03-06T21:50:12Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"move-id\",\"cwd\":\"/old/project\"}}\n",
+                "{\"timestamp\":\"2026-03-06T21:50:12Z\",\"type\":\"turn_context\",\"payload\":{\"cwd\":\"/old/project\",\"model\":\"gpt-5\"}}\n",
                 "{\"timestamp\":\"2026-03-06T21:50:13Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":\"move me\"}}\n"
             ),
         )
@@ -2091,6 +2126,20 @@ mod tests {
             .unwrap()
             .to_string();
         let value: Value = serde_json::from_str(&first_line).expect("json");
+        assert_eq!(
+            value
+                .get("payload")
+                .and_then(|payload| payload.get("cwd"))
+                .and_then(Value::as_str),
+            Some("/new/project")
+        );
+        let second_line = std::fs::read_to_string(&session_path)
+            .expect("read session")
+            .lines()
+            .nth(1)
+            .unwrap()
+            .to_string();
+        let value: Value = serde_json::from_str(&second_line).expect("json");
         assert_eq!(
             value
                 .get("payload")

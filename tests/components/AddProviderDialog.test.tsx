@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import type { ProviderFormValues } from "@/components/providers/forms/ProviderForm";
+import type { AppId } from "@/lib/api";
 
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ children }: { children: React.ReactNode }) => (
@@ -28,8 +29,10 @@ let mockFormValues: ProviderFormValues;
 
 vi.mock("@/components/providers/forms/ProviderForm", () => ({
   ProviderForm: ({
+    appId,
     onSubmit,
   }: {
+    appId: AppId;
     onSubmit: (values: ProviderFormValues) => void;
   }) => (
     <form
@@ -38,7 +41,9 @@ vi.mock("@/components/providers/forms/ProviderForm", () => ({
         event.preventDefault();
         onSubmit(mockFormValues);
       }}
-    />
+    >
+      <output data-testid="provider-form-app">{appId}</output>
+    </form>
   ),
 }));
 
@@ -124,5 +129,18 @@ describe("AddProviderDialog", () => {
         lastUsed: undefined,
       },
     });
+  });
+
+  it("在 Add Provider 中渲染当前 app 的自定义供应商表单", () => {
+    render(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="codex"
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("provider-form-app").textContent).toBe("codex");
   });
 });
