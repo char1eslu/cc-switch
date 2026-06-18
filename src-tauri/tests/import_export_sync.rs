@@ -431,7 +431,7 @@ fn sync_enabled_to_codex_migrates_erroneous_mcp_dot_servers_to_mcp_servers() {
 }
 
 #[test]
-fn sync_enabled_to_codex_removes_servers_when_none_enabled() {
+fn sync_enabled_to_codex_preserves_unmanaged_servers_when_none_enabled() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let path = cc_switch_lib::get_codex_config_path();
@@ -441,7 +441,7 @@ fn sync_enabled_to_codex_removes_servers_when_none_enabled() {
     fs::write(
         &path,
         r#"[mcp_servers]
-disabled = { type = "stdio", command = "noop" }
+unmanaged = { type = "stdio", command = "noop" }
 "#,
     )
     .expect("seed config file");
@@ -449,10 +449,12 @@ disabled = { type = "stdio", command = "noop" }
     let config = MultiAppConfig::default(); // 无启用项
     cc_switch_lib::sync_enabled_to_codex(&config).expect("sync codex");
 
+    // sync 是增量、非破坏式的：不删除 live 中未由本应用管理的 MCP 条目。
+    // 无启用项时，预置的 unmanaged 条目应原样保留。
     let text = fs::read_to_string(&path).expect("read config.toml");
     assert!(
-        !text.contains("mcp_servers") && !text.contains("servers"),
-        "disabled entries should be removed from config.toml"
+        text.contains("mcp_servers") && text.contains("unmanaged"),
+        "unmanaged entries must be preserved when no servers are enabled"
     );
 }
 
