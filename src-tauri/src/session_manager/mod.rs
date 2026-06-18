@@ -493,6 +493,11 @@ mod tests {
                 session_id: "s2".to_string(),
                 source_path: "/tmp/s2".to_string(),
             },
+            DeleteSessionRequest {
+                provider_id: "codex".to_string(),
+                session_id: "s3".to_string(),
+                source_path: "/tmp/s3".to_string(),
+            },
         ];
 
         let outcomes = collect_delete_session_outcomes(&requests, |request| {

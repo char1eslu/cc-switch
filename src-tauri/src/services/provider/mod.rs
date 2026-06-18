@@ -591,8 +591,8 @@ base_url = "http://localhost:8080"
                     .expect_err("stale originalId should be rejected");
 
             assert!(
-                err.to_string().contains("Original provider"),
-                "expected missing original provider error, got {err:?}"
+                err.to_string().contains("Provider key cannot be changed"),
+                "expected provider key change rejection, got {err:?}"
             );
             assert!(
                 state
