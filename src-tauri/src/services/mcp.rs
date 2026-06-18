@@ -138,16 +138,22 @@ impl McpService {
         Ok(())
     }
 
-    /// 手动同步所有启用的 MCP 服务器到对应的应用
+    /// 手动同步所有启用的 MCP 服务器到对应的应用，并移除 DB 已知但禁用的项。
+    ///
+    /// Reconcile 语义（逐 app 独立判断，ClaudeDesktop 跳过）：
+    /// 1. DB 已知 + 该 app 启用 → 写入/更新 live
+    /// 2. DB 已知 + 该 app 禁用 → 从 live 移除
+    /// 3. DB 不认识的 live 条目  → 保留（本函数只遍历 DB，天然不碰未知 id）
     pub fn sync_all_enabled(state: &AppState) -> Result<(), AppError> {
         let servers = Self::get_all_servers(state)?;
 
-        for server in servers.values() {
-            for app in server.apps.enabled_apps() {
-                if matches!(app, AppType::ClaudeDesktop) {
-                    continue;
+        for app in [AppType::Claude, AppType::Codex] {
+            for server in servers.values() {
+                if server.apps.is_enabled_for(&app) {
+                    Self::sync_server_to_app(state, server, &app)?;
+                } else {
+                    Self::remove_server_from_app(state, &server.id, &app)?;
                 }
-                Self::sync_server_to_app(state, server, &app)?;
             }
         }
 
