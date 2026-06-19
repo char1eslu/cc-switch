@@ -11,6 +11,8 @@
 use crate::proxy::{error::ProxyError, json_canonical::canonical_json_string};
 use serde_json::{json, Value};
 
+const MIN_RESPONSES_MAX_OUTPUT_TOKENS: u64 = 16;
+
 pub(crate) fn sanitize_anthropic_tool_use_input(name: &str, input: Value) -> Value {
     if name != "Read" {
         return input;
@@ -38,6 +40,15 @@ pub(crate) fn sanitize_anthropic_tool_use_input_json(name: &str, raw: &str) -> S
 
     serde_json::to_string(&sanitize_anthropic_tool_use_input(name, input))
         .unwrap_or_else(|_| raw.to_string())
+}
+
+fn anthropic_max_tokens_to_responses_max_output_tokens(value: &Value) -> Value {
+    match value.as_u64() {
+        Some(tokens) if tokens < MIN_RESPONSES_MAX_OUTPUT_TOKENS => {
+            json!(MIN_RESPONSES_MAX_OUTPUT_TOKENS)
+        }
+        _ => value.clone(),
+    }
 }
 
 /// Anthropic 请求 → OpenAI Responses 请求
@@ -86,9 +97,11 @@ pub fn anthropic_to_responses(
         result["input"] = json!(input);
     }
 
-    // max_tokens → max_output_tokens (Responses API uses max_output_tokens for all models)
+    // max_tokens → max_output_tokens (Responses API uses max_output_tokens for all models).
+    // Claude Desktop may send startup/title probes with max_tokens=1; Responses API
+    // rejects max_output_tokens below 16, so clamp the translated field only.
     if let Some(v) = body.get("max_tokens") {
-        result["max_output_tokens"] = v.clone();
+        result["max_output_tokens"] = anthropic_max_tokens_to_responses_max_output_tokens(v);
     }
 
     // 直接透传的参数
@@ -1425,6 +1438,21 @@ mod tests {
         let result = anthropic_to_responses(input, None, false, false).unwrap();
 
         assert_eq!(result["max_output_tokens"], json!(1024));
+    }
+
+    #[test]
+    fn test_anthropic_to_responses_clamps_tiny_max_tokens_for_responses_api() {
+        // Claude Desktop 启动/标题探测会发送 max_tokens=1；Responses API
+        // 的 max_output_tokens 最小值是 16，直接转发会被上游 400 拒绝。
+        let input = json!({
+            "model": "gpt-5.5-priority",
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "Reply OK only."}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+
+        assert_eq!(result["max_output_tokens"], json!(16));
     }
 
     // ==================== 第二轮：P0 + P1 字段对齐 ====================
