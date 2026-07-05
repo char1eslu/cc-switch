@@ -647,6 +647,72 @@ impl ProviderService {
             .live_config_managed = Some(managed);
     }
 
+    fn normalize_usage_script_credential_overrides(app_type: &AppType, provider: &mut Provider) {
+        let current_credentials = provider.resolve_usage_credentials(app_type);
+
+        let Some(usage_script) = provider
+            .meta
+            .as_mut()
+            .and_then(|meta| meta.usage_script.as_mut())
+        else {
+            return;
+        };
+
+        if usage_script.template_type.as_deref() == Some("token_plan") {
+            return;
+        }
+
+        if usage_script.api_key.as_deref().is_some_and(|api_key| {
+            Self::should_clear_usage_api_key_override(api_key, &current_credentials)
+        }) {
+            usage_script.api_key = None;
+        }
+
+        if usage_script.base_url.as_deref().is_some_and(|base_url| {
+            Self::should_clear_usage_base_url_override(base_url, &current_credentials)
+        }) {
+            usage_script.base_url = None;
+        }
+    }
+
+    fn should_clear_usage_api_key_override(
+        script_api_key: &str,
+        current_credentials: &(String, String),
+    ) -> bool {
+        let candidate = script_api_key.trim();
+        if candidate.is_empty() {
+            return true;
+        }
+
+        let matches_provider_key = |api_key: &str| {
+            let api_key = api_key.trim();
+            !api_key.is_empty() && api_key == candidate
+        };
+
+        matches_provider_key(&current_credentials.1)
+    }
+
+    fn should_clear_usage_base_url_override(
+        script_base_url: &str,
+        current_credentials: &(String, String),
+    ) -> bool {
+        let candidate = Self::normalize_usage_base_url_for_compare(script_base_url);
+        if candidate.is_empty() {
+            return true;
+        }
+
+        let matches_provider_base_url = |base_url: &str| {
+            let base_url = Self::normalize_usage_base_url_for_compare(base_url);
+            !base_url.is_empty() && base_url == candidate
+        };
+
+        matches_provider_base_url(&current_credentials.0)
+    }
+
+    fn normalize_usage_base_url_for_compare(base_url: &str) -> String {
+        base_url.trim().trim_end_matches('/').to_string()
+    }
+
     /// List all providers for an app type
     pub fn list(
         state: &AppState,
@@ -678,6 +744,7 @@ impl ProviderService {
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
+        Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
         let _ = add_to_live;
 
         // Save to database
@@ -710,6 +777,7 @@ impl ProviderService {
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
+        Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
 
         if provider_id_changed {
             return Err(AppError::Message(
@@ -1106,15 +1174,55 @@ impl ProviderService {
     }
 
     /// Extract common config for Claude (JSON format)
+    /// 凭据/机密键的模式匹配：剥掉任何凭据形态（`*_API_KEY` / `*_AUTH_TOKEN` /
+    /// `*secret*` / `*token*` 等），同时保留 `MAX_OUTPUT_TOKENS` 这类合法可共享的
+    /// 复数 `*_TOKENS` 值。
+    fn is_sensitive_config_key(name: &str) -> bool {
+        let upper = name.to_ascii_uppercase();
+
+        // 单数 `_TOKEN` 命中 AWS_SESSION_TOKEN 等，但**不**误伤复数 `_TOKENS`
+        // （CLAUDE_CODE_MAX_OUTPUT_TOKENS / MAX_THINKING_TOKENS 是正常可共享配置）。
+        const SENSITIVE_SUFFIXES: &[&str] = &[
+            "_API_KEY",
+            "_APIKEY",
+            "_AUTH_TOKEN",
+            "_TOKEN",
+            "_ACCESS_KEY",
+            "_ACCESS_KEY_ID",
+            "_KEY_ID",
+            "_PRIVATE_KEY",
+        ];
+        const SENSITIVE_EXACT: &[&str] = &[
+            "APIKEY",
+            "API_KEY",
+            "TOKEN",
+            "SECRET",
+            "PASSWORD",
+            "CREDENTIALS",
+        ];
+        // contains：覆盖 AWS_SECRET_ACCESS_KEY / *_CLIENT_SECRET /
+        // GOOGLE_APPLICATION_CREDENTIALS / AWS_BEARER_TOKEN_BEDROCK 等变体。
+        const SENSITIVE_CONTAINS: &[&str] = &[
+            "SECRET",
+            "PASSWORD",
+            "PASSWD",
+            "CREDENTIAL",
+            "PRIVATE_KEY",
+            "BEARER_TOKEN",
+        ];
+
+        SENSITIVE_EXACT.contains(&upper.as_str())
+            || SENSITIVE_SUFFIXES.iter().any(|s| upper.ends_with(s))
+            || SENSITIVE_CONTAINS.iter().any(|c| upper.contains(c))
+    }
+
     fn extract_claude_common_config(settings: &Value) -> Result<String, AppError> {
         let mut config = settings.clone();
 
-        // Fields to exclude from common config
-        const ENV_EXCLUDES: &[&str] = &[
-            // Auth
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            // Models and Claude Code model-menu display names
+        // 供应商专属的**非机密**字段（模型 + 端点），不应共享。凭据/机密不在此列举，
+        // 改由 `is_sensitive_config_key`（模式匹配）统一剥离，新供应商的 `*_API_KEY`
+        // 等无需再手工补名单即可被覆盖。
+        const ENV_PROVIDER_SPECIFIC_EXCLUDES: &[&str] = &[
             "ANTHROPIC_MODEL",
             "ANTHROPIC_REASONING_MODEL", // legacy: 已废弃，但旧配置可能残留
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
@@ -1123,7 +1231,6 @@ impl ProviderService {
             "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-            // Endpoint
             "ANTHROPIC_BASE_URL",
         ];
 
@@ -1134,10 +1241,18 @@ impl ProviderService {
             "smallFastModel",
         ];
 
-        // Remove env fields
+        // Remove env fields: provider-specific (models/endpoint) + 任何凭据键。
         if let Some(env) = config.get_mut("env").and_then(|v| v.as_object_mut()) {
-            for key in ENV_EXCLUDES {
+            let sensitive: Vec<String> = env
+                .keys()
+                .filter(|k| Self::is_sensitive_config_key(k))
+                .cloned()
+                .collect();
+            for key in ENV_PROVIDER_SPECIFIC_EXCLUDES {
                 env.remove(*key);
+            }
+            for key in &sensitive {
+                env.remove(key);
             }
             // If env is empty after removal, remove the env object itself
             if env.is_empty() {
@@ -1145,10 +1260,19 @@ impl ProviderService {
             }
         }
 
-        // Remove top-level fields
+        // Remove top-level fields: legacy model fields + 任何凭据键
+        // （例如非标准的顶层 apiKey / api_key / *_TOKEN）。
         if let Some(obj) = config.as_object_mut() {
+            let sensitive: Vec<String> = obj
+                .keys()
+                .filter(|k| Self::is_sensitive_config_key(k))
+                .cloned()
+                .collect();
             for key in TOP_LEVEL_EXCLUDES {
                 obj.remove(*key);
+            }
+            for key in &sensitive {
+                obj.remove(key);
             }
         }
 

@@ -1117,7 +1117,9 @@ fn migrate_codex_state_dbs(
 
 fn codex_state_db_paths(codex_dir: &Path, config_text: &str) -> Vec<PathBuf> {
     let mut paths = vec![codex_dir.join(CODEX_STATE_DB_FILENAME)];
-    if let Some(sqlite_home) = sqlite_home_from_codex_config(config_text) {
+    // config.toml 的 sqlite_home 优先；未配置时回退到 CODEX_SQLITE_HOME 环境变量
+    let sqlite_home = sqlite_home_from_codex_config(config_text).or_else(sqlite_home_from_env);
+    if let Some(sqlite_home) = sqlite_home {
         let db_path = sqlite_home.join(CODEX_STATE_DB_FILENAME);
         if !paths.contains(&db_path) {
             paths.push(db_path);
@@ -1129,6 +1131,15 @@ fn codex_state_db_paths(codex_dir: &Path, config_text: &str) -> Vec<PathBuf> {
 fn sqlite_home_from_codex_config(config_text: &str) -> Option<PathBuf> {
     let doc = config_text.parse::<DocumentMut>().ok()?;
     let raw = doc.get("sqlite_home")?.as_str()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(resolve_user_path(raw))
+}
+
+fn sqlite_home_from_env() -> Option<PathBuf> {
+    let raw = std::env::var("CODEX_SQLITE_HOME").ok()?;
+    let raw = raw.trim();
     if raw.is_empty() {
         return None;
     }

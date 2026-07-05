@@ -7,6 +7,7 @@ import type { SwitchResult } from "@/lib/api/providers";
 import type { Provider, SessionMeta, Settings } from "@/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { generateUUID } from "@/utils/uuid";
+import { usageKeys } from "@/lib/query/usage";
 
 export const useAddProviderMutation = (appId: AppId) => {
   const queryClient = useQueryClient();
@@ -99,8 +100,16 @@ export const useUpdateProviderMutation = (appId: AppId) => {
       await providersApi.update(provider, appId, originalId);
       return provider;
     },
-    onSuccess: async () => {
+    onSuccess: async (provider, variables) => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await queryClient.invalidateQueries({
+        queryKey: usageKeys.script(provider.id, appId),
+      });
+      if (variables.originalId && variables.originalId !== provider.id) {
+        await queryClient.invalidateQueries({
+          queryKey: usageKeys.script(variables.originalId, appId),
+        });
+      }
       toast.success(
         t("notifications.updateSuccess", {
           defaultValue: "供应商更新成功",
