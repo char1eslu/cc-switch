@@ -448,7 +448,7 @@ mod tests {
         assert!(StreamCheckService::resolve_base_url(&AppType::Claude, &empty).is_err());
 
         let mut official = make_provider(serde_json::json!({ "auth": {}, "config": "" }));
-        official.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        official.id = "codex-official".to_string();
         official.category = Some("official".to_string());
         assert!(StreamCheckService::resolve_base_url(&AppType::Codex, &official).is_err());
     }
