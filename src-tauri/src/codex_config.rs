@@ -6,14 +6,24 @@ use crate::config::{
     write_json_file, write_text_file,
 };
 use crate::error::AppError;
+use once_cell::sync::OnceCell;
 use serde_json::{json, Value};
 use std::fs;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use toml_edit::DocumentMut;
 
 pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
 pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
 const CODEX_MODEL_CATALOG_TEMPLATE_SLUG: &str = "gpt-5.5";
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+// 生成 ProxyChat 目录每个进程只需要一份稳定的 Codex 模型模板。没有这层缓存时，
+// 每次切换供应商/接管都可能重新启动 Codex CLI，对 npm 安装的 `codex.cmd`
+// 在 Windows 上尤其昂贵。测试刻意绕过全局缓存：它们隔离 CODEX_HOME 并注入不同模板。
+#[cfg(not(test))]
+static CODEX_MODEL_CATALOG_TEMPLATE_CACHE: OnceCell<Value> = OnceCell::new();
 
 /// Reserved built-in provider IDs from OpenAI Codex's config/model-provider
 /// catalog. Keep in sync with Codex `RESERVED_MODEL_PROVIDER_IDS` and legacy
@@ -580,13 +590,27 @@ fn codex_cli_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+fn codex_bundled_models_command(candidate: &Path) -> Command {
+    let mut command = Command::new(candidate);
+    command
+        .args(["debug", "models", "--bundled"])
+        .stdin(Stdio::null());
+
+    // release 构建使用 Windows GUI 子系统，未带该标志创建的 console 子进程会
+    // 自带一个瞬时 console 窗口。npm 把 Codex 安装成 `codex.cmd`，Windows 会经 cmd.exe 启动。
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    command
+}
+
 fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
     for candidate in codex_cli_candidates() {
         let candidate_label = candidate.to_string_lossy();
-        let output = match Command::new(&candidate)
-            .args(["debug", "models", "--bundled"])
-            .output()
-        {
+        let output = match codex_bundled_models_command(&candidate).output() {
             Ok(output) => output,
             Err(err) => {
                 log::debug!("failed to run `{candidate_label} debug models --bundled`: {err}");
@@ -656,7 +680,7 @@ fn fill_template_fields_from_static(template: &mut Value) {
     }
 }
 
-fn load_codex_model_catalog_template() -> Result<Value, AppError> {
+fn load_codex_model_catalog_template_uncached() -> Result<Value, AppError> {
     // ① models_cache.json (created by Codex when it connects to OpenAI)
     if let Some(mut template) = load_codex_model_template_from_cache()? {
         fill_template_fields_from_static(&mut template);
@@ -675,6 +699,30 @@ fn load_codex_model_catalog_template() -> Result<Value, AppError> {
     Err(AppError::Message(format!(
         "Codex model catalog template `{CODEX_MODEL_CATALOG_TEMPLATE_SLUG}` not found. Please start Codex once so models_cache.json is available, or ensure the `codex` CLI is on PATH."
     )))
+}
+
+fn get_or_load_codex_model_catalog_template<F>(
+    cache: &OnceCell<Value>,
+    loader: F,
+) -> Result<Value, AppError>
+where
+    F: FnOnce() -> Result<Value, AppError>,
+{
+    cache.get_or_try_init(loader).cloned()
+}
+
+#[cfg(not(test))]
+fn load_codex_model_catalog_template() -> Result<Value, AppError> {
+    get_or_load_codex_model_catalog_template(
+        &CODEX_MODEL_CATALOG_TEMPLATE_CACHE,
+        load_codex_model_catalog_template_uncached,
+    )
+}
+
+// 测试各自隔离 CODEX_HOME 并植入不同模板，必须绕过进程级缓存。
+#[cfg(test)]
+fn load_codex_model_catalog_template() -> Result<Value, AppError> {
+    load_codex_model_catalog_template_uncached()
 }
 
 fn codex_model_catalog_from_specs(specs: &[CodexCatalogModelSpec], template: &Value) -> Value {
@@ -2619,5 +2667,62 @@ model_catalog_json = "cc-switch-model-catalog.json"
                 .and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn codex_bundled_models_command_uses_expected_program_and_args() {
+        let command = codex_bundled_models_command(Path::new("codex"));
+        assert_eq!(command.get_program(), "codex");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["debug", "models", "--bundled"]
+        );
+    }
+
+    #[test]
+    fn successful_model_catalog_template_load_is_cached() {
+        use std::cell::Cell;
+
+        let cache = OnceCell::new();
+        let calls = Cell::new(0);
+        let first = get_or_load_codex_model_catalog_template(&cache, || {
+            calls.set(calls.get() + 1);
+            Ok(json!({ "slug": "first" }))
+        })
+        .expect("first template load");
+        let second = get_or_load_codex_model_catalog_template(&cache, || {
+            calls.set(calls.get() + 1);
+            Ok(json!({ "slug": "second" }))
+        })
+        .expect("cached template load");
+
+        assert_eq!(first, json!({ "slug": "first" }));
+        assert_eq!(second, first);
+        assert_eq!(calls.get(), 1, "成功加载的模板只应加载一次");
+    }
+
+    #[test]
+    fn failed_model_catalog_template_load_can_retry() {
+        use std::cell::Cell;
+
+        let cache = OnceCell::new();
+        let calls = Cell::new(0);
+        let first = get_or_load_codex_model_catalog_template(&cache, || {
+            calls.set(calls.get() + 1);
+            Err(AppError::Message("temporary failure".to_string()))
+        });
+        assert!(first.is_err());
+
+        let second = get_or_load_codex_model_catalog_template(&cache, || {
+            calls.set(calls.get() + 1);
+            Ok(json!({ "slug": "recovered" }))
+        })
+        .expect("retry template load");
+
+        assert_eq!(second, json!({ "slug": "recovered" }));
+        assert_eq!(calls.get(), 2, "失败的加载不得污染缓存");
     }
 }
