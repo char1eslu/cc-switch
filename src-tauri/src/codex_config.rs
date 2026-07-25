@@ -628,13 +628,43 @@ fn load_codex_model_template_static() -> Option<Value> {
     }
 }
 
+/// Codex 外部目录解析器要求必须存在（无 serde default）的字段：缺失时
+/// Codex 启动阶段会整份拒绝目录文件（"missing field ..."），CLI 与桌面端一起打不开。
+/// 当 Codex 新增必需字段时，这里和静态模板都要同步添加。
+const CODEX_CATALOG_PARSER_REQUIRED_FIELDS: &[&str] = &["supports_reasoning_summaries"];
+
+/// `models_cache.json` 由机器上所有 Codex 安装共享（npm CLI、桌面内置二进制等），
+/// 各版本序列化自己的 `ModelInfo` 结构——缓存的字段集取决于最后写入的那个进程，
+/// 因此不能假定它满足当前外部目录 schema（实测 0.144.5 要求
+/// `supports_reasoning_summaries`，而共存的另一个构建会把它写掉）。
+/// 只回填解析器必需字段：可选能力字段保持"缺失即默认"语义，且已有值永远优先。
+fn fill_template_fields_from_static(template: &mut Value) {
+    let Some(static_template) = load_codex_model_template_static() else {
+        return;
+    };
+    let (Some(template_obj), Some(static_obj)) =
+        (template.as_object_mut(), static_template.as_object())
+    else {
+        return;
+    };
+    for key in CODEX_CATALOG_PARSER_REQUIRED_FIELDS {
+        if !template_obj.contains_key(*key) {
+            if let Some(value) = static_obj.get(*key) {
+                template_obj.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
+}
+
 fn load_codex_model_catalog_template() -> Result<Value, AppError> {
     // ① models_cache.json (created by Codex when it connects to OpenAI)
-    if let Some(template) = load_codex_model_template_from_cache()? {
+    if let Some(mut template) = load_codex_model_template_from_cache()? {
+        fill_template_fields_from_static(&mut template);
         return Ok(template);
     }
     // ② codex CLI (PATH + platform-specific common paths)
-    if let Some(template) = load_codex_model_template_from_bundled()? {
+    if let Some(mut template) = load_codex_model_template_from_bundled()? {
+        fill_template_fields_from_static(&mut template);
         return Ok(template);
     }
     // ③ Static fallback bundled at compile time
@@ -2535,6 +2565,59 @@ model_catalog_json = "cc-switch-model-catalog.json"
         assert!(
             parsed.get("model_catalog_json").is_none(),
             "None arm should remove relative cc-switch-owned field"
+        );
+    }
+
+    #[test]
+    fn dynamic_template_backfills_parser_required_fields_from_static() {
+        // 模拟从旧版 Codex 写出的 models_cache.json 克隆来的模板：
+        // 缺少 supports_reasoning_summaries 时 codex >= 0.144.5 会拒绝整个目录文件。
+        let mut template = json!({
+            "slug": "gpt-5.5",
+            "context_window": 272_000,
+            "supports_parallel_tool_calls": false
+        });
+        fill_template_fields_from_static(&mut template);
+
+        assert_eq!(
+            template
+                .get("supports_reasoning_summaries")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        // 动态模板中已存在的键绝不被覆盖
+        assert_eq!(
+            template
+                .get("supports_parallel_tool_calls")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            template.get("context_window").and_then(Value::as_u64),
+            Some(272_000)
+        );
+        // 可选能力字段不得回填：对解析器而言"缺失"意味着采用解析器默认值，
+        // 而不是静态模板里的值。
+        assert!(template.get("supports_search_tool").is_none());
+        assert!(template.get("web_search_tool_type").is_none());
+    }
+
+    #[test]
+    fn proxy_chat_catalog_entries_carry_reasoning_summaries_flag() {
+        // 端到端：过期的动态模板回填后，产出的目录项必须能被 codex 0.144.5+ 解析。
+        let mut template = json!({ "slug": "gpt-5.5" });
+        fill_template_fields_from_static(&mut template);
+        let specs = vec![CodexCatalogModelSpec {
+            model: "k3".to_string(),
+            display_name: "Kimi K3".to_string(),
+            context_window: 262_144,
+        }];
+        let catalog = codex_model_catalog_from_specs(&specs, &template);
+        assert_eq!(
+            catalog["models"][0]
+                .get("supports_reasoning_summaries")
+                .and_then(Value::as_bool),
+            Some(true)
         );
     }
 }
