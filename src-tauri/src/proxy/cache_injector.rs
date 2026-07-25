@@ -13,6 +13,14 @@ pub fn inject(body: &mut Value, config: &OptimizerConfig) {
 
     let existing = count_existing(body);
 
+    if existing > 4 {
+        // 已有标记归调用方所有：不静默删除或重排，只暴露这个不受支持的总数，
+        // 由上游供应商去做校验。
+        log::warn!(
+            "[OPT] cache: existing breakpoint count {existing} exceeds the supported total of 4; preserving caller input"
+        );
+    }
+
     // 升级已有断点的 TTL
     upgrade_existing_ttl(body, &config.cache_ttl);
 
@@ -371,6 +379,32 @@ mod tests {
             .get("cache_control")
             .is_none());
         assert!(body["messages"][0]["content"][2]
+            .get("cache_control")
+            .is_none());
+    }
+
+    #[test]
+    fn test_more_than_four_existing_breakpoints_are_preserved() {
+        let mut body = json!({
+            "model": "test",
+            "tools": [
+                {"name": "t1", "cache_control": {"type": "ephemeral"}},
+                {"name": "t2", "cache_control": {"type": "ephemeral"}}
+            ],
+            "system": [
+                {"type": "text", "text": "s1", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": "s2", "cache_control": {"type": "ephemeral"}}
+            ],
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "m1", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": "m2"}
+            ]}]
+        });
+
+        inject(&mut body, &default_config());
+
+        assert_eq!(count_existing(&body), 5);
+        assert!(body["messages"][0]["content"][1]
             .get("cache_control")
             .is_none());
     }
