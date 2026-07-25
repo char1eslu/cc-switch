@@ -3582,7 +3582,10 @@ mod tests {
         // check_updates 从 HashMap 取候选，迭代顺序每进程随机；
         // 选择必须只依赖路径本身，否则会与 update_skill 选中不同副本。
         let mut remote_hashes = HashMap::new();
-        remote_hashes.insert(".openclaw/skills/ponytail".to_string(), "hash-a".to_string());
+        remote_hashes.insert(
+            ".openclaw/skills/ponytail".to_string(),
+            "hash-a".to_string(),
+        );
         remote_hashes.insert("skills/ponytail".to_string(), "hash-b".to_string());
 
         for _ in 0..64 {
