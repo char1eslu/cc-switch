@@ -181,7 +181,8 @@ impl Database {
             duration_ms INTEGER, status_code INTEGER NOT NULL, error_message TEXT, session_id TEXT,
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
             cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL,
-            data_source TEXT NOT NULL DEFAULT 'proxy'
+            data_source TEXT NOT NULL DEFAULT 'proxy',
+            input_token_semantics INTEGER NOT NULL DEFAULT 0
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_provider ON proxy_request_logs(provider_id, app_type)", [])
@@ -261,6 +262,7 @@ impl Database {
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                input_token_semantics INTEGER NOT NULL DEFAULT 0,
                 total_cost_usd TEXT NOT NULL DEFAULT '0',
                 avg_latency_ms INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (date, app_type, provider_id, model, request_model, pricing_model)
@@ -429,6 +431,31 @@ impl Database {
                         log::info!("迁移数据库从 v10 到 v11（usage_daily_rollups 保留 request_model 维度）");
                         Self::migrate_v10_to_v11(conn)?;
                         Self::set_user_version(conn, 11)?;
+                    }
+                    11 => {
+                        log::info!("迁移数据库从 v11 到 v12（上游 profiles 表，本 fork 不适用）");
+                        Self::migrate_v11_to_v12(conn)?;
+                        Self::set_user_version(conn, 12)?;
+                    }
+                    12 => {
+                        log::info!("迁移数据库从 v12 到 v13（补 input_token_semantics 列）");
+                        Self::migrate_v12_to_v13(conn)?;
+                        Self::set_user_version(conn, 13)?;
+                    }
+                    13 => {
+                        log::info!("迁移数据库从 v13 到 v14（上游 grokbuild 约束，本 fork 不适用）");
+                        Self::migrate_v13_to_v14(conn)?;
+                        Self::set_user_version(conn, 14)?;
+                    }
+                    14 => {
+                        log::info!("迁移数据库从 v14 到 v15（上游 grokbuild 列，本 fork 不适用）");
+                        Self::migrate_v14_to_v15(conn)?;
+                        Self::set_user_version(conn, 15)?;
+                    }
+                    15 => {
+                        log::info!("迁移数据库从 v15 到 v16（上游 Codex 用量重置，本 fork 不适用）");
+                        Self::migrate_v15_to_v16(conn)?;
+                        Self::set_user_version(conn, 16)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1197,6 +1224,61 @@ impl Database {
         log::info!(
             "v10 -> v11 迁移完成：usage_daily_rollups 已保留 request_model/pricing_model 维度"
         );
+        Ok(())
+    }
+
+    /// v11 -> v12：上游在此版建 profiles 表（项目级配置切换）。
+    ///
+    /// 本 fork 已移除该功能，故不建表。保留版本号以便打开由上游版本
+    /// 迁移过的数据库——版本号必须连续推进，跳号会走进 `_ =>` 分支报
+    /// "未知的数据库版本"。
+    fn migrate_v11_to_v12(_conn: &Connection) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    /// v12 -> v13：为请求日志与日聚合补 `input_token_semantics` 列。
+    ///
+    /// 该列标记该行的 `input_tokens` 采用哪种口径：0 = v12 及更早
+    /// （含 cache read、不含 cache write），供聚合层判断该扣减多少。
+    /// 这是 v11→v16 之间唯一对本 fork 有实际语义的迁移。
+    fn migrate_v12_to_v13(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "proxy_request_logs")? {
+            Self::add_column_if_missing(
+                conn,
+                "proxy_request_logs",
+                "input_token_semantics",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        if Self::table_exists(conn, "usage_daily_rollups")? {
+            Self::add_column_if_missing(
+                conn,
+                "usage_daily_rollups",
+                "input_token_semantics",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// v13 -> v14：上游在此版把 grokbuild 加入 proxy_config 的 app_type 约束。
+    /// 本 fork 无 grokbuild，不改表；仅推进版本号。
+    fn migrate_v13_to_v14(_conn: &Connection) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    /// v14 -> v15：上游在此版为 mcp_servers/skills 加 `enabled_grokbuild` 列。
+    /// 本 fork 无 grokbuild，不加列；仅推进版本号。
+    fn migrate_v14_to_v15(_conn: &Connection) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    /// v15 -> v16：上游在此版重置 Codex 会话用量（换算口径变更后的一次性清理）。
+    ///
+    /// 不在本 fork 复制该清理：它会删除既有 codex 会话用量行，而本 fork 从
+    /// 未写入过上游那套需要被纠正的数据。对已由上游迁移到 v16 的库，清理
+    /// 也早已执行过，重复执行只会误删。
+    fn migrate_v15_to_v16(_conn: &Connection) -> Result<(), AppError> {
         Ok(())
     }
 

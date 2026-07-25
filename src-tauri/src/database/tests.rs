@@ -813,3 +813,55 @@ fn ensure_incremental_auto_vacuum_rebuilds_existing_file_db() {
         "file db should persist INCREMENTAL auto_vacuum after VACUUM rebuild"
     );
 }
+
+#[test]
+fn migrate_v12_to_v13_adds_input_token_semantics_columns() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    conn.execute_batch(
+        "CREATE TABLE proxy_request_logs (request_id TEXT PRIMARY KEY);
+         CREATE TABLE usage_daily_rollups (date TEXT PRIMARY KEY);",
+    )
+    .expect("seed v12 tables");
+    Database::set_user_version(&conn, 12).expect("set user_version=12");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version"),
+        SCHEMA_VERSION
+    );
+    for table in ["proxy_request_logs", "usage_daily_rollups"] {
+        let column = get_column_info(&conn, table, "input_token_semantics");
+        assert_eq!(column.r#type, "INTEGER");
+        assert_eq!(column.notnull, 1, "{table} column must be NOT NULL");
+    }
+}
+
+/// 由上游版本迁移到 v16 的库必须能被本 fork 直接打开：v11 之后的版本号
+/// 若不连续推进，迁移循环会走进 `_ =>` 分支报"未知的数据库版本"而拒绝启动。
+#[test]
+fn upstream_v16_database_is_accepted_without_changes() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+    Database::set_user_version(&conn, 16).expect("set user_version=16");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("v16 db must be accepted");
+
+    assert_eq!(Database::get_user_version(&conn).expect("version"), 16);
+}
+
+/// 全新库走完整迁移链后必须落在 SCHEMA_VERSION，且新列齐备。
+#[test]
+fn fresh_database_migrates_to_current_schema_version() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version"),
+        SCHEMA_VERSION
+    );
+    get_column_info(&conn, "proxy_request_logs", "input_token_semantics");
+    get_column_info(&conn, "usage_daily_rollups", "input_token_semantics");
+}
