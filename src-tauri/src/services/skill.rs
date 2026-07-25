@@ -270,6 +270,12 @@ const REPO_DOWNLOAD_TIMEOUT_SECONDS: u64 = 300;
 const REPO_DOWNLOAD_TIMEOUT_LABEL: &str = "300";
 const REPO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(REPO_DOWNLOAD_TIMEOUT_SECONDS);
 const REPO_DISCOVERY_FALLBACK_TIMEOUT: Duration = Duration::from_secs(20);
+/// 更新检测回退到整仓 ZIP 时的超时。
+///
+/// 20 秒只够列目录用的小仓库；技能仓库可达数百 MB（实测 hugohe3/ppt-master 约 632MB），
+/// 用发现路径的短超时会让整个仓库被静默跳过，永远检测不到更新。
+const REPO_UPDATE_FALLBACK_TIMEOUT_LABEL: &str = "300";
+const REPO_UPDATE_FALLBACK_TIMEOUT: Duration = Duration::from_secs(REPO_DOWNLOAD_TIMEOUT_SECONDS);
 const REPO_METADATA_TIMEOUT: Duration = Duration::from_secs(10);
 const GITHUB_API_USER_AGENT: &str = "cc-switch";
 
@@ -929,8 +935,15 @@ impl SkillService {
 
             for skill in group_skills {
                 let Some(remote_hash) =
-                    Self::find_remote_hash_for_skill(&remote_hashes, &skill.directory)
+                    Self::find_remote_hash_for_skill(&remote_hashes, &skill.directory, name)
                 else {
+                    log::warn!(
+                        "跳过 skill {} 的更新检查：在 {}/{} 中找不到匹配的远程目录（候选: {:?}）",
+                        skill.directory,
+                        owner,
+                        name,
+                        remote_hashes.keys().collect::<Vec<_>>()
+                    );
                     continue;
                 };
 
@@ -996,12 +1009,18 @@ impl SkillService {
         let mut remote_skills: Vec<DiscoverableSkill> = Vec::new();
         let _ = self.scan_dir_recursive(&temp_dir, &temp_dir, &repo, &mut remote_skills);
 
-        let remote_match = remote_skills
-            .iter()
-            .find(|rs| {
-                let remote_install_name = rs.directory.rsplit('/').next().unwrap_or(&rs.directory);
-                remote_install_name.eq_ignore_ascii_case(&skill.directory)
-            })
+        // 必须与 check_updates 选中同一个副本：同名 skill 在一个仓库里可能有多份
+        // 内容不同的副本（例如 .openclaw/skills/x 与 skills/x）。若两处各选一份，
+        // 更新写入 B 而检查仍比对 A，会导致“更新完仍报有更新”的死循环。
+        let selected_remote_dir = Self::select_remote_dir_for_skill(
+            remote_skills.iter().map(|rs| rs.directory.as_str()),
+            &skill.directory,
+            &name,
+        )
+        .map(|dir| dir.to_string());
+
+        let remote_match = selected_remote_dir
+            .and_then(|selected| remote_skills.iter().find(|rs| rs.directory == selected))
             .ok_or_else(|| {
                 let _ = fs::remove_dir_all(&temp_dir);
                 anyhow!(format_skill_error(
@@ -2000,7 +2019,7 @@ impl SkillService {
         repo: &SkillRepo,
     ) -> Result<HashMap<String, String>> {
         let (temp_dir, resolved_branch) =
-            timeout(REPO_DISCOVERY_FALLBACK_TIMEOUT, self.download_repo(repo))
+            timeout(REPO_UPDATE_FALLBACK_TIMEOUT, self.download_repo(repo))
                 .await
                 .map_err(|_| {
                     anyhow!(format_skill_error(
@@ -2008,7 +2027,7 @@ impl SkillService {
                         &[
                             ("owner", &repo.owner),
                             ("name", &repo.name),
-                            ("timeout", "20")
+                            ("timeout", REPO_UPDATE_FALLBACK_TIMEOUT_LABEL)
                         ],
                         Some("checkNetwork"),
                     ))
@@ -2137,18 +2156,63 @@ impl SkillService {
         selected
     }
 
+    /// 远程候选目录的确定性排序键。
+    ///
+    /// 同一个仓库可能在多处放置同名 skill（例如 `skills/x` 与 `.openclaw/skills/x`），
+    /// 且两份内容未必相同。检测与更新必须用同一条规则挑选，否则会出现
+    /// “检测拿 A 比、更新写 B” 的死循环，表现为反复提示有更新。
+    /// 排序优先级：不含隐藏路径段 > 路径层级浅 > 字典序。
+    fn remote_dir_rank(remote_dir: &str) -> (bool, usize, String) {
+        let has_hidden_segment = remote_dir
+            .split('/')
+            .any(|segment| segment.starts_with('.') && segment != "." && segment != "..");
+        let depth = remote_dir.split('/').count();
+        (has_hidden_segment, depth, remote_dir.to_string())
+    }
+
+    /// 在远程候选中挑出与已安装 skill 对应的目录（确定性）。
+    ///
+    /// 先按叶子名匹配；匹配不到时，若该仓库把 SKILL.md 放在根目录，
+    /// 则回退到根级条目——本地安装名可能被用户改成了别的名字。
+    fn select_remote_dir_for_skill<'a>(
+        remote_dirs: impl IntoIterator<Item = &'a str>,
+        install_directory: &str,
+        repo_name: &str,
+    ) -> Option<&'a str> {
+        let all: Vec<&'a str> = remote_dirs.into_iter().collect();
+
+        let mut leaf_matches: Vec<&'a str> = all
+            .iter()
+            .copied()
+            .filter(|remote_dir| {
+                let leaf = remote_dir.rsplit('/').next().unwrap_or(remote_dir);
+                leaf.eq_ignore_ascii_case(install_directory)
+            })
+            .collect();
+
+        if !leaf_matches.is_empty() {
+            leaf_matches.sort_by_key(|dir| Self::remote_dir_rank(dir));
+            return leaf_matches.into_iter().next();
+        }
+
+        if all.len() == 1 && all[0].eq_ignore_ascii_case(repo_name) {
+            return Some(all[0]);
+        }
+
+        None
+    }
+
     fn find_remote_hash_for_skill<'a>(
         remote_hashes: &'a HashMap<String, String>,
         install_directory: &str,
+        repo_name: &str,
     ) -> Option<&'a String> {
-        remote_hashes
-            .iter()
-            .find(|(remote_dir, _)| {
-                let remote_install_name =
-                    remote_dir.rsplit('/').next().unwrap_or(remote_dir.as_str());
-                remote_install_name.eq_ignore_ascii_case(install_directory)
-            })
-            .map(|(_, hash)| hash)
+        let selected = Self::select_remote_dir_for_skill(
+            remote_hashes.keys().map(|key| key.as_str()),
+            install_directory,
+            repo_name,
+        )?;
+        remote_hashes.get(selected)
     }
 
     fn compute_local_git_tree_hash(ssot_dir: &Path, skill: &InstalledSkill) -> Option<String> {
@@ -3491,5 +3555,72 @@ mod tests {
             dest.join("SKILL.md").is_file(),
             "existing destination skill should be preserved"
         );
+    }
+
+    #[test]
+    fn select_remote_dir_prefers_visible_path_over_hidden_duplicate() {
+        // DietrichGebert/ponytail 同时存在 skills/x 与 .openclaw/skills/x，且两份内容不同。
+        let candidates = [".openclaw/skills/ponytail-audit", "skills/ponytail-audit"];
+
+        for ordering in [[0usize, 1usize], [1, 0]] {
+            let ordered: Vec<&str> = ordering.iter().map(|i| candidates[*i]).collect();
+            let selected = SkillService::select_remote_dir_for_skill(
+                ordered.iter().copied(),
+                "ponytail-audit",
+                "ponytail",
+            );
+            assert_eq!(
+                selected,
+                Some("skills/ponytail-audit"),
+                "候选顺序不应影响选择结果"
+            );
+        }
+    }
+
+    #[test]
+    fn select_remote_dir_is_independent_of_hashmap_iteration_order() {
+        // check_updates 从 HashMap 取候选，迭代顺序每进程随机；
+        // 选择必须只依赖路径本身，否则会与 update_skill 选中不同副本。
+        let mut remote_hashes = HashMap::new();
+        remote_hashes.insert(".openclaw/skills/ponytail".to_string(), "hash-a".to_string());
+        remote_hashes.insert("skills/ponytail".to_string(), "hash-b".to_string());
+
+        for _ in 0..64 {
+            let hash =
+                SkillService::find_remote_hash_for_skill(&remote_hashes, "ponytail", "ponytail");
+            assert_eq!(hash.map(String::as_str), Some("hash-b"));
+        }
+    }
+
+    #[test]
+    fn select_remote_dir_falls_back_to_root_entry_for_renamed_install() {
+        // openbiox/Bizard 的 SKILL.md 在仓库根，远程 key 是仓库名，
+        // 本地安装名是 "Bizard — Biomedical Visualization Atlas"，叶子名永不相等。
+        let selected = SkillService::select_remote_dir_for_skill(
+            ["Bizard"],
+            "Bizard — Biomedical Visualization Atlas",
+            "Bizard",
+        );
+        assert_eq!(selected, Some("Bizard"));
+    }
+
+    #[test]
+    fn select_remote_dir_does_not_guess_when_multiple_candidates_mismatch() {
+        let selected = SkillService::select_remote_dir_for_skill(
+            ["skills/alpha", "skills/beta"],
+            "gamma",
+            "some-repo",
+        );
+        assert_eq!(selected, None, "无法确定时不应任选一个");
+    }
+
+    #[test]
+    fn select_remote_dir_prefers_shallower_path_among_visible_duplicates() {
+        let selected = SkillService::select_remote_dir_for_skill(
+            ["plugins/ars-codex/skills/suite", "skills/suite"],
+            "suite",
+            "repo",
+        );
+        assert_eq!(selected, Some("skills/suite"));
     }
 }
