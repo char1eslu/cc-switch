@@ -443,7 +443,9 @@ impl Database {
                         Self::set_user_version(conn, 13)?;
                     }
                     13 => {
-                        log::info!("迁移数据库从 v13 到 v14（上游 grokbuild 约束，本 fork 不适用）");
+                        log::info!(
+                            "迁移数据库从 v13 到 v14（上游 grokbuild 约束，本 fork 不适用）"
+                        );
                         Self::migrate_v13_to_v14(conn)?;
                         Self::set_user_version(conn, 14)?;
                     }
@@ -453,7 +455,9 @@ impl Database {
                         Self::set_user_version(conn, 15)?;
                     }
                     15 => {
-                        log::info!("迁移数据库从 v15 到 v16（上游 Codex 用量重置，本 fork 不适用）");
+                        log::info!(
+                            "迁移数据库从 v15 到 v16（上游 Codex 用量重置，本 fork 不适用）"
+                        );
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
                     }
