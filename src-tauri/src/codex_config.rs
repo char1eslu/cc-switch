@@ -907,8 +907,11 @@ pub fn prepare_codex_config_text_with_model_catalog(
         // Disable web_search only for native gateways on the reject blacklist
         // (MiMo/LongCat/MiniMax, by host or model brand). Everything else —
         // relays, DouBao/Qwen, unknown providers — keeps Codex's default.
-        let disable_web_search = profile == CodexCatalogToolProfile::NativeResponses
-            && codex_native_gateway_rejects_web_search(&config_text);
+        //
+        // 上游还会先按 CodexCatalogToolProfile 判定是否原生 /responses 通道，
+        // 本 fork 没有该枚举，直接依赖黑名单：命中的 host/模型品牌本身就只
+        // 出现在这些厂商的原生网关上，中继与未知供应商不受影响。
+        let disable_web_search = codex_native_gateway_rejects_web_search(&config_text);
         let config_text = set_codex_native_web_search_field(&config_text, disable_web_search)?;
         write_json_file(&catalog_path, &catalog)?;
         Ok(config_text)
