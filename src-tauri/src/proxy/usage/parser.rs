@@ -8,6 +8,34 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// OpenAI 系（Responses / Chat Completions）的缓存读取 token。
+///
+/// 字段名随 API 家族不同：Anthropic 风格用 `cache_read_input_tokens`，
+/// Responses 用 `input_tokens_details.cached_tokens`，Chat 用
+/// `prompt_tokens_details.cached_tokens`。
+fn openai_cache_read_tokens(usage: &Value) -> u32 {
+    usage
+        .get("cache_read_input_tokens")
+        .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
+        .or_else(|| usage.pointer("/prompt_tokens_details/cached_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32
+}
+
+/// OpenAI 系的缓存写入（cache creation）token。
+///
+/// 之前只读 `cache_creation_input_tokens`，漏掉了 details 里的
+/// `cache_write_tokens`，导致缓存写入既没被单独计价、又留在 total input 里
+/// 按输入价重复计费。
+fn openai_cache_write_tokens(usage: &Value) -> u32 {
+    usage
+        .get("cache_creation_input_tokens")
+        .or_else(|| usage.pointer("/input_tokens_details/cache_write_tokens"))
+        .or_else(|| usage.pointer("/prompt_tokens_details/cache_write_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32
+}
+
 /// Session 日志 request_id 前缀，与 `session_usage.rs` 中的格式保持一致
 pub const SESSION_REQUEST_ID_PREFIX: &str = "session:";
 
@@ -248,25 +276,13 @@ impl TokenUsage {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let cached_tokens = usage
-            .get("cache_read_input_tokens")
-            .and_then(|v| v.as_u64())
-            .or_else(|| {
-                usage
-                    .get("input_tokens_details")
-                    .and_then(|d| d.get("cached_tokens"))
-                    .and_then(|v| v.as_u64())
-            })
-            .unwrap_or(0) as u32;
+        let cached_tokens = openai_cache_read_tokens(usage);
 
         Some(Self {
             input_tokens: input_tokens? as u32,
             output_tokens: output_tokens? as u32,
             cache_read_tokens: cached_tokens,
-            cache_creation_tokens: usage
-                .get("cache_creation_input_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32,
+            cache_creation_tokens: openai_cache_write_tokens(usage),
             model,
             message_id: None,
         })
@@ -282,20 +298,14 @@ impl TokenUsage {
         let input_tokens = usage.get("input_tokens")?.as_u64()? as u32;
         let output_tokens = usage.get("output_tokens")?.as_u64()? as u32;
 
-        // 获取 cached_tokens (可能在 cache_read_input_tokens 或 input_tokens_details 中)
-        let cached_tokens = usage
-            .get("cache_read_input_tokens")
-            .and_then(|v| v.as_u64())
-            .or_else(|| {
-                usage
-                    .get("input_tokens_details")
-                    .and_then(|d| d.get("cached_tokens"))
-                    .and_then(|v| v.as_u64())
-            })
-            .unwrap_or(0) as u32;
+        let cached_tokens = openai_cache_read_tokens(usage);
+        let cache_write_tokens = openai_cache_write_tokens(usage);
 
-        // 调整 input_tokens: 减去 cached_tokens
-        let adjusted_input = input_tokens.saturating_sub(cached_tokens);
+        // OpenAI 的 total input 同时包含 cache read 与 cache write 两桶，两者都要扣除。
+        // 只扣 read 会让写入的 token 既按输入价计费、又按缓存创建价计费一次。
+        let adjusted_input = input_tokens
+            .saturating_sub(cached_tokens)
+            .saturating_sub(cache_write_tokens);
 
         // 提取响应中的模型名称
         let model = body
@@ -307,10 +317,7 @@ impl TokenUsage {
             input_tokens: adjusted_input,
             output_tokens,
             cache_read_tokens: cached_tokens,
-            cache_creation_tokens: usage
-                .get("cache_creation_input_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32,
+            cache_creation_tokens: cache_write_tokens,
             model,
             message_id: None,
         })
@@ -389,11 +396,7 @@ impl TokenUsage {
         let completion_tokens = usage.get("completion_tokens").and_then(|v| v.as_u64())?;
 
         // 获取 cached_tokens (可能在 prompt_tokens_details 中)
-        let cached_tokens = usage
-            .get("prompt_tokens_details")
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        let cached_tokens = openai_cache_read_tokens(usage);
 
         // 提取响应中的模型名称
         let model = body
@@ -405,7 +408,7 @@ impl TokenUsage {
             input_tokens: prompt_tokens as u32,
             output_tokens: completion_tokens as u32,
             cache_read_tokens: cached_tokens,
-            cache_creation_tokens: 0,
+            cache_creation_tokens: openai_cache_write_tokens(usage),
             model,
             message_id: None,
         })
