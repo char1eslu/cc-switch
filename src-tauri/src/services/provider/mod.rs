@@ -75,6 +75,16 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
     }
 
     live::write_live_with_common_config(&state.db, &AppType::Codex, provider)?;
+    // 重写 live 会整体替换 config.toml（有意设计），[mcp_servers] 随之丢失，
+    // 写完必须立刻从 DB 重新投影启用的 MCP。只投影 Codex 而非 sync_all_enabled：
+    // 后者逐应用聚合失败，无关应用 live 损坏（如 ~/.claude.json 坏 JSON）会让
+    // 调用方收到错误，而这里刚被清掉的 [mcp_servers] 只需要 Codex 自己补回。
+    // 投影失败降级为警告：走到这里 live 已按新开关状态落盘，开关事实上已生效；
+    // 若把错误上抛，save_settings 会回滚开关设置，制造"设置=旧值、live=新桶"
+    // 的会话分裂。MCP 投影可自愈（下次切换 / 任一 MCP 启停都会重新投影）。
+    if let Err(err) = McpService::sync_enabled_for_app(state, &AppType::Codex) {
+        log::warn!("统一会话开关重写 live 后重投影 Codex MCP 失败（将在下次同步时自愈）: {err}");
+    }
     Ok(true)
 }
 

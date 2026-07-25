@@ -147,13 +147,44 @@ impl McpService {
     pub fn sync_all_enabled(state: &AppState) -> Result<(), AppError> {
         let servers = Self::get_all_servers(state)?;
 
+        let mut failures: Vec<String> = Vec::new();
         for app in [AppType::Claude, AppType::Codex] {
-            for server in servers.values() {
-                if server.apps.is_enabled_for(&app) {
-                    Self::sync_server_to_app(state, server, &app)?;
-                } else {
-                    Self::remove_server_from_app(state, &server.id, &app)?;
-                }
+            if let Err(err) = Self::project_servers_to_app(state, &servers, &app) {
+                log::warn!("同步 MCP 到 {app:?} 失败: {err}");
+                failures.push(format!("{}: {err}", app.as_str()));
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Message(format!(
+                "部分应用 MCP 同步失败: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+
+    /// 只把启用状态投影到单个应用。
+    ///
+    /// 某个应用的 live 配置被整体重写后用它做定向重投影，避免把无关应用
+    /// 的失败面（如 ~/.claude.json 坏 JSON）牵连进目标应用的关键路径。
+    pub fn sync_enabled_for_app(state: &AppState, app: &AppType) -> Result<(), AppError> {
+        let servers = Self::get_all_servers(state)?;
+        Self::project_servers_to_app(state, &servers, app)
+    }
+
+    /// 把 DB 中的启用状态投影到单个应用（reconcile 语义见 sync_all_enabled）。
+    fn project_servers_to_app(
+        state: &AppState,
+        servers: &IndexMap<String, McpServer>,
+        app: &AppType,
+    ) -> Result<(), AppError> {
+        for server in servers.values() {
+            if server.apps.is_enabled_for(app) {
+                Self::sync_server_to_app(state, server, app)?;
+            } else {
+                Self::remove_server_from_app(state, &server.id, app)?;
             }
         }
 
