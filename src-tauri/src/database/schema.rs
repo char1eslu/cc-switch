@@ -467,6 +467,11 @@ impl Database {
                         Self::migrate_v16_to_v17(conn)?;
                         Self::set_user_version(conn, 17)?;
                     }
+                    17 => {
+                        log::info!("迁移数据库从 v17 到 v18（清除已裁剪应用的遗留列与数据行）");
+                        Self::migrate_v17_to_v18(conn)?;
+                        Self::set_user_version(conn, 18)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -1316,6 +1321,75 @@ impl Database {
             "enabled_claude_desktop",
             "BOOLEAN NOT NULL DEFAULT 0",
         )?;
+        Ok(())
+    }
+
+    /// v17 -> v18：清除上游遗留的已裁剪应用痕迹。
+    ///
+    /// 本 fork 只保留 Claude / ClaudeDesktop / Codex。用户库若曾被上游版本打开
+    /// 过，上游迁移会留下 Gemini/OpenCode/Hermes/GrokBuild 的列与数据行。fork
+    /// 代码不再读它们，功能上无害，但会让 schema 与代码脱节：`INSERT OR REPLACE`
+    /// 这类不列全字段的写法会把这些 NOT NULL 列静默重置，排查时极易误判。
+    ///
+    /// 幂等：列/行不存在就跳过，所以在没有这些遗留的库上是空操作。
+    fn migrate_v17_to_v18(conn: &Connection) -> Result<(), AppError> {
+        const LEGACY_APP_COLUMNS: [&str; 4] = [
+            "enabled_gemini",
+            "enabled_opencode",
+            "enabled_hermes",
+            "enabled_grokbuild",
+        ];
+
+        // SQLite 3.35+ 支持 DROP COLUMN（捆绑版本远高于此），比手工
+        // 建新表+搬数据+改名更安全：不必复制 schema，也不会漏掉索引。
+        for table in ["mcp_servers", "skills"] {
+            if !Self::table_exists(conn, table)? {
+                continue;
+            }
+            for column in LEGACY_APP_COLUMNS {
+                if !Self::has_column(conn, table, column)? {
+                    continue;
+                }
+                Self::validate_identifier(table, "表名")?;
+                Self::validate_identifier(column, "列名")?;
+                conn.execute(
+                    &format!("ALTER TABLE \"{table}\" DROP COLUMN \"{column}\";"),
+                    [],
+                )
+                .map_err(|e| {
+                    AppError::Database(format!("删除表 {table} 的遗留列 {column} 失败: {e}"))
+                })?;
+                log::info!("已删除表 {table} 的遗留列 {column}");
+            }
+        }
+
+        // 已裁剪应用的数据行。app_type 不在 fork 的 AppType 枚举里，这些行
+        // 永远不会被读到，只会在排查时造成困扰。
+        const LEGACY_APP_TYPES: [&str; 5] =
+            ["gemini", "grokbuild", "opencode", "hermes", "openclaw"];
+        for table in ["providers", "proxy_config"] {
+            if !Self::table_exists(conn, table)? {
+                continue;
+            }
+            if !Self::has_column(conn, table, "app_type")? {
+                continue;
+            }
+            Self::validate_identifier(table, "表名")?;
+            for app_type in LEGACY_APP_TYPES {
+                let removed = conn
+                    .execute(
+                        &format!("DELETE FROM \"{table}\" WHERE app_type = ?1"),
+                        [app_type],
+                    )
+                    .map_err(|e| {
+                        AppError::Database(format!("删除表 {table} 的 {app_type} 行失败: {e}"))
+                    })?;
+                if removed > 0 {
+                    log::info!("已删除表 {table} 中 {removed} 行 app_type={app_type} 的遗留数据");
+                }
+            }
+        }
+
         Ok(())
     }
 
