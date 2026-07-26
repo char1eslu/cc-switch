@@ -1309,7 +1309,8 @@ impl Database {
             "mcp_servers",
             "enabled_claude_desktop",
             "BOOLEAN NOT NULL DEFAULT 0",
-        )
+        )?;
+        Ok(())
     }
 
     /// 插入默认模型定价数据
