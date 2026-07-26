@@ -81,7 +81,6 @@ const CC_SWITCH_LEGACY_CODEX_MODEL_PROVIDER_IDS: &[&str] = &[
     "patewayai",
     "pipellm",
     "qianfan_coding",
-    "relaxycode",
     "rightcode",
     "runapi",
     "shengsuanyun",

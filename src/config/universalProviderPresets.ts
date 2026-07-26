@@ -57,20 +57,6 @@ const NEWAPI_DEFAULT_MODELS: UniversalProviderModels = {
  */
 export const universalProviderPresets: UniversalProviderPreset[] = [
   {
-    name: "NewAPI",
-    providerType: "newapi",
-    defaultApps: {
-      claude: true,
-      codex: true,
-    },
-    defaultModels: NEWAPI_DEFAULT_MODELS,
-    websiteUrl: "https://www.newapi.pro",
-    icon: "newapi",
-    iconColor: "#00A67E",
-    description:
-      "NewAPI 是一个可自部署的 API 网关，支持 Anthropic、OpenAI 等多种协议",
-  },
-  {
     name: "自定义网关",
     providerType: "custom_gateway",
     defaultApps: {

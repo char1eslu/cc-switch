@@ -35,7 +35,6 @@ import { useUpdate } from "@/contexts/UpdateContext";
 import { Badge } from "@/components/ui/badge";
 import { motion } from "framer-motion";
 import appIcon from "@/assets/icons/app-icon.png";
-import fable5VerifiedBanner from "@/assets/fable5-verified.png";
 import { APP_ICON_MAP } from "@/config/appConfig";
 import type { AppId } from "@/lib/api/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -741,7 +740,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         className="rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-6 space-y-5 shadow-sm"
       >
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-8">
+          <div className="flex items-center">
             <div className="flex flex-col items-center gap-2">
               <div className="flex items-center gap-2">
                 <img src={appIcon} alt="CC Switch" className="h-5 w-5" />
@@ -768,12 +767,6 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                 )}
               </div>
             </div>
-            <img
-              src={fable5VerifiedBanner}
-              alt="Fable 5 Verified"
-              className="h-16 w-auto shrink-0 select-none"
-              draggable={false}
-            />
           </div>
 
           <div className="flex items-center gap-2">
