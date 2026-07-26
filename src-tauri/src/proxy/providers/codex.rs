@@ -106,7 +106,7 @@ pub fn codex_provider_uses_anthropic(provider: &Provider) -> bool {
 /// generation, which only has the settings JSON in hand, so the model catalog for
 /// an Anthropic provider correctly disables the `web_search` hosted tool that the
 /// Responses→Anthropic transform would otherwise drop as a dead tool.
-pub(crate) fn codex_settings_uses_anthropic(settings: &JsonValue) -> bool {
+pub fn codex_settings_uses_anthropic(settings: &JsonValue) -> bool {
     if let Some(api_format) = settings
         .get("api_format")
         .and_then(|v| v.as_str())
