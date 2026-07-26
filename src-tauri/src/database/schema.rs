@@ -462,6 +462,11 @@ impl Database {
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
                     }
+                    16 => {
+                        log::info!("迁移数据库从 v16 到 v17（MCP 支持 Claude Desktop）");
+                        Self::migrate_v16_to_v17(conn)?;
+                        Self::set_user_version(conn, 17)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -1291,6 +1296,20 @@ impl Database {
     /// 也早已执行过，重复执行只会误删。
     fn migrate_v15_to_v16(_conn: &Connection) -> Result<(), AppError> {
         Ok(())
+    }
+
+    /// v16 -> v17：MCP 服务器新增 Claude Desktop 启用列。
+    ///
+    /// 必须走版本化迁移，不能只写在 `migrate_v0_to_v1` 里：那条只对 v0/全新库
+    /// 执行，已有库（user_version 已是 16）永远不会跑到，缺列会让 mcp_servers
+    /// 的 SELECT 直接失败、界面上 MCP 列表整体读不出来。
+    fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
+        Self::add_column_if_missing(
+            conn,
+            "mcp_servers",
+            "enabled_claude_desktop",
+            "BOOLEAN NOT NULL DEFAULT 0",
+        )
     }
 
     /// 插入默认模型定价数据
