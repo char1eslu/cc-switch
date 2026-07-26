@@ -22,7 +22,10 @@
 | 会话浏览 | Codex 对话支持 Markdown/GFM 渲染，目录和标题会过滤 AGENTS、环境上下文、工具 schema 等注入噪音 |
 | 搜索和批量操作 | 增加项目过滤、状态计数、JSONL Deep Search、多选批量 Repair/Move/Trash |
 | 路径操作 | 会话详情支持 Reveal / Copy Path，Move dialog 对长路径和候选目录做了可用性处理 |
-| 技能更新 | 大型技能仓库下载超时放宽，结构化错误会显示成人可读文案，不直接把 JSON 打到 toast |
+| 技能更新 | 修正本地哈希与 GitHub tree 的排序口径，消除反复提示更新；大型仓库下载超时放宽，结构化错误显示可读文案 |
+| Codex 上游协议 | 支持只提供原生 Anthropic Messages（`/v1/messages`）的网关，由本地代理做 Responses ⇄ Anthropic 双向转换 |
+| MCP 覆盖 | MCP 服务器可同步到 Claude Code、Codex、Claude Desktop（3P 实例）三端 |
+| 数据库 | 清除上游版本在库中留下的已裁剪应用的遗留列与数据行 |
 | 应用自更新 | 屏蔽 Tauri updater、自更新 endpoint 和 updater artifact，避免应用内检查上游更新 |
 | 构建方式 | 保留 macOS Apple Silicon ad-hoc GitHub Actions 构建，当前不做 DMG、公证或自动更新包 |
 
@@ -39,6 +42,31 @@
 - 项目过滤按 Codex 项目目录聚合会话，显示项目会话数和待修复数。
 - Deep Search 可以扫描 Codex JSONL 原文，找隐藏在长对话里的内容。
 - 批量模式支持多选 Codex 会话后批量 Repair、Move、Trash，并汇总失败项。
+
+## Codex ↔ Anthropic 协议桥
+
+有些网关只暴露原生 Anthropic Messages 协议（`/v1/messages`），Codex 本身只会说 Responses。
+开启后由本地代理做双向转换，Codex 侧无感。
+
+- 在 Codex 供应商表单里把「上游协议」选成 `Anthropic Messages`（需开启路由接管）。
+- 鉴权字段可选 `ANTHROPIC_AUTH_TOKEN`（发 `Authorization: Bearer`）或 `ANTHROPIC_API_KEY`（发 `x-api-key`），两者只发其一。
+- 「模拟 Claude Code 客户端」**默认关闭**，与上游一致。仅在网关限制只能通过 Claude Code 使用时开启：会伪装 User-Agent、`anthropic-beta`、`x-app`，并在系统提示首行注入 Claude Code 身份。
+- 输出上限可按供应商覆盖；未设置时回退到保守的 `max_tokens=8192`，思考预算会钳到上限的一半。
+- 请求侧会剥离 Codex/OpenAI 的指纹头，`Accept` 归一化为 `application/json`，避免严格网关返回 406。
+- 支持流式与非流式；上游返回 2xx 错误信封时仍可触发故障转移。
+
+> 这条路径已通过编译、clippy 与单元测试，但**尚未在真实 Anthropic 网关上端到端验证过**。
+
+## MCP 三端覆盖
+
+| 客户端 | MCP | Skills |
+| --- | --- | --- |
+| Claude Code | 支持 | 支持 |
+| Codex | 支持 | 支持 |
+| Claude Desktop | 支持（写入 3P 实例的 `claude_desktop_config.json`）| 不适用 |
+
+Claude Desktop 的 MCP 写入 cc-switch 管理的 3P 实例，不会改动用户原版 Desktop 的配置；
+写入采用读-改-写，只动 `mcpServers` 段，其余键原样保留。非 macOS / Windows 平台静默跳过。
 
 ## UI 和可用性改动
 
@@ -59,12 +87,13 @@
 | 跨工具会话写操作 | Repair / Move / Trim / Branch / Trash 只对 Codex 会话开放 |
 | 上游完整工具面 | 清理了当前不维护的旧工具入口，不保证覆盖上游全部 provider / 页面 |
 | 应用自更新 | 不接上游 updater，不在应用内检查或安装新版本 |
+| Anthropic 协议桥实测 | 已过编译 / clippy / 单测，但未在真实网关上跑通过端到端请求 |
 
 ## 仍保留的 CC Switch 能力
 
 - Claude Code、Claude Desktop、Codex provider 管理。
 - 官方登录 / 第三方 relay 切换、tray quick switch。
-- Unified MCP、Prompts、Skills 面板。
+- Unified MCP、Prompts、Skills 面板；MCP 可同步到 Claude Code、Codex、Claude Desktop 三端。
 - Local proxy、failover、usage dashboard、model test。
 - WebDAV / S3 config sync。
 - Deep Link import。
