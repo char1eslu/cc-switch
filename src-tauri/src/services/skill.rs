@@ -3672,8 +3672,7 @@ mod tests {
         fs::write(skill_dir.join("references/notes.md"), "# notes\n").expect("write nested file");
 
         let written = SkillService::compute_dir_hash(&skill_dir).expect("install-side hash");
-        let checked =
-            SkillService::compute_dir_git_tree_hash(&skill_dir).expect("check-side hash");
+        let checked = SkillService::compute_dir_git_tree_hash(&skill_dir).expect("check-side hash");
 
         assert_eq!(
             written, checked,
