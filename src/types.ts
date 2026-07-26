@@ -132,7 +132,10 @@ export interface ClaudeDesktopModelRoute {
 }
 
 export type CodexChatThinkingParam =
-  "none" | "thinking" | "enable_thinking" | "reasoning_split";
+  | "none"
+  | "thinking"
+  | "enable_thinking"
+  | "reasoning_split";
 
 export type CodexChatEffortParam =
   | "none"
