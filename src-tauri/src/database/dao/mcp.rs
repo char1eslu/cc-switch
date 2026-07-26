@@ -13,7 +13,7 @@ impl Database {
     pub fn get_all_mcp_servers(&self) -> Result<IndexMap<String, McpServer>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn.prepare(
-            "SELECT id, name, server_config, description, homepage, docs, tags, enabled_claude, enabled_codex
+            "SELECT id, name, server_config, description, homepage, docs, tags, enabled_claude, enabled_codex, enabled_claude_desktop
              FROM mcp_servers
              ORDER BY name ASC, id ASC"
         ).map_err(|e| AppError::Database(e.to_string()))?;
@@ -29,6 +29,7 @@ impl Database {
                 let tags_str: String = row.get(6)?;
                 let enabled_claude: bool = row.get(7)?;
                 let enabled_codex: bool = row.get(8)?;
+                let enabled_claude_desktop: bool = row.get(9)?;
 
                 let server = serde_json::from_str(&server_config_str).unwrap_or_default();
                 let tags = serde_json::from_str(&tags_str).unwrap_or_default();
@@ -42,6 +43,7 @@ impl Database {
                         apps: McpApps {
                             claude: enabled_claude,
                             codex: enabled_codex,
+                            claude_desktop: enabled_claude_desktop,
                         },
                         description,
                         homepage,
@@ -66,8 +68,8 @@ impl Database {
         conn.execute(
             "INSERT OR REPLACE INTO mcp_servers (
                 id, name, server_config, description, homepage, docs, tags,
-                enabled_claude, enabled_codex
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                enabled_claude, enabled_codex, enabled_claude_desktop
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 server.id,
                 server.name,
@@ -81,6 +83,7 @@ impl Database {
                     .map_err(|e| AppError::Database(format!("Failed to serialize tags: {e}")))?,
                 server.apps.claude,
                 server.apps.codex,
+                server.apps.claude_desktop,
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;

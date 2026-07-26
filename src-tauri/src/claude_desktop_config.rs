@@ -1054,6 +1054,44 @@ fn read_json_or_empty(path: &Path) -> Result<Value, AppError> {
     }
 }
 
+/// 读取 cc-switch 管理的 3P Claude Desktop 实例的 `mcpServers` 映射。
+///
+/// 3P Desktop 与用户原版 Desktop 是独立实例（`Claude-3p`），它的 MCP 服务器配置
+/// 在 3P 的 `claude_desktop_config.json` 的 `mcpServers` 段。只读这一份，不动用户
+/// 原版 Desktop 的配置。
+pub fn read_mcp_servers_map() -> Result<serde_json::Map<String, Value>, AppError> {
+    if !is_supported_platform() {
+        // Linux 等不支持 3P Desktop 的平台：返回空，让同步等价于 no-op。
+        return Ok(serde_json::Map::new());
+    }
+    let paths = current_platform_paths()?;
+    let value = read_json_or_empty(&paths.threep_config_path)?;
+    match value.get("mcpServers") {
+        Some(Value::Object(map)) => Ok(map.clone()),
+        _ => Ok(serde_json::Map::new()),
+    }
+}
+
+/// 把 `mcpServers` 映射写回 3P Claude Desktop 配置。
+///
+/// 读-改-写，只替换 `mcpServers` 段，保留同文件里的 `deploymentMode` 等其它键
+/// （供应商 profile 在独立的 config-library，不在此文件里，互不干扰）。
+pub fn write_mcp_servers_map(map: &serde_json::Map<String, Value>) -> Result<(), AppError> {
+    if !is_supported_platform() {
+        return Ok(());
+    }
+    let paths = current_platform_paths()?;
+    let mut value = read_json_or_empty(&paths.threep_config_path)?;
+    if let Some(obj) = value.as_object_mut() {
+        if map.is_empty() {
+            obj.remove("mcpServers");
+        } else {
+            obj.insert("mcpServers".to_string(), Value::Object(map.clone()));
+        }
+    }
+    write_json_file(&paths.threep_config_path, &value)
+}
+
 fn snapshot_files(paths: &ClaudeDesktopPaths) -> Result<Vec<FileSnapshot>, AppError> {
     [
         &paths.normal_config_path,

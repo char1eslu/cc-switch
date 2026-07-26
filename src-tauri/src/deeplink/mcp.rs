@@ -160,14 +160,16 @@ pub fn import_mcp_from_deeplink(
 /// Parse apps string into McpApps struct
 pub(crate) fn parse_mcp_apps(apps_str: &str) -> Result<McpApps, AppError> {
     let mut apps = McpApps {
-        claude: false,
-        codex: false,
+        ..Default::default()
     };
 
     for app in apps_str.split(',') {
         match app.trim() {
             "claude" => apps.claude = true,
             "codex" => apps.codex = true,
+            "claude-desktop" | "claude_desktop" | "claudedesktop" => {
+                apps.claude_desktop = true
+            }
             other => {
                 return Err(AppError::InvalidInput(format!(
                     "Invalid app in 'apps': {other}"

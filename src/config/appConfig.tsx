@@ -14,8 +14,8 @@ export const APP_IDS: AppId[] = ["claude", "claude-desktop", "codex"];
 /** App IDs shown in Skills panels. */
 export const SKILLS_APP_IDS: AppId[] = ["claude", "codex"];
 
-/** App IDs shown in MCP panels. */
-export const MCP_APP_IDS: AppId[] = [...SKILLS_APP_IDS];
+/** App IDs shown in MCP panels. Claude Desktop 也支持 MCP（写入 3P 实例配置）。 */
+export const MCP_APP_IDS: AppId[] = ["claude", "claude-desktop", "codex"];
 
 export const APP_ICON_MAP: Record<AppId, AppConfig> = {
   claude: {

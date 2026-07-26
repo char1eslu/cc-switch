@@ -1600,7 +1600,8 @@
       "importSuccess": "Successfully imported {{count}} MCP servers",
       "apps": {
         "claude": "Claude",
-        "codex": "Codex"
+        "codex": "Codex",
+        "claude-desktop": "Claude Desktop"
       }
     },
     "userLevelPath": "User-level MCP path",

@@ -7,8 +7,10 @@
 //! - `validation` - 服务器配置验证
 //! - `claude` - Claude MCP 同步和导入
 //! - `codex` - Codex MCP 同步和导入（含 TOML 转换）
+//! - `claude_desktop` - Claude Desktop (3P 实例) MCP 同步
 
 mod claude;
+mod claude_desktop;
 mod codex;
 mod validation;
 
@@ -16,6 +18,9 @@ mod validation;
 pub use claude::{
     import_from_claude, remove_server_from_claude, sync_enabled_to_claude,
     sync_single_server_to_claude,
+};
+pub use claude_desktop::{
+    remove_server_from_claude_desktop, sync_single_server_to_claude_desktop,
 };
 pub use codex::{
     import_from_codex, remove_server_from_codex, sync_enabled_to_codex, sync_single_server_to_codex,

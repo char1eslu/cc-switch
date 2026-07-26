@@ -11,6 +11,8 @@ pub struct McpApps {
     pub claude: bool,
     #[serde(default)]
     pub codex: bool,
+    #[serde(default)]
+    pub claude_desktop: bool,
 }
 
 impl McpApps {
@@ -19,7 +21,7 @@ impl McpApps {
         match app {
             AppType::Claude => self.claude,
             AppType::Codex => self.codex,
-            AppType::ClaudeDesktop => false,
+            AppType::ClaudeDesktop => self.claude_desktop,
         }
     }
 
@@ -28,7 +30,7 @@ impl McpApps {
         match app {
             AppType::Claude => self.claude = enabled,
             AppType::Codex => self.codex = enabled,
-            AppType::ClaudeDesktop => {} // Claude Desktop 3P provider config doesn't support MCP here
+            AppType::ClaudeDesktop => self.claude_desktop = enabled,
         }
     }
 
@@ -41,12 +43,15 @@ impl McpApps {
         if self.codex {
             apps.push(AppType::Codex);
         }
+        if self.claude_desktop {
+            apps.push(AppType::ClaudeDesktop);
+        }
         apps
     }
 
     /// 检查是否所有应用都未启用
     pub fn is_empty(&self) -> bool {
-        !self.claude && !self.codex
+        !self.claude && !self.codex && !self.claude_desktop
     }
 }
 

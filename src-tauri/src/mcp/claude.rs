@@ -89,7 +89,7 @@ pub fn import_from_claude(config: &mut MultiAppConfig) -> Result<usize, AppError
                     server: spec.clone(),
                     apps: McpApps {
                         claude: true,
-                        codex: false,
+                        ..Default::default()
                     },
                     description: None,
                     homepage: None,

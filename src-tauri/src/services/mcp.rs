@@ -104,7 +104,7 @@ impl McpService {
                 mcp::sync_single_server_to_claude(&Default::default(), &server.id, &server.server)?;
             }
             AppType::ClaudeDesktop => {
-                log::debug!("Claude Desktop 3P profiles do not use CC Switch MCP sync, skipping");
+                mcp::sync_single_server_to_claude_desktop(&server.id, &server.server)?;
             }
             AppType::Codex => {
                 // Codex uses TOML format, must use the correct function
@@ -130,17 +130,14 @@ impl McpService {
     fn remove_server_from_app(_state: &AppState, id: &str, app: &AppType) -> Result<(), AppError> {
         match app {
             AppType::Claude => mcp::remove_server_from_claude(id)?,
-            AppType::ClaudeDesktop => {
-                log::debug!("Claude Desktop 3P profiles do not use CC Switch MCP sync, skipping");
-            }
+            AppType::ClaudeDesktop => mcp::remove_server_from_claude_desktop(id)?,
             AppType::Codex => mcp::remove_server_from_codex(id)?,
         }
         Ok(())
     }
 
     /// 手动同步所有启用的 MCP 服务器到对应的应用，并移除 DB 已知但禁用的项。
-    ///
-    /// Reconcile 语义（逐 app 独立判断，ClaudeDesktop 跳过）：
+    /// Reconcile 语义（逐 app 独立判断）：
     /// 1. DB 已知 + 该 app 启用 → 写入/更新 live
     /// 2. DB 已知 + 该 app 禁用 → 从 live 移除
     /// 3. DB 不认识的 live 条目  → 保留（本函数只遍历 DB，天然不碰未知 id）
@@ -148,7 +145,7 @@ impl McpService {
         let servers = Self::get_all_servers(state)?;
 
         let mut failures: Vec<String> = Vec::new();
-        for app in [AppType::Claude, AppType::Codex] {
+        for app in [AppType::Claude, AppType::ClaudeDesktop, AppType::Codex] {
             if let Err(err) = Self::project_servers_to_app(state, &servers, &app) {
                 log::warn!("同步 MCP 到 {app:?} 失败: {err}");
                 failures.push(format!("{}: {err}", app.as_str()));
