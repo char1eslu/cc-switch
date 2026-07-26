@@ -12,10 +12,7 @@ use serde_json::Value;
 ///
 /// 与 Claude Code 的同步同口径：按 `id` 作为 `mcpServers` 的键，整体替换该条目。
 /// `server_spec` 是标准 `{ command, args, env }` 形态，与 Claude Desktop 期望一致。
-pub fn sync_single_server_to_claude_desktop(
-    id: &str,
-    server_spec: &Value,
-) -> Result<(), AppError> {
+pub fn sync_single_server_to_claude_desktop(id: &str, server_spec: &Value) -> Result<(), AppError> {
     let mut current = claude_desktop_config::read_mcp_servers_map()?;
     current.insert(id.to_string(), server_spec.clone());
     claude_desktop_config::write_mcp_servers_map(&current)

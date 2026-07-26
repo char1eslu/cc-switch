@@ -19,9 +19,7 @@ pub use claude::{
     import_from_claude, remove_server_from_claude, sync_enabled_to_claude,
     sync_single_server_to_claude,
 };
-pub use claude_desktop::{
-    remove_server_from_claude_desktop, sync_single_server_to_claude_desktop,
-};
+pub use claude_desktop::{remove_server_from_claude_desktop, sync_single_server_to_claude_desktop};
 pub use codex::{
     import_from_codex, remove_server_from_codex, sync_enabled_to_codex, sync_single_server_to_codex,
 };
