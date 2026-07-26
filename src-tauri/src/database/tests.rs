@@ -839,15 +839,22 @@ fn migrate_v12_to_v13_adds_input_token_semantics_columns() {
 
 /// 由上游版本迁移到 v16 的库必须能被本 fork 直接打开：v11 之后的版本号
 /// 若不连续推进，迁移循环会走进 `_ =>` 分支报"未知的数据库版本"而拒绝启动。
+///
+/// 断言推进到 SCHEMA_VERSION 而非硬编码 16：v16 之后本 fork 自己还有迁移
+/// （v17 给 mcp_servers 加 Claude Desktop 列），这些必须照常执行。
 #[test]
-fn upstream_v16_database_is_accepted_without_changes() {
+fn upstream_v16_database_is_accepted() {
     let conn = Connection::open_in_memory().expect("open in-memory db");
     Database::create_tables_on_conn(&conn).expect("create tables");
     Database::set_user_version(&conn, 16).expect("set user_version=16");
 
     Database::apply_schema_migrations_on_conn(&conn).expect("v16 db must be accepted");
 
-    assert_eq!(Database::get_user_version(&conn).expect("version"), 16);
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version"),
+        SCHEMA_VERSION
+    );
+    get_column_info(&conn, "mcp_servers", "enabled_claude_desktop");
 }
 
 /// 全新库走完整迁移链后必须落在 SCHEMA_VERSION，且新列齐备。

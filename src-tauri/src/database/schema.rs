@@ -1304,6 +1304,12 @@ impl Database {
     /// 执行，已有库（user_version 已是 16）永远不会跑到，缺列会让 mcp_servers
     /// 的 SELECT 直接失败、界面上 MCP 列表整体读不出来。
     fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
+        // 表缺失时跳过而不是报错：迁移链必须能跑在只建了部分表的库上
+        // （测试用的最小库就是这样），否则整条链在这里断掉。
+        // create_tables 已包含该列，建表路径不依赖这里。
+        if !Self::table_exists(conn, "mcp_servers")? {
+            return Ok(());
+        }
         Self::add_column_if_missing(
             conn,
             "mcp_servers",
