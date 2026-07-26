@@ -2269,12 +2269,31 @@ impl SkillService {
 
         let mut files: Vec<PathBuf> = Vec::new();
         Self::collect_files_for_hash(dir, dir, &mut files)?;
-        files.sort();
+
+        // 必须按「相对路径字符串的字节序」排序，与远程侧
+        // compute_remote_hashes_from_tree 的 `a.path.cmp(&b.path)` 完全一致。
+        //
+        // 不能用 files.sort()：`PathBuf: Ord` 是逐路径组件比较，与字节序在
+        // 「某目录名是另一文件名前缀」时结果相反。例如 `-`(0x2D) < `/`(0x2F)，
+        // 字节序把 `academic-paper-reviewer/x` 排在 `academic-paper/y` 之前，
+        // 而组件比较认为 `academic-paper` 更小（前缀短者在前）。顺序一变，
+        // 聚合摘要就变，本地与远程恒不相等 → 每次检查都报有更新、更新完
+        // 下次继续报。只有恰好两种排序同序的 skill 不受影响。
+        let mut entries: Vec<(String, PathBuf)> = files
+            .into_iter()
+            .map(|file_path| {
+                let relative = file_path
+                    .strip_prefix(dir)
+                    .unwrap_or(&file_path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (relative, file_path)
+            })
+            .collect();
+        entries.sort_by(|(a, _), (b, _)| a.as_bytes().cmp(b.as_bytes()));
 
         let mut hasher = Sha256::new();
-        for file_path in &files {
-            let relative = file_path.strip_prefix(dir).unwrap_or(file_path);
-            let rel_str = relative.to_string_lossy().replace('\\', "/");
+        for (rel_str, file_path) in &entries {
             let content = fs::read(file_path)
                 .with_context(|| format!("读取文件失败: {}", file_path.display()))?;
             let blob_sha = Self::compute_git_blob_sha(&content);
@@ -3677,6 +3696,60 @@ mod tests {
         assert_eq!(
             written, checked,
             "安装写入的哈希必须与更新检测重算的哈希一致"
+        );
+    }
+
+    #[test]
+    fn local_hash_matches_remote_tree_order_for_prefix_named_siblings() {
+        // 回归：本地曾用 Vec<PathBuf>::sort()（逐路径组件比较），远程用 tree API 的
+        // path 字符串字节序。当某目录名是同级另一名字的前缀时（如 academic-paper/
+        // 与 academic-paper-reviewer/），两种排序给出不同顺序 —— '-'(0x2D) 字节序
+        // 小于 '/'(0x2F)，而组件比较认为更短的 "academic-paper" 更小。文件内容完全
+        // 一致，哈希却不等，界面每次都报有更新且更新后无法收敛。
+        let temp = tempdir().expect("tempdir");
+        let skill_dir = temp.path().join("suite");
+        write_skill(&skill_dir, "Suite");
+        for (rel, body) in [
+            ("academic-paper/WORKFLOW.md", "# a\n"),
+            ("academic-paper-reviewer/WORKFLOW.md", "# b\n"),
+            ("scripts/pptx_to_svg.py", "print(1)\n"),
+            ("scripts/pptx_to_svg/__init__.py", "print(2)\n"),
+        ] {
+            let path = skill_dir.join(rel);
+            fs::create_dir_all(path.parent().expect("parent")).expect("create dir");
+            fs::write(&path, body).expect("write file");
+        }
+
+        let local = SkillService::compute_dir_git_tree_hash(&skill_dir).expect("local hash");
+
+        // 用与 compute_remote_hashes_from_tree 相同的方式构造远程期望值：
+        // 相对路径字符串按字节序排序，逐项喂入 path\0blob_sha\0。
+        let mut entries: Vec<(String, String)> = Vec::new();
+        for rel in [
+            "SKILL.md",
+            "academic-paper/WORKFLOW.md",
+            "academic-paper-reviewer/WORKFLOW.md",
+            "scripts/pptx_to_svg.py",
+            "scripts/pptx_to_svg/__init__.py",
+        ] {
+            let content = fs::read(skill_dir.join(rel)).expect("read file");
+            entries.push((rel.to_string(), SkillService::compute_git_blob_sha(&content)));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for (rel, blob_sha) in &entries {
+            hasher.update(rel.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(blob_sha.as_bytes());
+            hasher.update(b"\0");
+        }
+        let remote = format!("{:x}", hasher.finalize());
+
+        assert_eq!(
+            local, remote,
+            "本地哈希的文件顺序必须与 GitHub tree API 的字节序一致"
         );
     }
 
