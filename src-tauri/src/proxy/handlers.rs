@@ -18,15 +18,16 @@ use super::{
     handler_context::RequestContext,
     providers::{
         codex_chat_common::extract_reasoning_field_text,
-        codex_chat_history::record_responses_sse_stream, get_adapter, get_claude_api_format,
+        codex_chat_history::record_responses_sse_stream,
+        get_adapter, get_claude_api_format,
         streaming::create_anthropic_sse_stream,
         streaming_codex_anthropic::{
             create_responses_sse_stream_from_anthropic_with_context,
             responses_sse_events_from_anthropic_message,
         },
         streaming_codex_chat::create_responses_sse_stream_from_chat_with_context,
-        streaming_responses::create_anthropic_sse_stream_from_responses, transform,
-        transform_codex_anthropic, transform_codex_chat, transform_responses,
+        streaming_responses::create_anthropic_sse_stream_from_responses,
+        transform, transform_codex_anthropic, transform_codex_chat, transform_responses,
     },
     response_processor::{
         create_logged_passthrough_stream, process_response, read_decoded_body,

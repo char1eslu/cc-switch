@@ -1,6 +1,7 @@
 // 供应商配置处理工具函数
 
 import type { TemplateValueConfig } from "../config/claudeProviderPresets";
+import type { CodexApiFormat } from "@/types";
 import { deepClone } from "@/utils/deepClone";
 import { normalizeTomlText } from "@/utils/textNormalization";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
@@ -691,6 +692,33 @@ export const isCodexChatWireApi = (
   wireApi: string | undefined | null,
 ): boolean =>
   CODEX_CHAT_WIRE_API_VALUES.has((wireApi ?? "").trim().toLowerCase());
+
+// 判断给定的 wire_api 字符串是否表示原生 Anthropic Messages 协议
+export const isCodexAnthropicWireApi = (
+  wireApi: string | undefined | null,
+): boolean =>
+  [
+    "anthropic",
+    "anthropic_messages",
+    "anthropic-messages",
+    "messages",
+    "claude",
+  ].includes((wireApi ?? "").trim().toLowerCase());
+
+export const codexApiFormatFromWireApi = (
+  wireApi: string | undefined | null,
+): CodexApiFormat | undefined => {
+  if (isCodexChatWireApi(wireApi)) return "openai_chat";
+  if (isCodexAnthropicWireApi(wireApi)) return "anthropic";
+  switch ((wireApi ?? "").trim().toLowerCase()) {
+    case "responses":
+    case "openai_responses":
+    case "openai-responses":
+      return "openai_responses";
+    default:
+      return undefined;
+  }
+};
 
 // 从 Codex 的 TOML 配置文本中提取 wire_api（支持单/双引号）
 export const extractCodexWireApi = (

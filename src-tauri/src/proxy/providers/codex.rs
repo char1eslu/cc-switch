@@ -629,7 +629,8 @@ impl ProviderAdapter for CodexAdapter {
         } else {
             AuthStrategy::Bearer
         };
-        self.extract_key(provider).map(|key| AuthInfo::new(key, strategy))
+        self.extract_key(provider)
+            .map(|key| AuthInfo::new(key, strategy))
     }
 
     fn build_url(&self, base_url: &str, endpoint: &str) -> String {

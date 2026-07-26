@@ -208,6 +208,13 @@ export interface ProviderMeta {
   codexFastMode?: boolean;
   // Codex Responses -> Chat Completions reasoning capability metadata
   codexChatReasoning?: CodexChatReasoning;
+  // Codex → Anthropic 路径：是否模拟 Claude Code 客户端（默认关闭，仅显式 true 才启用）
+  impersonateClaudeCode?: boolean;
+  // Codex → Anthropic 路径：覆盖 Anthropic max_tokens（输出上限）。
+  // Codex 不会在请求体里带 model_max_output_tokens；不设时该路径回退到
+  // 保守默认 8192，长回复 / 思考量大的回复可能被截断。设置（>0）后优先于
+  // 请求值与默认值。
+  maxOutputTokens?: number;
   // Custom User-Agent for local proxy routing. Only applied by the local proxy.
   customUserAgent?: string;
   // 供应商类型（用于识别 Copilot 等特殊供应商）
@@ -231,7 +238,8 @@ export type ClaudeApiFormat = "anthropic" | "openai_chat" | "openai_responses";
 // Codex API 格式类型
 // - "openai_responses": OpenAI Responses API 格式，直接透传
 // - "openai_chat": OpenAI Chat Completions 格式，需要本地路由转换
-export type CodexApiFormat = "openai_responses" | "openai_chat";
+// - "anthropic": 原生 Anthropic Messages 格式，需要本地路由转换成 Responses
+export type CodexApiFormat = "openai_responses" | "openai_chat" | "anthropic";
 
 export interface CodexCatalogModel {
   model: string;

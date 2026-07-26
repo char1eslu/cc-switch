@@ -2479,7 +2479,6 @@ fn is_claude_messages_path(path: &str) -> bool {
     matches!(path, "/v1/messages" | "/claude/v1/messages")
 }
 
-
 const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/1.0.119 (external, cli)";
 const CLAUDE_CODE_SYSTEM_IDENTITY: &str =
     "You are Claude Code, Anthropic's official CLI for Claude.";
