@@ -11,7 +11,16 @@ pub struct McpApps {
     pub claude: bool,
     #[serde(default)]
     pub codex: bool,
-    #[serde(default)]
+    // 前端按 AppId 索引 apps（"claude-desktop"），必须与 AppType /
+    // McpConfig 的 JSON 键一致。少了这个 rename，UI 读到的是 undefined：
+    // 图标点不动、编辑框勾不上，而 toggle 命令走 AppType::from_str 仍能写库，
+    // 于是表现为「数据已存但界面毫无反应」。
+    #[serde(
+        rename = "claude-desktop",
+        alias = "claudeDesktop",
+        alias = "claude_desktop",
+        default
+    )]
     pub claude_desktop: bool,
 }
 
