@@ -5,6 +5,13 @@ import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
@@ -28,6 +35,7 @@ import {
 import { CustomUserAgentField } from "./CustomUserAgentField";
 import { cn } from "@/lib/utils";
 import type {
+  ClaudeApiKeyField,
   CodexApiFormat,
   CodexCatalogModel,
   CodexChatReasoning,
@@ -65,6 +73,14 @@ interface CodexFormFieldsProps {
   // Note: wire_api is always "responses" for Codex; apiFormat controls proxy-layer conversion
   apiFormat: CodexApiFormat;
   onApiFormatChange: (format: CodexApiFormat) => void;
+  // 以下三项仅在 apiFormat === "anthropic" 时生效
+  anthropicAuthField: ClaudeApiKeyField;
+  onAnthropicAuthFieldChange: (value: ClaudeApiKeyField) => void;
+  impersonateClaudeCode: boolean;
+  onImpersonateClaudeCodeChange: (value: boolean) => void;
+  // 输出上限覆盖（空字符串表示用默认值）。仅数字。
+  maxOutputTokens: string;
+  onMaxOutputTokensChange: (value: string) => void;
   codexChatReasoning?: CodexChatReasoning;
   onCodexChatReasoningChange?: (value: CodexChatReasoning) => void;
 
@@ -129,6 +145,12 @@ export function CodexFormFields({
   onAutoSelectChange,
   apiFormat,
   onApiFormatChange,
+  anthropicAuthField,
+  onAnthropicAuthFieldChange,
+  impersonateClaudeCode,
+  onImpersonateClaudeCodeChange,
+  maxOutputTokens,
+  onMaxOutputTokensChange,
   codexChatReasoning = {},
   onCodexChatReasoningChange,
   catalogModels = [],
@@ -141,7 +163,10 @@ export function CodexFormFields({
 
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
-  const needsLocalRouting = apiFormat === "openai_chat";
+  const isAnthropicFormat = apiFormat === "anthropic";
+  // Chat 与 Anthropic 都要经本地代理转换成 Responses，Responses 才是直连。
+  const needsLocalRouting = apiFormat === "openai_chat" || isAnthropicFormat;
+  const isChatFormat = apiFormat === "openai_chat";
   const canEditCatalog = Boolean(onCatalogModelsChange);
   const canEditReasoning = Boolean(onCodexChatReasoningChange);
   const supportsThinking =
@@ -378,38 +403,142 @@ export function CodexFormFields({
             </p>
           )}
           <CollapsibleContent className="space-y-3 pt-3">
-            {/* 本地路由映射开关 —— 沿用 shouldShowSpeedTest 门控，cloud_provider 保持不可切换 */}
+            {/* 上游协议格式 —— 沿用 shouldShowSpeedTest 门控，cloud_provider 保持不可切换 */}
             {shouldShowSpeedTest && (
-              <div className="flex items-center justify-between gap-4">
+              <div className="space-y-1.5">
+                <FormLabel htmlFor="codex-upstream-format">
+                  {t("codexConfig.upstreamFormatLabel", {
+                    defaultValue: "上游协议格式",
+                  })}
+                </FormLabel>
+                <Select
+                  value={apiFormat}
+                  onValueChange={(value) =>
+                    onApiFormatChange(value as CodexApiFormat)
+                  }
+                >
+                  <SelectTrigger id="codex-upstream-format" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openai_responses">
+                      {t("codexConfig.upstreamFormatResponses", {
+                        defaultValue: "Responses（原生）",
+                      })}
+                    </SelectItem>
+                    <SelectItem value="openai_chat">
+                      {t("codexConfig.upstreamFormatChat", {
+                        defaultValue: "Chat Completions（需开启路由）",
+                      })}
+                    </SelectItem>
+                    <SelectItem value="anthropic">
+                      {t("codexConfig.upstreamFormatAnthropic", {
+                        defaultValue: "Anthropic Messages（需开启路由）",
+                      })}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {t("codexConfig.upstreamFormatHint", {
+                    defaultValue:
+                      "供应商原生是 Responses API 就选 Responses（直连，不转换格式）；使用 Chat Completions 协议就选 Chat；供应商只提供原生 Anthropic Messages 协议就选 Anthropic Messages。Chat 与 Anthropic Messages 均需开启路由接管才能转换为 Responses。",
+                  })}
+                </p>
+              </div>
+            )}
+
+            {isAnthropicFormat && (
+              <div className="space-y-1.5 border-t border-border-default pt-3">
+                <FormLabel htmlFor="codex-anthropic-auth-field">
+                  {t("codexConfig.anthropicAuthFieldLabel", {
+                    defaultValue: "认证字段",
+                  })}
+                </FormLabel>
+                <Select
+                  value={anthropicAuthField}
+                  onValueChange={(value) =>
+                    onAnthropicAuthFieldChange(value as ClaudeApiKeyField)
+                  }
+                >
+                  <SelectTrigger
+                    id="codex-anthropic-auth-field"
+                    className="w-full"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ANTHROPIC_AUTH_TOKEN">
+                      {t("codexConfig.anthropicAuthFieldAuthToken", {
+                        defaultValue: "ANTHROPIC_AUTH_TOKEN（Authorization）",
+                      })}
+                    </SelectItem>
+                    <SelectItem value="ANTHROPIC_API_KEY">
+                      {t("codexConfig.anthropicAuthFieldApiKey", {
+                        defaultValue: "ANTHROPIC_API_KEY（x-api-key）",
+                      })}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {t("codexConfig.anthropicAuthFieldHint", {
+                    defaultValue:
+                      "选择网关接收 API Key 的请求头：ANTHROPIC_AUTH_TOKEN 发送 Authorization: Bearer；ANTHROPIC_API_KEY 发送 x-api-key。两者只发其一。",
+                  })}
+                </p>
+              </div>
+            )}
+
+            {isAnthropicFormat && (
+              <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
                 <div className="space-y-1">
                   <FormLabel>
-                    {t("codexConfig.localRoutingToggle", {
-                      defaultValue: "需要本地路由映射",
+                    {t("codexConfig.impersonateClaudeCodeLabel", {
+                      defaultValue: "模拟 Claude Code 客户端",
                     })}
                   </FormLabel>
                   <p className="text-xs leading-relaxed text-muted-foreground">
-                    {needsLocalRouting
-                      ? t("codexConfig.localRoutingOnHint", {
-                          defaultValue:
-                            "Codex 目前仅原生支持 OpenAI Responses API 与 GPT 系列模型；如果您的供应商使用 Chat Completions 协议或非 GPT 模型（如 DeepSeek、Kimi），则需要打开本开关，并在使用过程中保持本地路由开启。",
-                        })
-                      : t("codexConfig.localRoutingOffHint", {
-                          defaultValue:
-                            "如果您的供应商不是原生 OpenAI Responses API，或者模型名不是 Codex 默认的 GPT 系列，请打开此开关。",
-                        })}
+                    {t("codexConfig.impersonateClaudeCodeHint", {
+                      defaultValue:
+                        "网关或其上游限制只能通过 Claude Code 使用时开启：伪装 User-Agent、anthropic-beta、x-app 请求头，并在系统提示首行注入 Claude Code 身份。",
+                    })}
                   </p>
                 </div>
                 <Switch
-                  checked={needsLocalRouting}
-                  onCheckedChange={handleLocalRoutingChange}
-                  aria-label={t("codexConfig.localRoutingToggle", {
-                    defaultValue: "需要本地路由映射",
+                  checked={impersonateClaudeCode}
+                  onCheckedChange={onImpersonateClaudeCodeChange}
+                  aria-label={t("codexConfig.impersonateClaudeCodeLabel", {
+                    defaultValue: "模拟 Claude Code 客户端",
                   })}
                 />
               </div>
             )}
 
-            {needsLocalRouting && canEditReasoning && (
+            {isAnthropicFormat && (
+              <div className="space-y-1.5 border-t border-border-default pt-3">
+                <FormLabel htmlFor="codex-max-output-tokens">
+                  {t("codexConfig.maxOutputTokensLabel", {
+                    defaultValue: "最大输出 tokens",
+                  })}
+                </FormLabel>
+                <Input
+                  id="codex-max-output-tokens"
+                  inputMode="numeric"
+                  value={maxOutputTokens}
+                  placeholder="8192"
+                  onChange={(e) =>
+                    onMaxOutputTokensChange(e.target.value.replace(/\D/g, ""))
+                  }
+                />
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {t("codexConfig.maxOutputTokensHint", {
+                    defaultValue:
+                      "Codex 不会在请求里传输出上限，留空则回退到保守默认值 8192，长回答或思考较多时可能被截断。按供应商实际支持的上限填写（例如 64000）。",
+                  })}
+                </p>
+              </div>
+            )}
+
+            {isChatFormat && canEditReasoning && (
               <div
                 className={cn(
                   "space-y-3",
@@ -480,8 +609,7 @@ export function CodexFormFields({
 
             <div
               className={cn(
-                (shouldShowSpeedTest ||
-                  (needsLocalRouting && canEditReasoning)) &&
+                (shouldShowSpeedTest || (isChatFormat && canEditReasoning)) &&
                   "border-t border-border-default pt-3",
               )}
             >

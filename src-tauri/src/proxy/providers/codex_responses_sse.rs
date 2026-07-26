@@ -222,23 +222,6 @@ pub(crate) fn reasoning_summary_text_delta(output_index: u32, item_id: &str, del
     )
 }
 
-/// The completed reasoning item value (note: no `status` field, matching both converters).
-pub(crate) fn reasoning_item(item_id: &str, text: &str) -> Value {
-    json!({
-        "id": item_id,
-        "type": "reasoning",
-        "summary": [{ "type": "summary_text", "text": text }]
-    })
-}
-
-/// Close a reasoning item: emits `reasoning_summary_text.done` →
-/// `reasoning_summary_part.done` → `output_item.done`, and returns the completed item.
-pub(crate) fn reasoning_close(output_index: u32, item_id: &str, text: &str) -> (Vec<Bytes>, Value) {
-    let item = reasoning_item(item_id, text);
-    let events = reasoning_close_with_item(output_index, item_id, text, &item, true);
-    (events, item)
-}
-
 /// Close a reasoning item whose completed shape is supplied by the converter.
 /// Anthropic uses this to attach opaque signed/redacted thinking in
 /// `encrypted_content` while keeping the standard Responses event lifecycle.
@@ -312,19 +295,6 @@ pub(crate) fn function_call_arguments_done(
             "item_id": item_id,
             "output_index": output_index,
             "arguments": arguments
-        }),
-    )
-}
-
-/// `response.custom_tool_call_input.delta` (Chat freeform tools only).
-pub(crate) fn custom_tool_call_input_delta(output_index: u32, item_id: &str, delta: &str) -> Bytes {
-    sse_event(
-        "response.custom_tool_call_input.delta",
-        json!({
-            "type": "response.custom_tool_call_input.delta",
-            "item_id": item_id,
-            "output_index": output_index,
-            "delta": delta
         }),
     )
 }

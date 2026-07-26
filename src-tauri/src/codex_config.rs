@@ -894,39 +894,6 @@ fn set_codex_native_web_search_field(config_text: &str, disable: bool) -> Result
     Ok(doc.to_string())
 }
 
-/// Classification of a Codex provider's upstream protocol, used to keep catalog
-/// generation and the proxy router aligned on which transform a provider gets.
-///
-/// 本 fork 的 catalog 生成不按 profile 切换模板（统一用 proxy-chat 模板，见
-/// d42ecf56），但保留该枚举作为路由/鉴权的统一分类口径，供
-/// [`crate::proxy::providers::codex::resolve_codex_catalog_tool_profile`] 及
-/// 相关判定复用，避免各处对 "是否 Anthropic" 各写一套。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodexCatalogToolProfile {
-    ProxyChat,
-    NativeResponses,
-    /// Codex 通过 cc-switch 代理对接原生 Anthropic Messages 网关。和
-    /// `NativeResponses` 一样需要抑制 Codex 的 freeform 自定义工具
-    /// （Responses→Anthropic 转换只保留 `function` 工具），且 Codex 的
-    /// `web_search` 托管工具在此路径会被转换层丢弃，故始终禁用。
-    Anthropic,
-}
-
-impl CodexCatalogToolProfile {
-    /// Pick the catalog tool profile from a provider's `apiFormat` meta value.
-    /// 仅做字符串映射；要同时识别 settings/TOML 层的 Anthropic 声明请用
-    /// [`crate::proxy::providers::codex::resolve_codex_catalog_tool_profile`]。
-    pub fn from_api_format(api_format: Option<&str>) -> Self {
-        match api_format {
-            Some("anthropic") => CodexCatalogToolProfile::Anthropic,
-            // Native (direct) Responses gateways reject Codex's freeform custom
-            // tools (apply_patch, etc.); strip them via the NativeResponses profile.
-            Some("openai_responses") => CodexCatalogToolProfile::NativeResponses,
-            _ => CodexCatalogToolProfile::ProxyChat,
-        }
-    }
-}
-
 /// Generate Codex `model_catalog_json` from provider settings and inject/remove
 /// the top-level TOML field that points Codex to the generated file.
 pub fn prepare_codex_config_text_with_model_catalog(
@@ -941,7 +908,7 @@ pub fn prepare_codex_config_text_with_model_catalog(
         // (MiMo/LongCat/MiniMax, by host or model brand). Everything else —
         // relays, DouBao/Qwen, unknown providers — keeps Codex's default.
         //
-        // 上游还会先按 CodexCatalogToolProfile 判定是否原生 /responses 通道，
+        // 上游还会先按 catalog tool profile 判定是否原生 /responses 通道，
         // 本 fork 没有按 profile 切模板，直接依赖黑名单：命中的 host/模型品牌
         // 本身只出现在这些厂商的原生网关上，中继与未知供应商不受影响。
         //
