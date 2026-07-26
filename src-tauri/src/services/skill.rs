@@ -3733,7 +3733,10 @@ mod tests {
             "scripts/pptx_to_svg/__init__.py",
         ] {
             let content = fs::read(skill_dir.join(rel)).expect("read file");
-            entries.push((rel.to_string(), SkillService::compute_git_blob_sha(&content)));
+            entries.push((
+                rel.to_string(),
+                SkillService::compute_git_blob_sha(&content),
+            ));
         }
         entries.sort_by(|a, b| a.0.cmp(&b.0));
 
