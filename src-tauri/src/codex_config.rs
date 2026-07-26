@@ -948,7 +948,7 @@ pub fn prepare_codex_config_text_with_model_catalog(
         // 另：Anthropic 网关必关——Responses→Anthropic 转换会丢弃 Codex 的
         // web_search 托管工具，留着等于暴露一个死工具。
         let disable_web_search = codex_native_gateway_rejects_web_search(&config_text)
-            || crate::proxy::providers::codex::codex_settings_uses_anthropic(settings);
+            || crate::proxy::providers::codex_settings_uses_anthropic(settings);
         let config_text = set_codex_native_web_search_field(&config_text, disable_web_search)?;
         write_json_file(&catalog_path, &catalog)?;
         Ok(config_text)

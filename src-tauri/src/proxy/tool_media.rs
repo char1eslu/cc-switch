@@ -10,6 +10,8 @@ use crate::proxy::json_canonical::canonical_json_string;
 use serde_json::{json, Map, Value};
 
 pub(crate) const WHOLE_DATA_URL_MIN_BYTES: usize = 8 * 1024;
+pub(crate) const TOOL_RESULT_MEDIA_ATTACHED_MARKER: &str =
+    "[cc-switch: tool result media attached as native media]";
 const BASE64ISH_MIN_BYTES: usize = 16 * 1024;
 const MAX_MEDIA_TRAVERSAL_DEPTH: usize = 32;
 
@@ -122,8 +124,35 @@ pub(crate) fn strip_media_from_tool_value(
         scope,
         replacement_block,
         replacement_text,
+        false,
         0,
     )
+}
+
+/// Extract media and clamp residual large data/base64 scalars on media-bearing
+/// outputs. Parseable JSON strings are clamped while still represented as a
+/// JSON tree, before they are canonicalized back into their original string
+/// container.
+pub(crate) fn strip_and_clamp_media_from_tool_value(
+    value: &mut Value,
+    media_parts: &mut Vec<Value>,
+    scope: ToolMediaScope,
+    replacement_block: &Value,
+    replacement_text: &str,
+) -> usize {
+    let replaced = strip_media_from_tool_value_at_depth(
+        value,
+        media_parts,
+        scope,
+        replacement_block,
+        replacement_text,
+        true,
+        0,
+    );
+    if replaced > 0 {
+        clamp_base64ish_strings(value);
+    }
+    replaced
 }
 
 /// Remove residual data/base64 payloads only after a tool output has already
@@ -199,6 +228,7 @@ fn strip_media_from_tool_value_at_depth(
     scope: ToolMediaScope,
     replacement_block: &Value,
     replacement_text: &str,
+    clamp_parsed_strings: bool,
     depth: usize,
 ) -> usize {
     if depth > MAX_MEDIA_TRAVERSAL_DEPTH {
@@ -228,9 +258,13 @@ fn strip_media_from_tool_value_at_depth(
                 scope,
                 replacement_block,
                 replacement_text,
+                clamp_parsed_strings,
                 depth + 1,
             );
             if replaced > 0 {
+                if clamp_parsed_strings {
+                    clamp_base64ish_strings(&mut parsed);
+                }
                 *text = canonical_json_string(&parsed);
             }
             replaced
@@ -244,6 +278,7 @@ fn strip_media_from_tool_value_at_depth(
                     scope,
                     replacement_block,
                     replacement_text,
+                    clamp_parsed_strings,
                     depth + 1,
                 )
             })
@@ -266,6 +301,7 @@ fn strip_media_from_tool_value_at_depth(
                         scope,
                         replacement_block,
                         replacement_text,
+                        clamp_parsed_strings,
                         depth + 1,
                     )
                 })
