@@ -1310,7 +1310,20 @@
     "reasoningEffortHint": "Enable when the upstream supports thinking-depth control such as low/high/max. Enabling this also turns on thinking mode and converts Codex's reasoning.effort into the upstream Chat parameter.",
     "reasoningGroupTitle": "Reasoning Capability",
     "reasoningSectionHint": "Preset providers are configured automatically; custom providers are inferred from name/URL. Override manually only when auto-detection is wrong.",
-    "advancedSectionHint": "Includes local routing, model mapping, reasoning overrides and custom User-Agent. Enable local routing here when your provider uses the Chat Completions protocol or non-GPT models."
+    "advancedSectionHint": "Includes local routing, model mapping, reasoning overrides and custom User-Agent. Enable local routing here when your provider uses the Chat Completions protocol or non-GPT models.",
+    "upstreamFormatLabel": "Upstream protocol format",
+    "upstreamFormatResponses": "Responses (native, direct)",
+    "upstreamFormatChat": "Chat Completions (needs local routing)",
+    "upstreamFormatAnthropic": "Anthropic Messages (needs local routing)",
+    "upstreamFormatHint": "Choose Responses if the provider is natively a Responses API (direct, no conversion); Chat for the Chat Completions protocol; Anthropic Messages if the provider only exposes the native Anthropic protocol. The latter two require proxy takeover so the local proxy can convert to Responses.",
+    "anthropicAuthFieldLabel": "Auth field",
+    "anthropicAuthFieldAuthToken": "ANTHROPIC_AUTH_TOKEN (Authorization)",
+    "anthropicAuthFieldApiKey": "ANTHROPIC_API_KEY (x-api-key)",
+    "anthropicAuthFieldHint": "Pick the header the gateway expects for the API key: ANTHROPIC_AUTH_TOKEN sends Authorization: Bearer; ANTHROPIC_API_KEY sends x-api-key. Only one is sent.",
+    "impersonateClaudeCodeLabel": "Emulate the Claude Code client",
+    "impersonateClaudeCodeHint": "Enable when a gateway only allows Claude Code: spoofs the User-Agent, anthropic-beta and x-app headers and prepends the Claude Code identity to the system prompt. Off by default so the fingerprint is not leaked to general-purpose gateways.",
+    "maxOutputTokensLabel": "Output ceiling override (max_tokens)",
+    "maxOutputTokensHint": "Leave empty to fall back to 8192 when Codex omits it. Codex does not forward model_max_output_tokens in the request body; raise this for long or thinking-heavy responses."
   },
   "providerPreset": {
     "label": "Provider Preset",

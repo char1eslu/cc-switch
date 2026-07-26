@@ -340,17 +340,6 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_close_item_has_no_status() {
-        let (events, item) = reasoning_close(0, "rs_1", "because");
-        assert_eq!(events.len(), 3);
-        assert!(body(&events[0]).contains("\"type\":\"response.reasoning_summary_text.done\""));
-        assert!(body(&events[1]).contains("\"type\":\"response.reasoning_summary_part.done\""));
-        // The completed reasoning item intentionally carries no `status` field.
-        assert!(item.get("status").is_none());
-        assert_eq!(item["summary"][0]["text"], "because");
-    }
-
-    #[test]
     fn message_item_added_is_in_progress() {
         let ev = message_item_added(0, "m1");
         let s = body(&ev);

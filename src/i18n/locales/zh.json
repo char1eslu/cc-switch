@@ -1310,7 +1310,20 @@
     "reasoningEffortHint": "上游支持 low/high/max 等思考深度控制时启用。启用后会自动启用思考模式，并把 Codex 的 reasoning.effort 转成上游 Chat 参数。",
     "reasoningGroupTitle": "思考能力",
     "reasoningSectionHint": "预设供应商已自动配置；自定义供应商会按名称/地址自动推断。仅当自动识别不准时才需手动覆盖。",
-    "advancedSectionHint": "包含本地路由映射、模型映射、思考能力与自定义 User-Agent。供应商使用 Chat Completions 协议或非 GPT 模型时，需在此开启本地路由映射。"
+    "advancedSectionHint": "包含本地路由映射、模型映射、思考能力与自定义 User-Agent。供应商使用 Chat Completions 协议或非 GPT 模型时，需在此开启本地路由映射。",
+    "upstreamFormatLabel": "上游协议格式",
+    "upstreamFormatResponses": "Responses（原生直连）",
+    "upstreamFormatChat": "Chat Completions（需本地路由）",
+    "upstreamFormatAnthropic": "Anthropic Messages（需本地路由）",
+    "upstreamFormatHint": "供应商原生是 Responses API 就选 Responses（直连，不转换格式）；使用 Chat Completions 协议就选 Chat；只提供原生 Anthropic Messages 协议就选 Anthropic Messages。后两者都需要开启路由接管，由本地代理转换成 Responses。",
+    "anthropicAuthFieldLabel": "认证字段",
+    "anthropicAuthFieldAuthToken": "ANTHROPIC_AUTH_TOKEN（Authorization）",
+    "anthropicAuthFieldApiKey": "ANTHROPIC_API_KEY（x-api-key）",
+    "anthropicAuthFieldHint": "选择网关接收 API Key 的请求头：ANTHROPIC_AUTH_TOKEN 发送 Authorization: Bearer；ANTHROPIC_API_KEY 发送 x-api-key。两者只发其一。",
+    "impersonateClaudeCodeLabel": "模拟 Claude Code 客户端",
+    "impersonateClaudeCodeHint": "网关限制只能通过 Claude Code 使用时开启：伪装 User-Agent、anthropic-beta、x-app 请求头，并在系统提示首行注入 Claude Code 身份。默认关闭，避免向通用网关泄露指纹。",
+    "maxOutputTokensLabel": "输出上限覆盖（max_tokens）",
+    "maxOutputTokensHint": "留空则在 Codex 未提供时回落到 8192。Codex 不会在请求体里转发 model_max_output_tokens，长回答或思考较多时可在此调高。"
   },
   "providerPreset": {
     "label": "预设供应商",

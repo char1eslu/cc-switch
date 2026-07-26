@@ -20,6 +20,7 @@ import type {
 } from "@/types";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 import {
+  codexApiFormatFromWireApi,
   extractCodexWireApi,
   hasApiKeyField,
   setCodexModelName as setCodexModelNameInConfig,
@@ -67,23 +68,34 @@ const CODEX_DEFAULT_CONFIG = JSON.stringify(
   2,
 );
 
-const codexApiFormatFromWireApi = (
-  wireApi: string | undefined,
-): CodexApiFormat | undefined => {
-  switch (wireApi?.trim().toLowerCase()) {
-    case "chat":
-    case "chat_completions":
-    case "chat-completions":
-    case "openai_chat":
-    case "openai-chat":
-      return "openai_chat";
-    case "responses":
-    case "openai_responses":
-    case "openai-responses":
-      return "openai_responses";
-    default:
-      return undefined;
+const CODEX_API_FORMATS: readonly CodexApiFormat[] = [
+  "openai_responses",
+  "openai_chat",
+  "anthropic",
+];
+
+// meta.apiFormat 优先；缺失时回落到 TOML wire_api 推断，最后默认原生 Responses。
+// 不要在此处逐个 case 列举格式：漏掉一个（例如 anthropic）会让已保存的供应商
+// 静默退回 Responses，表单显示的协议与后端实际路由不一致。
+const resolveCodexApiFormat = (
+  initialData?: { meta?: ProviderMeta; settingsConfig?: any } | null,
+): CodexApiFormat => {
+  const metaFormat = initialData?.meta?.apiFormat;
+  if (
+    metaFormat &&
+    CODEX_API_FORMATS.includes(metaFormat as CodexApiFormat)
+  ) {
+    return metaFormat as CodexApiFormat;
   }
+  return (
+    codexApiFormatFromWireApi(
+      extractCodexWireApi(
+        typeof initialData?.settingsConfig?.config === "string"
+          ? initialData.settingsConfig.config
+          : "",
+      ),
+    ) ?? "openai_responses"
+  );
 };
 
 const normalizeCodexCatalogModelsForSave = (
@@ -433,39 +445,39 @@ function ProviderFormCustom({
   });
 
   const [localCodexApiFormat, setLocalCodexApiFormat] =
-    useState<CodexApiFormat>(() => {
-      if (initialData?.meta?.apiFormat === "openai_chat") {
-        return "openai_chat";
-      }
-      if (initialData?.meta?.apiFormat === "openai_responses") {
-        return "openai_responses";
-      }
-      return (
-        codexApiFormatFromWireApi(
-          extractCodexWireApi(
-            typeof initialData?.settingsConfig?.config === "string"
-              ? initialData.settingsConfig.config
-              : "",
-          ),
-        ) ?? "openai_responses"
-      );
+    useState<CodexApiFormat>(() => resolveCodexApiFormat(initialData));
+
+  useEffect(() => {
+    if (appId !== "codex") return;
+    setLocalCodexApiFormat(resolveCodexApiFormat(initialData));
+  }, [appId, initialData]);
+
+  // Anthropic 上游的鉴权字段：默认 ANTHROPIC_AUTH_TOKEN（Authorization: Bearer），
+  // 可切到 ANTHROPIC_API_KEY（x-api-key）。二者互斥，只发其一。
+  const [localCodexAnthropicAuthField, setLocalCodexAnthropicAuthField] =
+    useState<ClaudeApiKeyField>(
+      () => initialData?.meta?.apiKeyField ?? "ANTHROPIC_AUTH_TOKEN",
+    );
+  const [localImpersonateClaudeCode, setLocalImpersonateClaudeCode] =
+    useState<boolean>(() => initialData?.meta?.impersonateClaudeCode === true);
+  const [localCodexMaxOutputTokens, setLocalCodexMaxOutputTokens] =
+    useState<string>(() => {
+      const value = initialData?.meta?.maxOutputTokens;
+      return typeof value === "number" && value > 0 ? String(value) : "";
     });
 
   useEffect(() => {
     if (appId !== "codex") return;
-    const nextFormat =
-      initialData?.meta?.apiFormat === "openai_chat"
-        ? "openai_chat"
-        : initialData?.meta?.apiFormat === "openai_responses"
-          ? "openai_responses"
-          : (codexApiFormatFromWireApi(
-              extractCodexWireApi(
-                typeof initialData?.settingsConfig?.config === "string"
-                  ? initialData.settingsConfig.config
-                  : "",
-              ),
-            ) ?? "openai_responses");
-    setLocalCodexApiFormat(nextFormat);
+    setLocalCodexAnthropicAuthField(
+      initialData?.meta?.apiKeyField ?? "ANTHROPIC_AUTH_TOKEN",
+    );
+    setLocalImpersonateClaudeCode(
+      initialData?.meta?.impersonateClaudeCode === true,
+    );
+    const maxOut = initialData?.meta?.maxOutputTokens;
+    setLocalCodexMaxOutputTokens(
+      typeof maxOut === "number" && maxOut > 0 ? String(maxOut) : "",
+    );
   }, [appId, initialData]);
 
   const { configError: codexConfigError, debouncedValidate } =
@@ -823,9 +835,30 @@ function ProviderFormCustom({
           ? pricingConfig.pricingModelSource
           : undefined,
       apiFormat: appId === "claude" ? localApiFormat : localCodexApiFormat,
+      // 两条路径共用 apiKeyField：Claude 直连，以及 Codex→Anthropic 桥。
+      // 都只在非默认值时落库，保持默认 ANTHROPIC_AUTH_TOKEN 不写入。
       apiKeyField:
-        appId === "claude" && localApiKeyField !== "ANTHROPIC_AUTH_TOKEN"
-          ? localApiKeyField
+        appId === "claude"
+          ? localApiKeyField !== "ANTHROPIC_AUTH_TOKEN"
+            ? localApiKeyField
+            : undefined
+          : appId === "codex" &&
+              localCodexApiFormat === "anthropic" &&
+              localCodexAnthropicAuthField !== "ANTHROPIC_AUTH_TOKEN"
+            ? localCodexAnthropicAuthField
+            : undefined,
+      impersonateClaudeCode:
+        appId === "codex" &&
+        localCodexApiFormat === "anthropic" &&
+        localImpersonateClaudeCode
+          ? true
+          : undefined,
+      maxOutputTokens:
+        appId === "codex" && localCodexApiFormat === "anthropic"
+          ? (() => {
+              const parsed = Number.parseInt(localCodexMaxOutputTokens, 10);
+              return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+            })()
           : undefined,
       isFullUrl: localIsFullUrl ? true : undefined,
     };
@@ -948,6 +981,12 @@ function ProviderFormCustom({
               onAutoSelectChange={setEndpointAutoSelect}
               apiFormat={localCodexApiFormat}
               onApiFormatChange={handleCodexApiFormatChange}
+              anthropicAuthField={localCodexAnthropicAuthField}
+              onAnthropicAuthFieldChange={setLocalCodexAnthropicAuthField}
+              impersonateClaudeCode={localImpersonateClaudeCode}
+              onImpersonateClaudeCodeChange={setLocalImpersonateClaudeCode}
+              maxOutputTokens={localCodexMaxOutputTokens}
+              onMaxOutputTokensChange={setLocalCodexMaxOutputTokens}
               codexChatReasoning={codexChatReasoning}
               onCodexChatReasoningChange={setCodexChatReasoning}
               catalogModels={codexCatalogModels}

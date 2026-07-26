@@ -216,12 +216,6 @@ export function CodexFormFields({
     onCatalogModelsChange(next);
   }, [catalogRows, onCatalogModelsChange]);
 
-  const handleLocalRoutingChange = useCallback(
-    (checked: boolean) => {
-      onApiFormatChange(checked ? "openai_chat" : "openai_responses");
-    },
-    [onApiFormatChange],
-  );
 
   const handleReasoningThinkingChange = useCallback(
     (checked: boolean) => {
