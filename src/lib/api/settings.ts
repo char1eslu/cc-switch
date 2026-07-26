@@ -284,14 +284,6 @@ export const settingsApi = {
     return await invoke("set_rectifier_config", { config });
   },
 
-  async getOptimizerConfig(): Promise<OptimizerConfig> {
-    return await invoke("get_optimizer_config");
-  },
-
-  async setOptimizerConfig(config: OptimizerConfig): Promise<boolean> {
-    return await invoke("set_optimizer_config", { config });
-  },
-
   async getLogConfig(): Promise<LogConfig> {
     return await invoke("get_log_config");
   },
@@ -327,13 +319,6 @@ export interface RectifierConfig {
   requestThinkingBudget: boolean;
   requestMediaFallback: boolean;
   requestMediaHeuristic: boolean;
-}
-
-export interface OptimizerConfig {
-  enabled: boolean;
-  thinkingOptimizer: boolean;
-  cacheInjection: boolean;
-  cacheTtl: string;
 }
 
 export interface LogConfig {

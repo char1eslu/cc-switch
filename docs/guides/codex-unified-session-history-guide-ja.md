@@ -458,8 +458,6 @@ wire_api = "responses"
 
 ## 参考リンク
 
-- [サードパーティ API 利用時に Codex のリモート操作と公式プラグインを保持する: CC Switch 設定ガイド](./codex-official-auth-preservation-guide-ja.md)
-- [Codex で DeepSeek などの Chat 形式 API を使う: CC Switch ローカルルーティングガイド](./codex-deepseek-routing-guide-ja.md)
 - CC Switch ユーザーマニュアル内の「Codex アプリ拡張」関連の章
 
 ---

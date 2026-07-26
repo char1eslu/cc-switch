@@ -404,7 +404,7 @@ impl Database {
                         Self::set_user_version(conn, 5)?;
                     }
                     5 => {
-                        log::info!("迁移数据库从 v5 到 v6（使用量聚合表 + Copilot 模板类型统一）");
+                        log::info!("迁移数据库从 v5 到 v6（使用量聚合表）");
                         Self::migrate_v5_to_v6(conn)?;
                         Self::set_user_version(conn, 6)?;
                     }
@@ -1016,9 +1016,8 @@ impl Database {
         Ok(())
     }
 
-    /// v5 -> v6 迁移：添加使用量日聚合表 + 统一 Copilot 模板类型
+    /// v5 -> v6 迁移：添加使用量日聚合表
     fn migrate_v5_to_v6(conn: &Connection) -> Result<(), AppError> {
-        // 1. 添加使用量日聚合表
         conn.execute(
             "CREATE TABLE IF NOT EXISTS usage_daily_rollups (
                 date TEXT NOT NULL,
@@ -1039,55 +1038,7 @@ impl Database {
         )
         .map_err(|e| AppError::Database(format!("创建 usage_daily_rollups 表失败: {e}")))?;
 
-        // 2. 统一 Copilot 模板类型为 github_copilot
-        let mut stmt = conn
-            .prepare("SELECT id, app_type, meta FROM providers")
-            .map_err(|e| AppError::Database(e.to_string()))?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(|e| AppError::Database(e.to_string()))?;
-
-        let mut updates = Vec::new();
-        for row in rows {
-            let (id, app_type, meta_str) = row.map_err(|e| AppError::Database(e.to_string()))?;
-
-            if let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(&meta_str) {
-                let mut updated = false;
-
-                if let Some(usage_script) = meta.get_mut("usage_script") {
-                    if let Some(template_type) = usage_script.get_mut("template_type") {
-                        if template_type == "copilot" {
-                            *template_type =
-                                serde_json::Value::String("github_copilot".to_string());
-                            updated = true;
-                        }
-                    }
-                }
-
-                if updated {
-                    let new_meta_str = serde_json::to_string(&meta)
-                        .map_err(|e| AppError::Database(e.to_string()))?;
-                    updates.push((id, app_type, new_meta_str));
-                }
-            }
-        }
-
-        for (id, app_type, new_meta) in updates {
-            conn.execute(
-                "UPDATE providers SET meta = ?1 WHERE id = ?2 AND app_type = ?3",
-                params![new_meta, id, app_type],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        }
-
-        log::info!("v5 -> v6 迁移完成：已添加使用量日聚合表，统一 copilot 模板类型");
+        log::info!("v5 -> v6 迁移完成：已添加使用量日聚合表");
         Ok(())
     }
 

@@ -98,9 +98,6 @@ export function useProviderActions(
   // 切换供应商
   const switchProvider = useCallback(
     async (provider: Provider) => {
-      const isCopilotProvider =
-        activeApp === "claude" &&
-        provider.meta?.providerType === "github_copilot";
       const isCodexChatFormat =
         activeApp === "codex" &&
         (provider.meta?.apiFormat === "openai_chat" ||
@@ -115,11 +112,7 @@ export function useProviderActions(
       // Determine why this provider requires the proxy
       let proxyRequiredReason: string | null = null;
       if (!isProxyRunning && provider.category !== "official") {
-        if (isCopilotProvider) {
-          proxyRequiredReason = t("notifications.proxyReasonCopilot", {
-            defaultValue: "使用 GitHub Copilot 作为 Claude 供应商",
-          });
-        } else if (
+        if (
           provider.meta?.apiFormat === "openai_chat" &&
           activeApp === "claude"
         ) {

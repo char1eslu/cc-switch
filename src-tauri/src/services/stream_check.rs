@@ -84,8 +84,8 @@ pub struct StreamCheckService;
 impl StreamCheckService {
     /// 执行连通性检查（仅对超时类失败重试）。
     ///
-    /// `base_url_override`：用于 Copilot 等需要从 OAuth 管理器动态解析端点的供应商，
-    /// 由命令层预先解析后传入；其余供应商传 `None`，由本服务从 `settings_config` 提取。
+    /// `base_url_override` 允许调用方临时覆盖探测地址；通常传 `None`，由本服务从
+    /// `settings_config` 提取。
     pub async fn check_with_retry(
         app_type: &AppType,
         provider: &Provider,

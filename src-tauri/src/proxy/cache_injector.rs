@@ -1,16 +1,11 @@
 //! Cache 断点注入器
 //!
-//! 在请求转发前自动注入 cache_control 标记，启用 Bedrock Prompt Caching
+//! 为 Anthropic 请求注入 cache_control 断点。
 
-use super::types::OptimizerConfig;
 use serde_json::{json, Value};
 
 /// 在请求体关键位置注入 cache_control 断点
-pub fn inject(body: &mut Value, config: &OptimizerConfig) {
-    if !config.cache_injection {
-        return;
-    }
-
+pub fn inject(body: &mut Value, cache_ttl: &str) {
     let existing = count_existing(body);
 
     if existing > 4 {
@@ -22,14 +17,14 @@ pub fn inject(body: &mut Value, config: &OptimizerConfig) {
     }
 
     // 升级已有断点的 TTL
-    upgrade_existing_ttl(body, &config.cache_ttl);
+    upgrade_existing_ttl(body, cache_ttl);
 
     let mut budget = 4_usize.saturating_sub(existing);
     if budget == 0 {
         if existing > 0 {
             log::info!(
                 "[OPT] cache: ttl-upgrade({existing}->{},existing={existing})",
-                config.cache_ttl
+                cache_ttl
             );
         } else {
             log::info!("[OPT] cache: no-op(existing={existing})");
@@ -47,7 +42,7 @@ pub fn inject(body: &mut Value, config: &OptimizerConfig) {
                     if let Some(o) = last.as_object_mut() {
                         o.insert(
                             "cache_control".to_string(),
-                            make_cache_control(&config.cache_ttl),
+                            make_cache_control(cache_ttl),
                         );
                     }
                     budget -= 1;
@@ -74,7 +69,7 @@ pub fn inject(body: &mut Value, config: &OptimizerConfig) {
                     if let Some(o) = last.as_object_mut() {
                         o.insert(
                             "cache_control".to_string(),
-                            make_cache_control(&config.cache_ttl),
+                            make_cache_control(cache_ttl),
                         );
                     }
                     budget -= 1;
@@ -100,7 +95,7 @@ pub fn inject(body: &mut Value, config: &OptimizerConfig) {
                             if let Some(object) = block.as_object_mut() {
                                 object.insert(
                                     "cache_control".to_string(),
-                                    make_cache_control(&config.cache_ttl),
+                                    make_cache_control(cache_ttl),
                                 );
                                 injected.push("msgs");
                             }
@@ -116,7 +111,7 @@ pub fn inject(body: &mut Value, config: &OptimizerConfig) {
         "[OPT] cache: {}bp({},{},pre={existing})",
         injected.len(),
         injected.join("+"),
-        config.cache_ttl,
+        cache_ttl,
     );
 }
 
@@ -198,19 +193,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn default_config() -> OptimizerConfig {
-        OptimizerConfig {
-            enabled: true,
-            thinking_optimizer: true,
-            cache_injection: true,
-            cache_ttl: "1h".to_string(),
-        }
-    }
-
     #[test]
     fn test_empty_body_no_injection() {
         let mut body = json!({"model": "test", "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]});
-        inject(&mut body, &default_config());
+        inject(&mut body, "1h");
         // (c) 现在标记最后一条可缓存消息（工具循环常以 user/tool_result 结束），
         // 所以单独一条 user 消息也会拿到 cache_control。
         assert!(body["messages"][0]["content"][0]
@@ -232,7 +218,7 @@ mod tests {
             ]
         });
 
-        inject(&mut body, &default_config());
+        inject(&mut body, "1h");
 
         // tools last element
         assert!(body["tools"][1].get("cache_control").is_some());
@@ -263,7 +249,7 @@ mod tests {
             ]
         });
 
-        inject(&mut body, &default_config());
+        inject(&mut body, "1h");
 
         // All TTLs upgraded to 1h, no new breakpoints
         assert_eq!(body["tools"][0]["cache_control"]["ttl"], "1h");
@@ -289,7 +275,7 @@ mod tests {
             ]
         });
 
-        inject(&mut body, &default_config());
+        inject(&mut body, "1h");
 
         // budget = 4 - 2 = 2, inject system + msgs
         assert!(body["system"][0].get("cache_control").is_some());
@@ -306,7 +292,7 @@ mod tests {
             "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
         });
 
-        inject(&mut body, &default_config());
+        inject(&mut body, "1h");
 
         assert!(body["system"].is_array());
         let sys = body["system"].as_array().unwrap();
@@ -318,40 +304,17 @@ mod tests {
 
     #[test]
     fn test_ttl_5m_no_ttl_field() {
-        let config = OptimizerConfig {
-            cache_ttl: "5m".to_string(),
-            ..default_config()
-        };
         let mut body = json!({
             "model": "test",
             "tools": [{"name": "tool1"}],
             "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
         });
 
-        inject(&mut body, &config);
+        inject(&mut body, "5m");
 
         let cc = &body["tools"][0]["cache_control"];
         assert_eq!(cc["type"], "ephemeral");
         assert!(cc.get("ttl").is_none() || cc["ttl"].is_null());
-    }
-
-    #[test]
-    fn test_disabled_no_change() {
-        let config = OptimizerConfig {
-            cache_injection: false,
-            ..default_config()
-        };
-        let mut body = json!({
-            "model": "test",
-            "tools": [{"name": "tool1"}],
-            "system": [{"type": "text", "text": "sys"}],
-            "messages": [{"role": "assistant", "content": [{"type": "text", "text": "ok"}]}]
-        });
-        let original = body.clone();
-
-        inject(&mut body, &config);
-
-        assert_eq!(body, original);
     }
 
     #[test]
@@ -367,7 +330,7 @@ mod tests {
             ]
         });
 
-        inject(&mut body, &default_config());
+        inject(&mut body, "1h");
 
         // Should inject on "text" block (last non-thinking), not on thinking/redacted_thinking
         assert!(body["messages"][0]["content"][1]
@@ -399,7 +362,7 @@ mod tests {
             ]}]
         });
 
-        inject(&mut body, &default_config());
+        inject(&mut body, "1h");
 
         assert_eq!(count_existing(&body), 5);
         assert!(body["messages"][0]["content"][1]
@@ -416,7 +379,7 @@ mod tests {
             ]
         });
 
-        inject(&mut body, &default_config());
+        inject(&mut body, "1h");
 
         assert!(body["messages"][0]["content"][0]
             .get("cache_control")

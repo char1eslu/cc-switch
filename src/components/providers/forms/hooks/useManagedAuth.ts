@@ -10,10 +10,7 @@ import type {
 
 type PollingState = "idle" | "polling" | "success" | "error";
 
-export function useManagedAuth(
-  authProvider: ManagedAuthProvider,
-  githubDomain?: string,
-) {
+export function useManagedAuth(authProvider: ManagedAuthProvider) {
   const queryClient = useQueryClient();
   const queryKey = ["managed-auth-status", authProvider];
 
@@ -55,7 +52,7 @@ export function useManagedAuth(
   }, [stopPolling]);
 
   const startLoginMutation = useMutation({
-    mutationFn: () => authApi.authStartLogin(authProvider, githubDomain),
+    mutationFn: () => authApi.authStartLogin(authProvider),
     onSuccess: async (response) => {
       setDeviceCode(response);
       setPollingState("polling");
@@ -90,7 +87,6 @@ export function useManagedAuth(
           const newAccount = await authApi.authPollForAccount(
             authProvider,
             response.device_code,
-            githubDomain,
           );
           if (newAccount) {
             stopPolling();
@@ -219,7 +215,6 @@ export function useManagedAuth(
     hasAnyAccount: accounts.length > 0,
     isAuthenticated: authStatus?.authenticated ?? false,
     defaultAccountId: authStatus?.default_account_id ?? null,
-    migrationError: authStatus?.migration_error ?? null,
     pollingState,
     deviceCode,
     error,

@@ -458,8 +458,6 @@ The reasoning ciphertext inside a session can only be decrypted by the backend t
 
 ## References
 
-- [Keep Codex Remote Control and Official Plugins While Using Third-Party APIs: CC Switch Setup Guide](./codex-official-auth-preservation-guide-en.md)
-- [Using DeepSeek-Style Chat APIs in Codex: CC Switch Local Routing Guide](./codex-deepseek-routing-guide-en.md)
 - The "Codex App Enhancements" section in the CC Switch user manual
 
 ---

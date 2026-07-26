@@ -54,7 +54,7 @@ export interface ClaudeDesktopProviderPreset {
   mode: "direct" | "proxy";
   apiFormat?: ClaudeDesktopApiFormat;
   modelRoutes?: ClaudeDesktopRoutePreset[];
-  providerType?: "github_copilot" | "codex_oauth";
+  providerType?: "codex_oauth";
   requiresOAuth?: boolean;
 
   endpointCandidates?: string[];

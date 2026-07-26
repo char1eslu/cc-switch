@@ -89,7 +89,7 @@ struct ToolBlockState {
     name: String,
     started: bool,
     pending_args: String,
-    /// 连续空白字符计数 — 用于检测 Copilot 无限换行 bug
+    /// 连续空白字符计数，用于检测上游无限换行。
     /// 当 function call 参数中的连续空白字符达到阈值时，强制终止流
     consecutive_whitespace: usize,
     /// 是否已因无限空白 bug 被中止
@@ -437,7 +437,7 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                                             }
                                                             if state.consecutive_whitespace >= INFINITE_WHITESPACE_THRESHOLD {
                                                                 log::warn!(
-                                                                    "[Copilot] 检测到无限空白 bug (tool: {}), 中止此 tool call 流",
+                                                                    "[Streaming] 检测到无限空白输出 (tool: {}), 中止此 tool call 流",
                                                                     state.name
                                                                 );
                                                                 state.aborted = true;

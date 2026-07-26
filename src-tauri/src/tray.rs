@@ -176,7 +176,7 @@ fn format_script_summary(result: &crate::provider::UsageResult) -> Option<String
     // commands::provider 的 token_plan / official_subscription 分支都会把
     // SubscriptionQuota 的每个 tier 扁平化为一条 UsageData（plan_name 承载
     // tier 名），所以这里按 plan_name 恢复托盘短标签。其余 usage 结果
-    //（Copilot / balance / 自定义脚本）走 fallback。
+    //（balance / 自定义脚本）走 fallback。
     let entries: Vec<(&str, f64)> = data
         .iter()
         .filter_map(|d| Some((d.plan_name.as_deref()?, tier_pct(d)?)))
@@ -232,7 +232,7 @@ fn format_usage_suffix(
     let can_use_script = provider.has_usage_script_enabled()
         && (!is_official_provider || provider_uses_official_subscription(provider));
     if can_use_script {
-        // 脚本缓存优先（覆盖 Copilot/coding_plan/balance/自定义脚本），借用访问避免克隆整条 UsageResult。
+        // 脚本缓存优先（覆盖 coding_plan/balance/自定义脚本），借用访问避免克隆整条 UsageResult。
         if let Some(Some(s)) =
             app_state
                 .usage_cache
@@ -749,9 +749,8 @@ pub fn schedule_tray_refresh(app: &tauri::AppHandle) {
 ///
 /// 刷新面与 `format_usage_suffix` 的展示面严格对齐 —— 每次悬停最多发
 /// `TRAY_SECTIONS.len()` 次外部请求；只有显式启用的用量查询（含官方订阅、
-/// coding_plan / balance / Copilot / 自定义脚本）才会发请求。
+/// coding_plan / balance / 自定义脚本）才会发请求。
 pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
-    use crate::commands::CopilotAuthState;
     use futures::future::join_all;
 
     {
@@ -817,14 +816,12 @@ pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
         {
             let app_clone = app.clone();
             let state = app.state::<AppState>();
-            let copilot_state = app.state::<CopilotAuthState>();
             let provider_id = current_id.clone();
             let app_str = app_type_str.to_string();
             script_futures.push(async move {
                 if let Err(e) = crate::commands::queryProviderUsage(
                     app_clone,
                     state,
-                    copilot_state,
                     provider_id.clone(),
                     app_str,
                 )
@@ -1031,9 +1028,9 @@ mod tests {
 
     #[test]
     fn script_summary_single_bucket_fallback_with_plan_name() {
-        let r = usage_result(true, vec![usage_data(Some("Copilot Pro"), 40.0)]);
+        let r = usage_result(true, vec![usage_data(Some("Pro"), 40.0)]);
         let s = format_script_summary(&r).expect("should format");
-        assert!(s.contains("Copilot Pro"), "expected plan name in {s}");
+        assert!(s.contains("Pro"), "expected plan name in {s}");
         assert!(s.contains("40%"), "expected 40% in {s}");
         assert!(
             !s.contains("h40%"),

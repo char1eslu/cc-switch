@@ -29,8 +29,7 @@ export const TIER_I18N_KEYS: Record<string, string> = {
   seven_day_sonnet: "subscription.sevenDaySonnet",
   // Token Plan（five_hour 已在上方官方映射中）
   weekly_limit: "subscription.sevenDay",
-  // GitHub Copilot
-  premium: "subscription.copilotPremium",
+  premium: "subscription.premium",
 };
 
 /** 根据使用百分比返回颜色 class */

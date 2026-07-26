@@ -20,7 +20,6 @@ mod panic_hook;
 mod prompt;
 mod prompt_files;
 mod provider;
-mod provider_defaults;
 mod proxy;
 mod services;
 mod session_manager;
@@ -812,18 +811,6 @@ pub fn run() {
             let skill_service = SkillService::new();
             app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
 
-            // 初始化 CopilotAuthManager
-            {
-                use crate::proxy::providers::copilot_auth::CopilotAuthManager;
-                use commands::CopilotAuthState;
-                use tokio::sync::RwLock;
-
-                let app_config_dir = crate::config::get_app_config_dir();
-                let copilot_auth_manager = CopilotAuthManager::new(app_config_dir);
-                app.manage(CopilotAuthState(Arc::new(RwLock::new(copilot_auth_manager))));
-                log::info!("✓ CopilotAuthManager initialized");
-            }
-
             // 初始化 CodexOAuthManager (ChatGPT Plus/Pro 反代)
             {
                 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
@@ -1049,10 +1036,6 @@ pub fn run() {
             commands::restore_codex_unified_history,
             commands::get_rectifier_config,
             commands::set_rectifier_config,
-            commands::get_optimizer_config,
-            commands::set_optimizer_config,
-            commands::get_copilot_optimizer_config,
-            commands::set_copilot_optimizer_config,
             commands::get_log_config,
             commands::set_log_config,
             commands::restart_app,
@@ -1275,22 +1258,6 @@ pub fn run() {
             commands::auth_remove_account,
             commands::auth_set_default_account,
             commands::auth_logout,
-            // Copilot OAuth commands (multi-account support)
-            commands::copilot_start_device_flow,
-            commands::copilot_poll_for_auth,
-            commands::copilot_poll_for_account,
-            commands::copilot_list_accounts,
-            commands::copilot_remove_account,
-            commands::copilot_set_default_account,
-            commands::copilot_get_auth_status,
-            commands::copilot_logout,
-            commands::copilot_is_authenticated,
-            commands::copilot_get_token,
-            commands::copilot_get_token_for_account,
-            commands::copilot_get_models,
-            commands::copilot_get_models_for_account,
-            commands::copilot_get_usage,
-            commands::copilot_get_usage_for_account,
             // lightweight mode (for testing or low-resource environments)
             commands::enter_lightweight_mode,
             commands::exit_lightweight_mode,

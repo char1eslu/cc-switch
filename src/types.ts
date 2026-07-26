@@ -217,10 +217,8 @@ export interface ProviderMeta {
   maxOutputTokens?: number;
   // Custom User-Agent for local proxy routing. Only applied by the local proxy.
   customUserAgent?: string;
-  // 供应商类型（用于识别 Copilot 等特殊供应商）
+  // 供应商类型（用于识别 OAuth 等特殊供应商）
   providerType?: string;
-  // GitHub Copilot 关联账号 ID（旧字段，保留兼容读取）
-  githubAccountId?: string;
 }
 
 // Skill 同步方式

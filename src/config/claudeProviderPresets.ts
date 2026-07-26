@@ -52,9 +52,7 @@ export interface ProviderPreset {
   apiFormat?: "anthropic" | "openai_chat" | "openai_responses";
 
   // 供应商类型标识（用于特殊供应商检测）
-  // - "github_copilot": GitHub Copilot 供应商（需要 OAuth 认证）
-  // - "codex_oauth": OpenAI Codex via ChatGPT Plus/Pro 反代（需要 OAuth 认证）
-  providerType?: "github_copilot" | "codex_oauth";
+  providerType?: "codex_oauth";
 
   // 是否需要 OAuth 认证（而非 API Key）
   requiresOAuth?: boolean;

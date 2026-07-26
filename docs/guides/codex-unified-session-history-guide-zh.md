@@ -458,8 +458,6 @@ wire_api = "responses"
 
 ## 参考链接
 
-- [使用第三方 API 时保留 Codex 远程操作和官方插件：CC Switch 配置攻略](./codex-official-auth-preservation-guide-zh.md)
-- [在 Codex 中使用 DeepSeek 这类 Chat 格式 API：CC Switch 路由攻略](./codex-deepseek-routing-guide-zh.md)
 - CC Switch 用户手册中「Codex 应用增强」相关章节
 
 ---

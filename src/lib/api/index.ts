@@ -11,14 +11,8 @@ export { proxyApi } from "./proxy";
 export { sessionsApi } from "./sessions";
 export * as configApi from "./config";
 export * as authApi from "./auth";
-export * as copilotApi from "./copilot";
 export type { ProviderSwitchEvent } from "./providers";
 export type { Prompt } from "./prompts";
-export type {
-  CopilotDeviceCodeResponse,
-  CopilotAuthStatus,
-  GitHubAccount,
-} from "./copilot";
 export type {
   ManagedAuthProvider,
   ManagedAuthAccount,

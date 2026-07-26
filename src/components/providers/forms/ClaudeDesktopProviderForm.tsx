@@ -38,7 +38,6 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { BasicFormFields } from "./BasicFormFields";
 import { CodexOAuthSection } from "./CodexOAuthSection";
-import { CopilotAuthSection } from "./CopilotAuthSection";
 import { EndpointField } from "./shared/EndpointField";
 import { ModelDropdown } from "./shared/ModelDropdown";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
@@ -263,9 +262,6 @@ export function ClaudeDesktopProviderForm({
       ? "ANTHROPIC_API_KEY"
       : "ANTHROPIC_AUTH_TOKEN",
   );
-  const [selectedGitHubAccountId, setSelectedGitHubAccountId] = useState<
-    string | null
-  >(() => resolveManagedAccountId(initialData?.meta, "github_copilot"));
   const [selectedCodexAccountId, setSelectedCodexAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "codex_oauth"));
@@ -331,9 +327,7 @@ export function ClaudeDesktopProviderForm({
   }, [form.formState.isSubmitting, isFetchingModels, onSubmittingChange]);
 
   const isOfficial = initialData?.category === "official";
-  const usesManagedOAuth =
-    activeProviderType === "github_copilot" ||
-    activeProviderType === "codex_oauth";
+  const usesManagedOAuth = activeProviderType === "codex_oauth";
 
   const updateRoute = (index: number, patch: Partial<RouteRowValues>) => {
     setRoutes((current) =>
@@ -544,19 +538,13 @@ export function ClaudeDesktopProviderForm({
     meta.claudeDesktopModelRoutes = routeMap;
     meta.providerType = activeProviderType;
     meta.authBinding =
-      activeProviderType === "github_copilot"
+      activeProviderType === "codex_oauth"
         ? {
             source: "managed_account",
-            authProvider: "github_copilot",
-            accountId: selectedGitHubAccountId ?? undefined,
+            authProvider: "codex_oauth",
+            accountId: selectedCodexAccountId ?? undefined,
           }
-        : activeProviderType === "codex_oauth"
-          ? {
-              source: "managed_account",
-              authProvider: "codex_oauth",
-              accountId: selectedCodexAccountId ?? undefined,
-            }
-          : undefined;
+        : undefined;
     meta.codexFastMode =
       activeProviderType === "codex_oauth" ? codexFastMode : undefined;
 
@@ -631,19 +619,12 @@ export function ClaudeDesktopProviderForm({
           <>
             {usesManagedOAuth ? (
               <div className="rounded-lg border border-border-default bg-muted/20 p-3">
-                {activeProviderType === "github_copilot" ? (
-                  <CopilotAuthSection
-                    selectedAccountId={selectedGitHubAccountId}
-                    onAccountSelect={setSelectedGitHubAccountId}
-                  />
-                ) : (
-                  <CodexOAuthSection
-                    selectedAccountId={selectedCodexAccountId}
-                    onAccountSelect={setSelectedCodexAccountId}
-                    fastModeEnabled={codexFastMode}
-                    onFastModeChange={setCodexFastMode}
-                  />
-                )}
+                <CodexOAuthSection
+                  selectedAccountId={selectedCodexAccountId}
+                  onAccountSelect={setSelectedCodexAccountId}
+                  fastModeEnabled={codexFastMode}
+                  onFastModeChange={setCodexFastMode}
+                />
               </div>
             ) : (
               <div className="space-y-1">

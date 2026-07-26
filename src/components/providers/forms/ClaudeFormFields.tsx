@@ -18,14 +18,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   ChevronDown,
   ChevronRight,
   Download,
@@ -34,13 +26,7 @@ import {
 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
-import { CopilotAuthSection } from "./CopilotAuthSection";
 import { CodexOAuthSection } from "./CodexOAuthSection";
-import {
-  copilotGetModels,
-  copilotGetModelsForAccount,
-} from "@/lib/api/copilot";
-import type { CopilotModel } from "@/lib/api/copilot";
 import {
   fetchCodexOauthModels,
   fetchModelsForConfig,
@@ -80,14 +66,7 @@ interface ClaudeFormFieldsProps {
   isPartner?: boolean;
   partnerPromotionKey?: string;
 
-  // GitHub Copilot OAuth
-  isCopilotPreset?: boolean;
   usesOAuth?: boolean;
-  isCopilotAuthenticated?: boolean;
-  /** 当前选中的 GitHub 账号 ID（多账号支持） */
-  selectedGitHubAccountId?: string | null;
-  /** GitHub 账号选择回调（多账号支持） */
-  onGitHubAccountSelect?: (accountId: string | null) => void;
 
   // Codex OAuth (ChatGPT Plus/Pro)
   isCodexOauthPreset?: boolean;
@@ -157,11 +136,7 @@ export function ClaudeFormFields({
   websiteUrl,
   isPartner,
   partnerPromotionKey,
-  isCopilotPreset,
   usesOAuth,
-  isCopilotAuthenticated,
-  selectedGitHubAccountId,
-  onGitHubAccountSelect,
   isCodexOauthPreset,
   isCodexOauthAuthenticated,
   selectedCodexAccountId,
@@ -222,18 +197,13 @@ export function ClaudeFormFields({
     }
   }, [hasAnyAdvancedValue]);
 
-  // Copilot 可用模型列表
-  const [copilotModels, setCopilotModels] = useState<CopilotModel[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const copilotModelsRequestRef = useRef(0);
-
   // Codex OAuth 可用模型列表
   const [codexOauthModels, setCodexOauthModels] = useState<FetchedModel[]>([]);
   const [codexOauthModelsLoading, setCodexOauthModelsLoading] = useState(false);
   const codexOauthModelsRequestRef = useRef(0);
   const fallbackUsesOneM = hasClaudeOneMMarker(claudeModel);
 
-  // 通用模型获取（非 Copilot 供应商）
+  // 通用模型获取
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
 
@@ -277,50 +247,6 @@ export function ClaudeFormFields({
       .finally(() => setIsFetchingModels(false));
   }, [baseUrl, apiKey, isFullUrl, customUserAgent, showModelFetchResult, t]);
 
-  const handleFetchCopilotModels = useCallback(() => {
-    if (!isCopilotAuthenticated) {
-      toast.error(
-        t("copilot.loginRequired", {
-          defaultValue: "请先登录 GitHub Copilot",
-        }),
-      );
-      return;
-    }
-
-    const requestId = copilotModelsRequestRef.current + 1;
-    copilotModelsRequestRef.current = requestId;
-    setModelsLoading(true);
-    const fetchModels = selectedGitHubAccountId
-      ? copilotGetModelsForAccount(selectedGitHubAccountId)
-      : copilotGetModels();
-
-    fetchModels
-      .then((models) => {
-        if (copilotModelsRequestRef.current !== requestId) return;
-        setCopilotModels(models);
-        showModelFetchResult(models.length);
-      })
-      .catch((err) => {
-        if (copilotModelsRequestRef.current !== requestId) return;
-        console.warn("[Copilot] Failed to fetch models:", err);
-        toast.error(
-          t("copilot.loadModelsFailed", {
-            defaultValue: "加载 Copilot 模型列表失败",
-          }),
-        );
-      })
-      .finally(() => {
-        if (copilotModelsRequestRef.current === requestId) {
-          setModelsLoading(false);
-        }
-      });
-  }, [
-    isCopilotAuthenticated,
-    selectedGitHubAccountId,
-    showModelFetchResult,
-    t,
-  ]);
-
   const handleFetchCodexOauthModels = useCallback(() => {
     if (!isCodexOauthAuthenticated) {
       toast.error(
@@ -358,27 +284,17 @@ export function ClaudeFormFields({
   ]);
 
   useEffect(() => {
-    copilotModelsRequestRef.current += 1;
-    setCopilotModels([]);
-    setModelsLoading(false);
-  }, [isCopilotPreset, isCopilotAuthenticated, selectedGitHubAccountId]);
-
-  useEffect(() => {
     codexOauthModelsRequestRef.current += 1;
     setCodexOauthModels([]);
     setCodexOauthModelsLoading(false);
   }, [isCodexOauthPreset, isCodexOauthAuthenticated, selectedCodexAccountId]);
 
-  const modelFetchLoading = isCopilotPreset
-    ? modelsLoading
-    : isCodexOauthPreset
-      ? codexOauthModelsLoading
-      : isFetchingModels;
-  const handleModelFetchClick = isCopilotPreset
-    ? handleFetchCopilotModels
-    : isCodexOauthPreset
-      ? handleFetchCodexOauthModels
-      : handleFetchModels;
+  const modelFetchLoading = isCodexOauthPreset
+    ? codexOauthModelsLoading
+    : isFetchingModels;
+  const handleModelFetchClick = isCodexOauthPreset
+    ? handleFetchCodexOauthModels
+    : handleFetchModels;
 
   // 模型输入框：支持手动输入 + 下拉选择
   const renderModelInput = (
@@ -400,89 +316,6 @@ export function ClaudeFormFields({
           placeholder={placeholder}
           fetchedModels={codexOauthModels}
           isLoading={codexOauthModelsLoading}
-        />
-      );
-    }
-
-    if (isCopilotPreset && copilotModels.length > 0) {
-      // 按 vendor 分组
-      const grouped: Record<string, CopilotModel[]> = {};
-      for (const model of copilotModels) {
-        const vendor = model.vendor || "Other";
-        if (!grouped[vendor]) grouped[vendor] = [];
-        grouped[vendor].push(model);
-      }
-      const vendors = Object.keys(grouped).sort();
-
-      return (
-        <div className="flex gap-1">
-          <Input
-            id={id}
-            type="text"
-            value={value}
-            onChange={(e) => updateValue(e.target.value)}
-            placeholder={placeholder}
-            autoComplete="off"
-            className="flex-1"
-          />
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon" className="shrink-0">
-                <ChevronDown className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className="max-h-64 overflow-y-auto z-[200]"
-            >
-              {vendors.map((vendor, vi) => (
-                <div key={vendor}>
-                  {vi > 0 && <DropdownMenuSeparator />}
-                  <DropdownMenuLabel>{vendor}</DropdownMenuLabel>
-                  {grouped[vendor].map((model) => (
-                    <DropdownMenuItem
-                      key={model.id}
-                      onSelect={() => updateValue(model.id)}
-                    >
-                      {model.id}
-                    </DropdownMenuItem>
-                  ))}
-                </div>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      );
-    }
-
-    if (isCopilotPreset && modelsLoading) {
-      return (
-        <div className="flex gap-1">
-          <Input
-            id={id}
-            type="text"
-            value={value}
-            onChange={(e) => updateValue(e.target.value)}
-            placeholder={placeholder}
-            autoComplete="off"
-            className="flex-1"
-          />
-          <Button variant="outline" size="icon" className="shrink-0" disabled>
-            <Loader2 className="h-4 w-4 animate-spin" />
-          </Button>
-        </div>
-      );
-    }
-
-    if (isCopilotPreset) {
-      return (
-        <Input
-          id={id}
-          type="text"
-          value={value}
-          onChange={(e) => updateValue(e.target.value)}
-          placeholder={placeholder}
-          autoComplete="off"
         />
       );
     }
@@ -575,14 +408,6 @@ export function ClaudeFormFields({
 
   return (
     <>
-      {/* GitHub Copilot OAuth 认证 */}
-      {isCopilotPreset && (
-        <CopilotAuthSection
-          selectedAccountId={selectedGitHubAccountId}
-          onAccountSelect={onGitHubAccountSelect}
-        />
-      )}
-
       {/* Codex OAuth 认证 (ChatGPT Plus/Pro) */}
       {isCodexOauthPreset && (
         <CodexOAuthSection

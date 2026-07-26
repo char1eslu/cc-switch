@@ -50,7 +50,6 @@ import {
   useCodexOauth,
   useCodexTomlValidation,
   useCommonConfigSnippet,
-  useCopilotAuth,
   useModelState,
   useSpeedTestEndpoints,
   useTemplateValues,
@@ -262,9 +261,6 @@ function ProviderFormCustom({
   const [pendingFormValues, setPendingFormValues] =
     useState<ProviderFormData | null>(null);
   const [isConfirmSubmitting, setIsConfirmSubmitting] = useState(false);
-  const [selectedGitHubAccountId, setSelectedGitHubAccountId] = useState<
-    string | null
-  >(() => resolveManagedAccountId(initialData?.meta, "github_copilot"));
   const [selectedCodexAccountId, setSelectedCodexAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "codex_oauth"));
@@ -338,9 +334,6 @@ function ProviderFormCustom({
     });
     setCodexChatReasoning(initialData?.meta?.codexChatReasoning ?? {});
     setCustomUserAgent(initialData?.meta?.customUserAgent ?? "");
-    setSelectedGitHubAccountId(
-      resolveManagedAccountId(initialData?.meta, "github_copilot"),
-    );
     setSelectedCodexAccountId(
       resolveManagedAccountId(initialData?.meta, "codex_oauth"),
     );
@@ -556,12 +549,8 @@ function ProviderFormCustom({
     selectedPresetId,
   });
 
-  const { isAuthenticated: isCopilotAuthenticated } = useCopilotAuth();
   const { isAuthenticated: isCodexOauthAuthenticated } = useCodexOauth();
 
-  const isCopilotProvider =
-    initialData?.meta?.providerType === "github_copilot" ||
-    baseUrl.includes("githubcopilot.com");
   const isCodexOauthProvider =
     initialData?.meta?.providerType === "codex_oauth";
 
@@ -661,14 +650,6 @@ function ProviderFormCustom({
       return;
     }
 
-    if (isCopilotProvider && !isCopilotAuthenticated) {
-      toast.error(
-        t("copilot.loginRequired", {
-          defaultValue: "请先登录 GitHub Copilot",
-        }),
-      );
-      return;
-    }
     if (isCodexOauthProvider && !isCodexOauthAuthenticated) {
       toast.error(
         t("codexOauth.loginRequired", {
@@ -686,7 +667,7 @@ function ProviderFormCustom({
           }),
         );
       }
-      if (!isCopilotProvider && !isCodexOauthProvider && !apiKey.trim()) {
+      if (!isCodexOauthProvider && !apiKey.trim()) {
         issues.push(
           t("providerForm.apiKeyRequired", {
             defaultValue: "非官方供应商请填写 API Key",
@@ -797,23 +778,13 @@ function ProviderFormCustom({
       endpointAutoSelect,
       claudeDesktopMode: undefined,
       providerType,
-      authBinding: isCopilotProvider
+      authBinding: isCodexOauthProvider
         ? {
             source: "managed_account",
-            authProvider: "github_copilot",
-            accountId: selectedGitHubAccountId ?? undefined,
+            authProvider: "codex_oauth",
+            accountId: selectedCodexAccountId ?? undefined,
           }
-        : isCodexOauthProvider
-          ? {
-              source: "managed_account",
-              authProvider: "codex_oauth",
-              accountId: selectedCodexAccountId ?? undefined,
-            }
-          : undefined,
-      githubAccountId:
-        isCopilotProvider && selectedGitHubAccountId
-          ? selectedGitHubAccountId
-          : undefined,
+        : undefined,
       codexFastMode: isCodexOauthProvider ? codexFastMode : undefined,
       codexChatReasoning:
         appId === "codex" && localCodexApiFormat === "openai_chat"
@@ -905,12 +876,8 @@ function ProviderFormCustom({
               websiteUrl={claudeWebsiteUrl}
               isPartner={isClaudePartner}
               partnerPromotionKey={claudePartnerPromotionKey}
-              isCopilotPreset={isCopilotProvider}
               isCodexOauthPreset={isCodexOauthProvider}
-              usesOAuth={isCopilotProvider || isCodexOauthProvider}
-              isCopilotAuthenticated={isCopilotAuthenticated}
-              selectedGitHubAccountId={selectedGitHubAccountId}
-              onGitHubAccountSelect={setSelectedGitHubAccountId}
+              usesOAuth={isCodexOauthProvider}
               isCodexOauthAuthenticated={isCodexOauthAuthenticated}
               selectedCodexAccountId={selectedCodexAccountId}
               onCodexAccountSelect={setSelectedCodexAccountId}

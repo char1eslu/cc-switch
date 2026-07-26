@@ -371,7 +371,7 @@ pub fn validate_direct_provider(provider: &Provider) -> Result<(), AppError> {
 
         if matches!(
             meta.provider_type.as_deref(),
-            Some("github_copilot") | Some("codex_oauth")
+            Some("codex_oauth")
         ) {
             return Err(AppError::localized(
                 "claude_desktop.provider.type_unsupported",
@@ -476,7 +476,7 @@ fn is_managed_oauth_proxy_provider(provider: &Provider) -> bool {
         .meta
         .as_ref()
         .and_then(|meta| meta.provider_type.as_deref())
-        .is_some_and(|provider_type| matches!(provider_type, "github_copilot" | "codex_oauth"))
+        .is_some_and(|provider_type| provider_type == "codex_oauth")
 }
 
 pub fn validate_provider(provider: &Provider) -> Result<(), AppError> {
@@ -1616,28 +1616,23 @@ mod tests {
 
     #[test]
     fn claude_desktop_proxy_accepts_managed_oauth_providers_without_static_key() {
-        for (provider_type, api_format) in [
-            ("github_copilot", "openai_chat"),
-            ("codex_oauth", "openai_responses"),
-        ] {
-            let provider = oauth_proxy_provider(provider_type, provider_type, api_format);
-            validate_proxy_provider(&provider).expect("oauth proxy provider should validate");
+        let provider = oauth_proxy_provider("codex", "codex_oauth", "openai_responses");
+        validate_proxy_provider(&provider).expect("oauth proxy provider should validate");
 
-            let temp = TempDir::new().expect("tempdir");
-            let paths = test_paths(temp.path());
-            let db = test_db();
-            apply_provider_to_paths(&db, &provider, &paths).expect("apply oauth proxy provider");
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+        let db = test_db();
+        apply_provider_to_paths(&db, &provider, &paths).expect("apply oauth proxy provider");
 
-            let profile: Value = read_json_file(&paths.profile_path).expect("read profile");
-            assert_eq!(
-                profile["inferenceGatewayBaseUrl"],
-                json!("http://127.0.0.1:15721/claude-desktop")
-            );
-            assert_eq!(
-                profile["inferenceModels"],
-                json!([{ "name": "claude-sonnet-4-6", "labelOverride": "GPT-5.4" }])
-            );
-        }
+        let profile: Value = read_json_file(&paths.profile_path).expect("read profile");
+        assert_eq!(
+            profile["inferenceGatewayBaseUrl"],
+            json!("http://127.0.0.1:15721/claude-desktop")
+        );
+        assert_eq!(
+            profile["inferenceModels"],
+            json!([{ "name": "claude-sonnet-4-6", "labelOverride": "GPT-5.4" }])
+        );
     }
 
     #[test]
@@ -2221,13 +2216,6 @@ mod tests {
             ..Default::default()
         });
         assert!(!is_compatible_direct_provider(&openai_format));
-
-        let mut copilot = direct_provider("copilot");
-        copilot.meta = Some(ProviderMeta {
-            provider_type: Some("github_copilot".to_string()),
-            ..Default::default()
-        });
-        assert!(!is_compatible_direct_provider(&copilot));
 
         let mut full_url = direct_provider("full_url");
         full_url.meta = Some(ProviderMeta {

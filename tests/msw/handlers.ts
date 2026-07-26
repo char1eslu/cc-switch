@@ -246,9 +246,7 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/check_env_conflicts`, () => success([])),
 
-  http.post(`${TAURI_ENDPOINT}/get_common_config_snippet`, () =>
-    success(null),
-  ),
+  http.post(`${TAURI_ENDPOINT}/get_common_config_snippet`, () => success(null)),
 
   http.post(`${TAURI_ENDPOINT}/set_common_config_snippet`, () =>
     success(undefined),
@@ -256,10 +254,10 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/auth_get_status`, async ({ request }) => {
     const { authProvider } = await withJson<{
-      authProvider?: "github_copilot" | "codex_oauth";
+      authProvider?: "codex_oauth";
     }>(request);
     return success({
-      provider: authProvider ?? "github_copilot",
+      provider: authProvider ?? "codex_oauth",
       authenticated: false,
       default_account_id: null,
       accounts: [],

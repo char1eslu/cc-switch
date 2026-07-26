@@ -24,7 +24,22 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
-use super::copilot_auth::{GitHubAccount, GitHubDeviceCodeResponse};
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthDeviceCodeResponse {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthAccount {
+    pub id: String,
+    pub login: String,
+    pub avatar_url: Option<String>,
+    pub authenticated_at: i64,
+}
 
 /// OpenAI OAuth 客户端 ID（与官方 Codex CLI 相同）
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -190,10 +205,10 @@ struct CodexAccountData {
     pub authenticated_at: i64,
 }
 
-/// 公开的账号信息（返回给前端，复用 GitHubAccount 结构）
-impl From<&CodexAccountData> for GitHubAccount {
+/// 公开的账号信息（返回给前端）
+impl From<&CodexAccountData> for OAuthAccount {
     fn from(data: &CodexAccountData) -> Self {
-        GitHubAccount {
+        OAuthAccount {
             id: data.account_id.clone(),
             // 用 email 作为显示名（若无则用 account_id）
             login: data
@@ -202,7 +217,6 @@ impl From<&CodexAccountData> for GitHubAccount {
                 .unwrap_or_else(|| format!("ChatGPT ({})", &data.account_id)),
             avatar_url: None,
             authenticated_at: data.authenticated_at,
-            github_domain: "github.com".to_string(),
         }
     }
 }
@@ -256,11 +270,11 @@ impl CodexOAuthManager {
 
     /// 启动 Device Code 流程
     ///
-    /// 返回 GitHubDeviceCodeResponse 复用现有前端结构，但字段含义对应 OpenAI 的字段：
+    /// 返回 OAuthDeviceCodeResponse，字段含义对应 OpenAI 的字段：
     /// - device_code = device_auth_id
     /// - user_code = user_code
     /// - verification_uri = https://auth.openai.com/codex/device
-    pub async fn start_device_flow(&self) -> Result<GitHubDeviceCodeResponse, CodexOAuthError> {
+    pub async fn start_device_flow(&self) -> Result<OAuthDeviceCodeResponse, CodexOAuthError> {
         log::info!("[CodexOAuth] 启动 Device Code 流程");
 
         let response = crate::proxy::http_client::get()
@@ -308,7 +322,7 @@ impl CodexOAuthManager {
             device.user_code
         );
 
-        Ok(GitHubDeviceCodeResponse {
+        Ok(OAuthDeviceCodeResponse {
             device_code: device.device_auth_id,
             user_code: device.user_code,
             verification_uri: DEVICE_VERIFICATION_URL.to_string(),
@@ -323,7 +337,7 @@ impl CodexOAuthManager {
     pub async fn poll_for_token(
         &self,
         device_code: &str,
-    ) -> Result<Option<GitHubAccount>, CodexOAuthError> {
+    ) -> Result<Option<OAuthAccount>, CodexOAuthError> {
         let entry = {
             let pending = self.pending_device_codes.read().await;
             pending.get(device_code).cloned()
@@ -578,7 +592,7 @@ impl CodexOAuthManager {
 
     // ==================== 多账号管理 ====================
 
-    pub async fn list_accounts(&self) -> Vec<GitHubAccount> {
+    pub async fn list_accounts(&self) -> Vec<OAuthAccount> {
         let accounts = self.accounts.read().await.clone();
         let default_id = self.resolve_default_account_id().await;
         Self::sorted_accounts(&accounts, default_id.as_deref())
@@ -668,7 +682,7 @@ impl CodexOAuthManager {
         !accounts.is_empty()
     }
 
-    /// 获取认证状态摘要（与 Copilot 的格式保持一致，便于复用前端）
+    /// 获取认证状态摘要。
     pub async fn get_status(&self) -> CodexOAuthStatus {
         let accounts_map = self.accounts.read().await.clone();
         let default_id = self.resolve_default_account_id().await;
@@ -695,7 +709,7 @@ impl CodexOAuthManager {
         account_id: String,
         refresh_token: String,
         email: Option<String>,
-    ) -> Result<GitHubAccount, CodexOAuthError> {
+    ) -> Result<OAuthAccount, CodexOAuthError> {
         let now = chrono::Utc::now().timestamp();
 
         let data = CodexAccountData {
@@ -705,7 +719,7 @@ impl CodexOAuthManager {
             authenticated_at: now,
         };
 
-        let account = GitHubAccount::from(&data);
+        let account = OAuthAccount::from(&data);
 
         {
             let mut accounts = self.accounts.write().await;
@@ -737,8 +751,8 @@ impl CodexOAuthManager {
     fn sorted_accounts(
         accounts: &HashMap<String, CodexAccountData>,
         default_account_id: Option<&str>,
-    ) -> Vec<GitHubAccount> {
-        let mut list: Vec<GitHubAccount> = accounts.values().map(GitHubAccount::from).collect();
+    ) -> Vec<OAuthAccount> {
+        let mut list: Vec<OAuthAccount> = accounts.values().map(OAuthAccount::from).collect();
         list.sort_by(|a, b| {
             let a_default = default_account_id == Some(a.id.as_str());
             let b_default = default_account_id == Some(b.id.as_str());
@@ -886,7 +900,7 @@ impl CodexOAuthManager {
 /// Codex OAuth 状态摘要
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexOAuthStatus {
-    pub accounts: Vec<GitHubAccount>,
+    pub accounts: Vec<OAuthAccount>,
     pub default_account_id: Option<String>,
     pub authenticated: bool,
     pub username: Option<String>,

@@ -65,13 +65,6 @@ pub enum AuthStrategy {
     /// - Header: `Authorization: Bearer <api_key>`
     Bearer,
 
-    /// GitHub Copilot 认证方式
-    ///
-    /// - Header: `Authorization: Bearer <copilot_token>`
-    ///
-    /// 使用动态获取的 Copilot Token（通过 GitHub OAuth 设备码流程获取）
-    GitHubCopilot,
-
     /// Codex OAuth 认证方式（ChatGPT Plus/Pro）
     ///
     /// - Header: `Authorization: Bearer <access_token>`
@@ -137,7 +130,6 @@ mod tests {
             AuthStrategy::Anthropic,
             AuthStrategy::ClaudeAuth,
             AuthStrategy::Bearer,
-            AuthStrategy::GitHubCopilot,
             AuthStrategy::CodexOAuth,
         ];
 

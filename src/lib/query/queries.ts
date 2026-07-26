@@ -166,7 +166,7 @@ export function isTransientUsageError(result: UsageResult): boolean {
  * **确定性失败**（鉴权/空 key/未知供应商/4xx 等）不仅立即透出，还会**清空 `lastGood`**：
  * 旧成功快照已不可信，否则随后一次网络抖动会把"配置/鉴权已失效"的旧额度重新复活。
  *
- * 注：会 reject 的传输层失败（Copilot/DB）react-query 本就保留上次 `data`，这里
+ * 注：会 reject 的传输层失败（网络/DB）react-query 本就保留上次 `data`，这里
  * 主要修的是 `Ok(success:false)` 这条覆盖路径。
  */
 export function resolveDisplayUsage(
@@ -233,7 +233,7 @@ export const useUsageQuery = (
     // 用量查询面向跨境/第三方端点，单次网络抖动或瞬时 5xx 不应直接判失败。
     // 重试一次以吸收瞬时故障（与 useSubscriptionQuota 的 retry:1 保持一致）。
     // 注意：原生 balance/coding_plan 路径把网络错误折叠成 Ok(success:false)，
-    // 这类不会触发 react-query 重试；本项主要覆盖会 reject 的传输层失败（Copilot/DB 等）。
+    // 这类不会触发 react-query 重试；本项主要覆盖会 reject 的传输层失败（网络/DB 等）。
     retry: 1,
     retryDelay: 1500,
     staleTime, // 使用动态计算的缓存时间

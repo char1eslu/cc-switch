@@ -2,7 +2,6 @@ use indexmap::IndexMap;
 use tauri::{Emitter, Manager, State};
 
 use crate::app_config::AppType;
-use crate::commands::copilot::CopilotAuthState;
 use crate::error::AppError;
 use crate::provider::{ClaudeDesktopMode, Provider};
 use crate::services::{
@@ -12,11 +11,9 @@ use crate::store::AppState;
 use std::str::FromStr;
 
 // 常量定义
-const TEMPLATE_TYPE_GITHUB_COPILOT: &str = "github_copilot";
 const TEMPLATE_TYPE_TOKEN_PLAN: &str = "token_plan";
 const TEMPLATE_TYPE_BALANCE: &str = "balance";
 const TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION: &str = "official_subscription";
-const COPILOT_UNIT_PREMIUM: &str = "requests";
 
 /// 获取所有供应商
 #[tauri::command]
@@ -275,7 +272,7 @@ pub(crate) fn suggested_claude_desktop_routes(
             .meta
             .as_ref()
             .and_then(|meta| meta.provider_type.as_deref()),
-        Some("github_copilot") | Some("codex_oauth")
+        Some("codex_oauth")
     );
 
     fn add_route(
@@ -384,19 +381,17 @@ pub(crate) fn suggested_claude_desktop_routes(
 pub async fn queryProviderUsage(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
-    copilot_state: State<'_, CopilotAuthState>,
     #[allow(non_snake_case)] providerId: String, // 使用 camelCase 匹配前端
     app: String,
 ) -> Result<crate::provider::UsageResult, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     // inner 可能以两种形式失败：
     //   1) 返回 Ok(UsageResult { success: false, .. }) —— 业务失败（401、脚本报错等）
-    //   2) 返回 Err(String) —— RPC/DB/Copilot fetch_usage 等 transport 层失败
+    //   2) 返回 Err(String) —— RPC/DB 等 transport 层失败
     // 两种都要把"失败"写进 UsageCache 并刷新托盘，让 format_script_summary 的
     // success 守卫生效、suffix 自然消失，避免旧 success 快照长期滞留。
     // 同时保持原始 Err 返回给前端 React Query 的 onError 回调，不吞错误。
-    let inner =
-        query_provider_usage_inner(&state, &copilot_state, app_type.clone(), &providerId).await;
+    let inner = query_provider_usage_inner(&state, app_type.clone(), &providerId).await;
     let snapshot = match &inner {
         Ok(r) => r.clone(),
         Err(err_msg) => crate::provider::UsageResult {
@@ -465,7 +460,6 @@ fn resolve_coding_plan_credentials(
 
 async fn query_provider_usage_inner(
     state: &AppState,
-    copilot_state: &CopilotAuthState,
     app_type: AppType,
     provider_id: &str,
 ) -> Result<crate::provider::UsageResult, String> {
@@ -481,42 +475,6 @@ async fn query_provider_usage_inner(
     let template_type = usage_script
         .and_then(|s| s.template_type.as_deref())
         .unwrap_or("");
-
-    // ── GitHub Copilot 专用路径 ──
-    if template_type == TEMPLATE_TYPE_GITHUB_COPILOT {
-        let copilot_account_id = provider
-            .and_then(|p| p.meta.as_ref())
-            .and_then(|m| m.managed_account_id_for(TEMPLATE_TYPE_GITHUB_COPILOT));
-
-        let auth_manager = copilot_state.0.read().await;
-        let usage = match copilot_account_id.as_deref() {
-            Some(account_id) => auth_manager
-                .fetch_usage_for_account(account_id)
-                .await
-                .map_err(|e| format!("Failed to fetch Copilot usage: {e}"))?,
-            None => auth_manager
-                .fetch_usage()
-                .await
-                .map_err(|e| format!("Failed to fetch Copilot usage: {e}"))?,
-        };
-        let premium = &usage.quota_snapshots.premium_interactions;
-        let used = premium.entitlement - premium.remaining;
-
-        return Ok(crate::provider::UsageResult {
-            success: true,
-            data: Some(vec![crate::provider::UsageData {
-                plan_name: Some(usage.copilot_plan),
-                remaining: Some(premium.remaining as f64),
-                total: Some(premium.entitlement as f64),
-                used: Some(used as f64),
-                unit: Some(COPILOT_UNIT_PREMIUM.to_string()),
-                is_valid: Some(true),
-                invalid_message: None,
-                extra: Some(format!("Reset: {}", usage.quota_reset_date)),
-            }]),
-            error: None,
-        });
-    }
 
     // ── Coding Plan 专用路径 ──
     if template_type == TEMPLATE_TYPE_TOKEN_PLAN {
@@ -919,12 +877,12 @@ mod import_claude_desktop_tests {
 
     #[test]
     fn route_1m_suffix_overrides_provider_type_default() {
-        // github_copilot 默认 supports_1m_default = false，但 [1M] 后缀应强制 true
+        // codex_oauth 默认 supports_1m_default = false，但 [1M] 后缀应强制 true
         let p = make_provider(
             json!({
                 "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5-codex[1M]",
             }),
-            Some("github_copilot"),
+            Some("codex_oauth"),
         );
         let routes = suggested_claude_desktop_routes(&p).expect("routes built");
         let r = routes
@@ -936,12 +894,12 @@ mod import_claude_desktop_tests {
     }
 
     #[test]
-    fn route_github_copilot_without_suffix_keeps_false() {
+    fn route_codex_oauth_without_suffix_keeps_false() {
         let p = make_provider(
             json!({
                 "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5-codex",
             }),
-            Some("github_copilot"),
+            Some("codex_oauth"),
         );
         let routes = suggested_claude_desktop_routes(&p).expect("routes built");
         let r = routes
