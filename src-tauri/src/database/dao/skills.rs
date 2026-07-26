@@ -96,14 +96,33 @@ impl Database {
     }
 
     /// 保存 Skill（添加或更新）
+    ///
+    /// 用 `ON CONFLICT DO UPDATE` 而不是 `INSERT OR REPLACE`：后者会把未列出
+    /// 的 NOT NULL 列（用户库里上游迁移留下的 enabled_gemini / enabled_opencode /
+    /// enabled_hermes / enabled_grokbuild）重置成 DEFAULT，再叠上其他并发路径
+    /// 时曾出现 content_hash 写回后被读到旧值的情形。显式 UPDATE 只改我们关心
+    /// 的列，额外列原样保留。
     pub fn save_skill(&self, skill: &InstalledSkill) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
-            "INSERT OR REPLACE INTO skills
+            "INSERT INTO skills
              (id, name, description, directory, repo_owner, repo_name, repo_branch,
               readme_url, enabled_claude, enabled_codex,
               installed_at, content_hash, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               description = excluded.description,
+               directory = excluded.directory,
+               repo_owner = excluded.repo_owner,
+               repo_name = excluded.repo_name,
+               repo_branch = excluded.repo_branch,
+               readme_url = excluded.readme_url,
+               enabled_claude = excluded.enabled_claude,
+               enabled_codex = excluded.enabled_codex,
+               installed_at = excluded.installed_at,
+               content_hash = excluded.content_hash,
+               updated_at = excluded.updated_at",
             params![
                 skill.id,
                 skill.name,
