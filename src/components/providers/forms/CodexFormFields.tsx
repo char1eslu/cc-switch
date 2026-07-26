@@ -216,7 +216,6 @@ export function CodexFormFields({
     onCatalogModelsChange(next);
   }, [catalogRows, onCatalogModelsChange]);
 
-
   const handleReasoningThinkingChange = useCallback(
     (checked: boolean) => {
       if (!onCodexChatReasoningChange) return;

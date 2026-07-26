@@ -81,10 +81,7 @@ const resolveCodexApiFormat = (
   initialData?: { meta?: ProviderMeta; settingsConfig?: any } | null,
 ): CodexApiFormat => {
   const metaFormat = initialData?.meta?.apiFormat;
-  if (
-    metaFormat &&
-    CODEX_API_FORMATS.includes(metaFormat as CodexApiFormat)
-  ) {
+  if (metaFormat && CODEX_API_FORMATS.includes(metaFormat as CodexApiFormat)) {
     return metaFormat as CodexApiFormat;
   }
   return (
@@ -286,8 +283,7 @@ function ProviderFormCustom({
       if (appId !== "claude") return "ANTHROPIC_AUTH_TOKEN";
       if (initialData?.meta?.apiKeyField) return initialData.meta.apiKeyField;
       const env = initialData?.settingsConfig?.env as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       return env?.ANTHROPIC_API_KEY !== undefined
         ? "ANTHROPIC_API_KEY"
         : "ANTHROPIC_AUTH_TOKEN";
@@ -351,8 +347,7 @@ function ProviderFormCustom({
     if (appId === "claude") {
       setLocalApiFormat(initialData?.meta?.apiFormat ?? "anthropic");
       const env = initialData?.settingsConfig?.env as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       setLocalApiKeyField(
         initialData?.meta?.apiKeyField ??
           (env?.ANTHROPIC_API_KEY !== undefined
