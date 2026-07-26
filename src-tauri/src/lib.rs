@@ -445,6 +445,18 @@ pub fn run() {
                 Err(e) => log::warn!("✗ Failed to initialize default skill repos: {e}"),
             }
 
+            // 1.05. 存量 content_hash 按 git blob 口径重算（每库一次）。
+            // 历史安装写入的是「文件内容」摘要，而更新检测比对的是「git blob SHA」
+            // 摘要，两者恒不相等 → 每次检查都报有更新。
+            match crate::services::skill::SkillService::rehash_installed_skills_once(&app_state.db)
+            {
+                Ok(count) if count > 0 => {
+                    log::info!("✓ Rehashed {count} skill(s) to git blob semantics");
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("✗ Failed to rehash skill content hashes: {e}"),
+            }
+
             // 1.1. Skills 统一管理迁移：当数据库迁移到 v3 结构后，自动从各应用目录导入到 SSOT
             // 触发条件由 schema 迁移设置 settings.skills_ssot_migration_pending = true 控制。
             match app_state.db.get_setting("skills_ssot_migration_pending") {

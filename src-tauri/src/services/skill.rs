@@ -832,30 +832,17 @@ impl SkillService {
 
     // ========== 更新检测 ==========
 
-    /// 计算目录内容的 SHA-256 哈希
+    /// 计算已安装 Skill 目录的内容哈希。
     ///
-    /// 递归遍历目录下所有非隐藏文件，按相对路径字典序排列，
-    /// 将 "相对路径\0内容\0" 逐文件 feed 给同一个 hasher。
+    /// 必须与 [`Self::compute_dir_git_tree_hash`] 完全一致：安装/更新/恢复
+    /// 走这里写入 `content_hash`，而更新检测拿本地目录重算后与远程比对。
+    /// 两侧一旦用不同算法，本地值永远对不上远程值，界面会每次都提示有更新，
+    /// 更新完写回的仍是对不上的值——形成"反复更新"死循环。
+    ///
+    /// 远程侧的哈希由 GitHub tree API 的 `entry.sha`（git blob SHA-1）组成，
+    /// 所以本地也必须按 git blob SHA 计算，而不是直接摘要文件原始内容。
     pub fn compute_dir_hash(dir: &Path) -> Result<String> {
-        use sha2::{Digest, Sha256};
-
-        let mut files: Vec<PathBuf> = Vec::new();
-        Self::collect_files_for_hash(dir, dir, &mut files)?;
-        files.sort();
-
-        let mut hasher = Sha256::new();
-        for file_path in &files {
-            let relative = file_path.strip_prefix(dir).unwrap_or(file_path);
-            let rel_str = relative.to_string_lossy().replace('\\', "/");
-            hasher.update(rel_str.as_bytes());
-            hasher.update(b"\0");
-            let content = fs::read(file_path)
-                .with_context(|| format!("读取文件失败: {}", file_path.display()))?;
-            hasher.update(&content);
-            hasher.update(b"\0");
-        }
-
-        Ok(format!("{:x}", hasher.finalize()))
+        Self::compute_dir_git_tree_hash(dir)
     }
 
     /// 递归收集目录下所有非隐藏文件
@@ -1125,6 +1112,53 @@ impl SkillService {
 
         if count > 0 {
             log::info!("已为 {count} 个 Skill 补算内容哈希");
+        }
+        Ok(count)
+    }
+
+    /// 一次性重算全部已安装 Skill 的 content_hash。
+    ///
+    /// 历史版本的安装路径用「相对路径 + 文件原始内容」摘要写入 content_hash，
+    /// 而更新检测比对的是「相对路径 + git blob SHA」摘要。两种算法对同一目录
+    /// 永不相等，于是每次检查都报有更新、更新完下次继续报，形成死循环。
+    /// 算法已统一到 git blob 口径（与 GitHub tree API 的 `sha` 可比），但存量
+    /// 行仍是旧口径，必须整表重算一次才能收敛。
+    ///
+    /// 靠 settings 标记保证只跑一次：重算要读全部文件（实测单个 skill 可达
+    /// 上万文件），不该每次启动都做。
+    pub fn rehash_installed_skills_once(db: &Arc<Database>) -> Result<usize> {
+        const REHASH_FLAG: &str = "skills_content_hash_rehashed_git_blob";
+
+        if db.get_bool_flag(REHASH_FLAG)? {
+            return Ok(0);
+        }
+
+        let skills = db.get_all_installed_skills()?;
+        let ssot_dir = Self::get_ssot_dir()?;
+        let mut count = 0;
+
+        for skill in skills.values() {
+            let skill_dir = ssot_dir.join(&skill.directory);
+            if !skill_dir.exists() {
+                continue;
+            }
+            match Self::compute_dir_hash(&skill_dir) {
+                Ok(hash) => {
+                    if skill.content_hash.as_deref() != Some(hash.as_str()) {
+                        let updated_at = skill.updated_at;
+                        let _ = db.update_skill_hash(&skill.id, &hash, updated_at);
+                        count += 1;
+                    }
+                }
+                Err(e) => {
+                    log::warn!("重算 skill 哈希失败 {}: {e}", skill.id);
+                }
+            }
+        }
+
+        db.set_setting(REHASH_FLAG, "true")?;
+        if count > 0 {
+            log::info!("已按 git blob 口径重算 {count} 个 Skill 的内容哈希");
         }
         Ok(count)
     }
@@ -3625,5 +3659,51 @@ mod tests {
             "repo",
         );
         assert_eq!(selected, Some("skills/suite"));
+    }
+
+    #[test]
+    fn install_hash_matches_update_check_hash() {
+        // 写入侧（compute_dir_hash）与检测侧（compute_dir_git_tree_hash）必须同口径。
+        // 两者一旦分叉，本地值永远对不上远程，界面每次都提示有更新且无法收敛。
+        let temp = tempdir().expect("tempdir");
+        let skill_dir = temp.path().join("demo-skill");
+        write_skill(&skill_dir, "Demo Skill");
+        fs::create_dir_all(skill_dir.join("references")).expect("create nested dir");
+        fs::write(skill_dir.join("references/notes.md"), "# notes\n").expect("write nested file");
+
+        let written = SkillService::compute_dir_hash(&skill_dir).expect("install-side hash");
+        let checked =
+            SkillService::compute_dir_git_tree_hash(&skill_dir).expect("check-side hash");
+
+        assert_eq!(
+            written, checked,
+            "安装写入的哈希必须与更新检测重算的哈希一致"
+        );
+    }
+
+    #[test]
+    fn dir_hash_uses_git_blob_sha_not_raw_content() {
+        // 远程侧哈希由 GitHub tree API 的 blob SHA 组成，本地必须同口径。
+        // 用单文件目录反推：期望值 = sha256("SKILL.md\0" + git_blob_sha + "\0")
+        use sha2::{Digest, Sha256};
+
+        let temp = tempdir().expect("tempdir");
+        let skill_dir = temp.path().join("one-file");
+        fs::create_dir_all(&skill_dir).expect("create dir");
+        let content = b"hello skill\n";
+        fs::write(skill_dir.join("SKILL.md"), content).expect("write file");
+
+        let blob_sha = SkillService::compute_git_blob_sha(content);
+        let mut hasher = Sha256::new();
+        hasher.update(b"SKILL.md");
+        hasher.update(b"\0");
+        hasher.update(blob_sha.as_bytes());
+        hasher.update(b"\0");
+        let expected = format!("{:x}", hasher.finalize());
+
+        assert_eq!(
+            SkillService::compute_dir_hash(&skill_dir).expect("hash"),
+            expected
+        );
     }
 }
