@@ -273,6 +273,92 @@ fn validate_claude_desktop_gateway_auth(
     Ok(())
 }
 
+struct ClaudeUsageLog {
+    model: String,
+    request_model: String,
+    outbound_model: String,
+    app_type: &'static str,
+    provider_id: String,
+    session_id: String,
+    usage: TokenUsage,
+    latency_ms: u64,
+    status_code: u16,
+    is_streaming: bool,
+}
+
+fn prepare_claude_usage_log(
+    ctx: &RequestContext,
+    response: &Value,
+    status_code: u16,
+    is_streaming: bool,
+) -> Option<ClaudeUsageLog> {
+    let usage =
+        TokenUsage::from_claude_response(response).filter(TokenUsage::has_billable_tokens)?;
+
+    // 转换后的响应缺失/合成空 model 时，回退到映射后的出站模型（接管真值），
+    // 再回退到客户端请求别名
+    let model = response
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+        .or_else(|| ctx.outbound_model.clone())
+        .unwrap_or_else(|| ctx.request_model.clone());
+
+    Some(ClaudeUsageLog {
+        model,
+        request_model: ctx.request_model.clone(),
+        outbound_model: ctx
+            .outbound_model
+            .clone()
+            .unwrap_or_else(|| ctx.request_model.clone()),
+        app_type: ctx.app_type_str,
+        provider_id: ctx.provider.id.clone(),
+        session_id: ctx.session_id.clone(),
+        usage,
+        latency_ms: ctx.latency_ms(),
+        status_code,
+        is_streaming,
+    })
+}
+
+async fn write_claude_usage_log(state: &ProxyState, log: ClaudeUsageLog) {
+    log_usage(
+        state,
+        &log.provider_id,
+        log.app_type,
+        &log.model,
+        &log.request_model,
+        &log.outbound_model,
+        log.usage,
+        log.latency_ms,
+        None,
+        log.is_streaming,
+        log.status_code,
+        Some(log.session_id),
+    )
+    .await;
+}
+
+fn spawn_claude_usage_log(
+    state: &ProxyState,
+    ctx: &RequestContext,
+    response: &Value,
+    status_code: u16,
+    is_streaming: bool,
+) {
+    if !usage_logging_enabled(state) {
+        return;
+    }
+    let Some(log) = prepare_claude_usage_log(ctx, response, status_code, is_streaming) else {
+        return;
+    };
+    let state = state.clone();
+    tokio::spawn(async move {
+        write_claude_usage_log(&state, log).await;
+    });
+}
+
 /// Claude 格式转换处理（独有逻辑）
 ///
 /// 支持 OpenAI Chat Completions 和 Responses API 两种格式的转换
@@ -456,63 +542,43 @@ async fn handle_claude_transform(
         }
     };
 
+    // 转换失败前先留住上游原始 usage：上游请求已经成功并消耗了 token，
+    // 若转换阶段报错就直接返回，这部分消耗会永久丢账。
+    let raw_usage_response = (api_format == "openai_responses").then(|| {
+        json!({
+            "id": upstream_response.get("id").cloned().unwrap_or(Value::Null),
+            "model": upstream_response.get("model").cloned().unwrap_or(Value::Null),
+            "usage": transform_responses::build_anthropic_usage_from_responses(
+                upstream_response.get("usage")
+            )
+        })
+    });
+
     // 根据 api_format 选择非流式转换器
-    let anthropic_response = if api_format == "openai_responses" {
+    let transform_result = if api_format == "openai_responses" {
         transform_responses::responses_to_anthropic(upstream_response)
     } else {
         transform::openai_to_anthropic(upstream_response)
-    }
-    .map_err(|e| {
-        log::error!("[Claude] 转换响应失败: {e}");
-        e
-    })?;
+    };
+    let anthropic_response = match transform_result {
+        Ok(response) => response,
+        Err(error) => {
+            log::error!("[Claude] 转换响应失败: {error}");
+            if usage_logging_enabled(state) {
+                if let Some(log) = raw_usage_response.as_ref().and_then(|response| {
+                    prepare_claude_usage_log(ctx, response, status.as_u16(), false)
+                }) {
+                    write_claude_usage_log(state, log).await;
+                }
+            }
+            return Err(error);
+        }
+    };
 
     // 记录使用量
     // 全 0 usage 不落账（对齐 Codex 流式收集器的 skip）：SSE 聚合兜底救回的流
     // 在上游缺 stream_options.include_usage 时没有 usage，写入只会产生无意义空行
-    if let Some(usage) =
-        TokenUsage::from_claude_response(&anthropic_response).filter(|u| u.has_billable_tokens())
-    {
-        // 转换后的响应缺失/合成空 model 时，回退到映射后的出站模型（接管真值），
-        // 再回退到客户端请求别名
-        let model = anthropic_response
-            .get("model")
-            .and_then(|m| m.as_str())
-            .filter(|m| !m.is_empty())
-            .map(str::to_string)
-            .or_else(|| ctx.outbound_model.clone())
-            .unwrap_or_else(|| ctx.request_model.clone());
-        let latency_ms = ctx.latency_ms();
-
-        let request_model = ctx.request_model.clone();
-        let outbound_model = ctx
-            .outbound_model
-            .clone()
-            .unwrap_or_else(|| ctx.request_model.clone());
-        let app_type_str = ctx.app_type_str;
-        tokio::spawn({
-            let state = state.clone();
-            let provider_id = ctx.provider.id.clone();
-            let session_id = ctx.session_id.clone();
-            async move {
-                log_usage(
-                    &state,
-                    &provider_id,
-                    app_type_str,
-                    &model,
-                    &request_model,
-                    &outbound_model,
-                    usage,
-                    latency_ms,
-                    None,
-                    false,
-                    status.as_u16(),
-                    Some(session_id),
-                )
-                .await;
-            }
-        });
-    }
+    spawn_claude_usage_log(state, ctx, &anthropic_response, status.as_u16(), false);
 
     // 构建响应
     let mut builder = axum::response::Response::builder().status(status);

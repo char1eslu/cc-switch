@@ -11,6 +11,10 @@
 use crate::proxy::{error::ProxyError, json_canonical::canonical_json_string};
 use serde_json::{json, Value};
 
+use super::reasoning_bridge::{
+    anthropic_block_from_openai_reasoning_item, openai_reasoning_item_from_anthropic_block,
+};
+
 const MIN_RESPONSES_MAX_OUTPUT_TOKENS: u64 = 16;
 
 pub(crate) fn sanitize_anthropic_tool_use_input(name: &str, input: Value) -> Value {
@@ -401,6 +405,7 @@ fn convert_messages_to_input(messages: &[Value]) -> Result<Vec<Value>, ProxyErro
     for msg in messages {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
         let content = msg.get("content");
+        let message_input_start = input.len();
 
         match content {
             // 字符串内容
@@ -503,8 +508,22 @@ fn convert_messages_to_input(messages: &[Value]) -> Result<Vec<Value>, ProxyErro
                             }));
                         }
 
-                        "thinking" => {
-                            // 丢弃 thinking blocks（与 openai_chat 一致）
+                        "thinking" | "redacted_thinking" => {
+                            // 由本桥自己编码进 signature/data 的 reasoning item 要原样还原，
+                            // 否则无状态 tool loop 每轮都丢推理上下文；非本桥产生的原生
+                            // thinking 块仍旧丢弃（与 openai_chat 一致）。
+                            if let Some(reasoning_item) =
+                                openai_reasoning_item_from_anthropic_block(block)
+                            {
+                                if !message_content.is_empty() {
+                                    input.push(json!({
+                                        "role": role,
+                                        "content": message_content.clone()
+                                    }));
+                                    message_content.clear();
+                                }
+                                input.push(reasoning_item);
+                            }
                         }
 
                         _ => {}
@@ -525,6 +544,25 @@ fn convert_messages_to_input(messages: &[Value]) -> Result<Vec<Value>, ProxyErro
                 input.push(json!({ "role": role }));
             }
         }
+
+        // 回放的 reasoning item 只有在同一次 assistant 生成里还跟着
+        // message/function_call 时才合法。只有 reasoning 的残缺轮次会让下一次
+        // 请求直接失败："reasoning item ... without its required following item"。
+        if role == "assistant" {
+            let mut has_generated_follower = false;
+            for index in (message_input_start..input.len()).rev() {
+                let item_type = input[index].get("type").and_then(Value::as_str);
+                let is_assistant_message =
+                    input[index].get("role").and_then(Value::as_str) == Some("assistant");
+                if item_type == Some("reasoning") {
+                    if !has_generated_follower {
+                        input.remove(index);
+                    }
+                } else if item_type == Some("function_call") || is_assistant_message {
+                    has_generated_follower = true;
+                }
+            }
+        }
     }
 
     Ok(input)
@@ -538,6 +576,7 @@ pub fn responses_to_anthropic(body: Value) -> Result<Value, ProxyError> {
         .ok_or_else(|| ProxyError::TransformError("No output in response".to_string()))?;
 
     let mut content = Vec::new();
+    let response_completed = body.get("status").and_then(Value::as_str) == Some("completed");
 
     let mut has_tool_use = false;
     for item in output {
@@ -572,7 +611,45 @@ pub fn responses_to_anthropic(body: Value) -> Result<Value, ProxyError> {
                     .get("arguments")
                     .and_then(|a| a.as_str())
                     .unwrap_or("{}");
-                let input: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                // 空参数按 {} 处理；未完成响应里的截断 JSON 降级为 {} 并告警，
+                // 但 status=completed 的畸形参数必须报错——那是上游真的发错了，
+                // 静默改成 {} 会让模型以为工具调用成功执行。
+                let input: Value = if args_str.trim().is_empty() {
+                    json!({})
+                } else {
+                    match serde_json::from_str(args_str) {
+                        Ok(value) => value,
+                        Err(error) if !response_completed => {
+                            log::warn!(
+                                "[Responses] Replacing incomplete function_call '{name}' arguments with an empty object: {error}"
+                            );
+                            json!({})
+                        }
+                        Err(error) => {
+                            return Err(ProxyError::TransformError(format!(
+                                "Invalid function_call arguments for '{name}': {error}"
+                            )))
+                        }
+                    }
+                };
+                if !input.is_object() {
+                    if !response_completed {
+                        log::warn!(
+                            "[Responses] Replacing incomplete function_call '{name}' non-object arguments with an empty object"
+                        );
+                        content.push(json!({
+                            "type": "tool_use",
+                            "id": call_id,
+                            "name": name,
+                            "input": {}
+                        }));
+                        has_tool_use = true;
+                        continue;
+                    }
+                    return Err(ProxyError::TransformError(format!(
+                        "Function call arguments for '{name}' must be a JSON object"
+                    )));
+                }
                 let input = sanitize_anthropic_tool_use_input(name, input);
 
                 content.push(json!({
@@ -585,26 +662,12 @@ pub fn responses_to_anthropic(body: Value) -> Result<Value, ProxyError> {
             }
 
             "reasoning" => {
-                // 映射 reasoning summary → thinking block
-                if let Some(summary) = item.get("summary").and_then(|s| s.as_array()) {
-                    let thinking_text: String = summary
-                        .iter()
-                        .filter_map(|s| {
-                            if s.get("type").and_then(|t| t.as_str()) == Some("summary_text") {
-                                s.get("text").and_then(|t| t.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
-
-                    if !thinking_text.is_empty() {
-                        content.push(json!({
-                            "type": "thinking",
-                            "thinking": thinking_text
-                        }));
-                    }
+                // 交给 bridge 决定形态：带 encrypted_content 的整项会被编码进
+                // thinking.signature / redacted_thinking.data，客户端回放时可原样还原；
+                // 否则退化成纯文本 thinking。原实现只取 summary_text，
+                // encrypted_content 全丢，无状态工具循环里推理链就断了。
+                if let Some(block) = anthropic_block_from_openai_reasoning_item(item) {
+                    content.push(block);
                 }
             }
 
@@ -1778,5 +1841,131 @@ mod tests {
         assert_eq!(result["output_tokens"], json!(0));
         assert_eq!(result["cache_read_input_tokens"], json!(60));
         assert_eq!(result["cache_creation_input_tokens"], json!(20));
+    }
+
+    #[test]
+    fn test_completed_function_call_empty_arguments_normalizes_to_object() {
+        let input = json!({
+            "id": "resp_empty_args",
+            "status": "completed",
+            "model": "gpt-5.6",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "ping",
+                "arguments": ""
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 2}
+        });
+        let result = responses_to_anthropic(input).unwrap();
+        assert_eq!(result["content"][0]["input"], json!({}));
+    }
+
+    #[test]
+    fn test_incomplete_function_call_invalid_arguments_uses_empty_object() {
+        let input = json!({
+            "id": "resp_partial_args",
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "model": "gpt-5.6",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "dangerous_tool",
+                "arguments": "{\"path\":"
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 2}
+        });
+        let result = responses_to_anthropic(input).unwrap();
+        assert_eq!(result["content"][0]["type"], "tool_use");
+        assert_eq!(result["content"][0]["input"], json!({}));
+        assert_eq!(result["stop_reason"], "max_tokens");
+    }
+
+    #[test]
+    fn test_completed_function_call_invalid_arguments_is_error() {
+        let input = json!({
+            "id": "resp_bad_args",
+            "status": "completed",
+            "model": "gpt-5.6",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "broken_tool",
+                "arguments": "{\"path\":"
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 2}
+        });
+        assert!(matches!(
+            responses_to_anthropic(input),
+            Err(ProxyError::TransformError(_))
+        ));
+    }
+
+    #[test]
+    fn test_encrypted_reasoning_round_trips_through_anthropic_history() {
+        let original = json!({
+            "type": "reasoning",
+            "id": "rs_123",
+            "summary": [{"type": "summary_text", "text": "Need a tool."}],
+            "encrypted_content": "opaque-ciphertext"
+        });
+        let response = json!({
+            "id": "resp_123",
+            "status": "completed",
+            "model": "gpt-5.6",
+            "output": [original.clone()],
+            "usage": {"input_tokens": 10, "output_tokens": 2}
+        });
+
+        let anthropic = responses_to_anthropic(response).unwrap();
+        let thinking = anthropic["content"][0].clone();
+        assert_eq!(thinking["type"], "thinking");
+        assert!(thinking["signature"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("ccswitch-openai-reasoning-v1:")));
+
+        let replay = anthropic_to_responses(
+            json!({
+                "model": "gpt-5.6",
+                "messages": [{"role": "assistant", "content": [
+                    thinking,
+                    {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {}}
+                ]}]
+            }),
+            None,
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(replay["input"][0], original);
+        assert_eq!(replay["input"][1]["type"], "function_call");
+    }
+
+    #[test]
+    fn test_reasoning_only_assistant_turn_is_not_replayed() {
+        let item = json!({
+            "type": "reasoning",
+            "id": "rs_orphan",
+            "summary": [],
+            "encrypted_content": "opaque"
+        });
+        let block = anthropic_block_from_openai_reasoning_item(&item).unwrap();
+        let replay = anthropic_to_responses(
+            json!({
+                "model": "gpt-5.6",
+                "messages": [
+                    {"role": "assistant", "content": [block]},
+                    {"role": "user", "content": "continue"}
+                ]
+            }),
+            None,
+            true,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(replay["input"].as_array().unwrap().len(), 1);
+        assert_eq!(replay["input"][0]["role"], "user");
     }
 }
