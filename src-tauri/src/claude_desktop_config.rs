@@ -369,10 +369,7 @@ pub fn validate_direct_provider(provider: &Provider) -> Result<(), AppError> {
             ));
         }
 
-        if matches!(
-            meta.provider_type.as_deref(),
-            Some("codex_oauth")
-        ) {
+        if matches!(meta.provider_type.as_deref(), Some("codex_oauth")) {
             return Err(AppError::localized(
                 "claude_desktop.provider.type_unsupported",
                 "Claude Desktop 直连模式不支持需要本地代理转换的供应商",

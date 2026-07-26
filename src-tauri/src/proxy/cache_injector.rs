@@ -40,10 +40,7 @@ pub fn inject(body: &mut Value, cache_ttl: &str) {
             if let Some(last) = tools.last_mut() {
                 if last.get("cache_control").is_none() {
                     if let Some(o) = last.as_object_mut() {
-                        o.insert(
-                            "cache_control".to_string(),
-                            make_cache_control(cache_ttl),
-                        );
+                        o.insert("cache_control".to_string(), make_cache_control(cache_ttl));
                     }
                     budget -= 1;
                     injected.push("tools");
@@ -67,10 +64,7 @@ pub fn inject(body: &mut Value, cache_ttl: &str) {
             if let Some(last) = system.last_mut() {
                 if last.get("cache_control").is_none() {
                     if let Some(o) = last.as_object_mut() {
-                        o.insert(
-                            "cache_control".to_string(),
-                            make_cache_control(cache_ttl),
-                        );
+                        o.insert("cache_control".to_string(), make_cache_control(cache_ttl));
                     }
                     budget -= 1;
                     injected.push("system");

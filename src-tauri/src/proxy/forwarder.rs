@@ -2793,10 +2793,8 @@ mod tests {
 
     #[test]
     fn rewrite_claude_transform_endpoint_strips_beta_for_chat_completions() {
-        let (endpoint, passthrough_query) = rewrite_claude_transform_endpoint(
-            "/v1/messages?beta=true&foo=bar",
-            "openai_chat",
-        );
+        let (endpoint, passthrough_query) =
+            rewrite_claude_transform_endpoint("/v1/messages?beta=true&foo=bar", "openai_chat");
 
         assert_eq!(endpoint, "/v1/chat/completions?foo=bar");
         assert_eq!(passthrough_query.as_deref(), Some("foo=bar"));

@@ -298,8 +298,7 @@ pub fn responses_request_to_anthropic(
         .and_then(|value| value.as_str());
     let adaptive_model = crate::proxy::thinking_model::uses_adaptive_thinking(model);
     let adaptive_by_default = crate::proxy::thinking_model::adaptive_thinking_is_default(model);
-    let cannot_disable_thinking =
-        crate::proxy::thinking_model::thinking_cannot_be_disabled(model);
+    let cannot_disable_thinking = crate::proxy::thinking_model::thinking_cannot_be_disabled(model);
 
     // max_output_tokens → max_tokens (required)
     let max_tokens = body

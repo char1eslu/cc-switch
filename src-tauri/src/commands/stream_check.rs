@@ -24,9 +24,10 @@ pub async fn stream_check_provider(
         .ok_or_else(|| AppError::Message(format!("供应商 {provider_id} 不存在")))?;
     let result = StreamCheckService::check_with_retry(&app_type, provider, &config, None).await?;
 
-    let _ = state
-        .db
-        .save_stream_check_log(&provider_id, &provider.name, app_type.as_str(), &result);
+    let _ =
+        state
+            .db
+            .save_stream_check_log(&provider_id, &provider.name, app_type.as_str(), &result);
     Ok(result)
 }
 
@@ -59,10 +60,7 @@ pub async fn stream_check_all_providers(
         if provider.category.as_deref() == Some("official") {
             continue;
         }
-        if allowed_ids
-            .as_ref()
-            .is_some_and(|ids| !ids.contains(&id))
-        {
+        if allowed_ids.as_ref().is_some_and(|ids| !ids.contains(&id)) {
             continue;
         }
 

@@ -72,8 +72,7 @@ impl Provider {
     }
 
     pub fn uses_managed_account_auth(&self) -> bool {
-        self.is_codex_oauth()
-            || self.claude_base_url_contains("chatgpt.com/backend-api/codex")
+        self.is_codex_oauth() || self.claude_base_url_contains("chatgpt.com/backend-api/codex")
     }
 
     fn provider_type(&self) -> Option<&str> {
