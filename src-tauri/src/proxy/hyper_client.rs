@@ -142,6 +142,21 @@ impl ProxyResponse {
             .unwrap_or(false)
     }
 
+    /// Check whether the response explicitly declares a JSON media type.
+    pub fn is_json(&self) -> bool {
+        self.content_type()
+            .map(|content_type| {
+                let media_type = content_type
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase();
+                media_type == "application/json" || media_type.ends_with("+json")
+            })
+            .unwrap_or(false)
+    }
+
     /// Consume the response and collect the full body into `Bytes`.
     pub async fn bytes(self) -> Result<Bytes, ProxyError> {
         match self {

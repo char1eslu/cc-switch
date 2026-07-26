@@ -1116,6 +1116,11 @@ impl RequestForwarder {
             == Some("github_copilot")
             || base_url.contains("githubcopilot.com");
 
+        // Codex 上游转换模式 —— 提前计算，因为下方的 [1m] 后缀剥离在 Anthropic
+        // 路径上必须跳过：该标记要活到 catalog 匹配、以及转换层自己的剥离 + beta 判定。
+        let codex_responses_to_anthropic = matches!(app_type, AppType::Codex)
+            && super::providers::should_convert_codex_responses_to_anthropic(provider, endpoint);
+
         // 应用模型映射（独立于格式转换）
         // Claude Desktop proxy 模式必须先把 Desktop 可见的 claude-* route
         // 映射成真实上游模型名，并且未知 route 要直接报错，不能使用默认模型兜底。
@@ -1136,7 +1141,7 @@ impl RequestForwarder {
                 super::providers::copilot_model_map::apply_copilot_model_normalization(mapped_body);
             self.apply_copilot_live_model_resolution(provider, &mut mapped_body)
                 .await;
-        } else {
+        } else if !codex_responses_to_anthropic {
             mapped_body =
                 super::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
         }
@@ -1296,8 +1301,19 @@ impl RequestForwarder {
         };
         let codex_responses_to_chat = matches!(app_type, AppType::Codex)
             && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
+        // 仅在用户显式开启时伪装成 Claude Code 客户端（User-Agent / anthropic-beta /
+        // x-app / system 首行），用于通过某些网关的「仅限 Claude Code」指纹校验。
+        // 默认关闭：避免把 Claude Code 指纹与身份提示泄露给通用网关。
+        let codex_impersonate_claude_code = codex_responses_to_anthropic
+            && provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.impersonate_claude_code)
+                == Some(true);
         let (effective_endpoint, passthrough_query) = if codex_responses_to_chat {
             rewrite_codex_responses_endpoint_to_chat(endpoint)
+        } else if codex_responses_to_anthropic {
+            rewrite_codex_responses_endpoint_to_anthropic(endpoint)
         } else if needs_transform && adapter.name() == "Claude" {
             let api_format = resolved_claude_api_format
                 .as_deref()
@@ -1312,13 +1328,20 @@ impl RequestForwarder {
             )
         };
 
-        let codex_chat_base_is_full_endpoint = codex_responses_to_chat
-            && base_url
-                .trim_end_matches('/')
-                .to_ascii_lowercase()
-                .ends_with("/chat/completions");
+        let codex_chat_base_is_full_endpoint =
+            codex_responses_to_chat && base_url_is_full_endpoint(&base_url, "/chat/completions");
 
-        let url = if is_full_url || codex_chat_base_is_full_endpoint {
+        // 与 `codex_chat_base_is_full_endpoint` 对称的防御性兜底：用户粘贴的 base URL
+        // 已经以 Anthropic 的 `/v1/messages` 结尾、却没打开「完整 URL」开关时，也按完整
+        // 端点处理，避免重复拼接成 `.../v1/messages/v1/messages`（不可重试的 400）。
+        // 按精确端点后缀匹配，因此 `.../api/v1/messages` 这类带前缀的网关同样覆盖。
+        let codex_anthropic_base_is_full_endpoint =
+            codex_responses_to_anthropic && base_url_is_full_endpoint(&base_url, "/v1/messages");
+
+        let url = if is_full_url
+            || codex_chat_base_is_full_endpoint
+            || codex_anthropic_base_is_full_endpoint
+        {
             append_query_to_full_url(&base_url, passthrough_query.as_deref())
         } else {
             adapter.build_url(&base_url, &effective_endpoint)
@@ -1331,6 +1354,9 @@ impl RequestForwarder {
             .and_then(|m| m.as_str())
             .filter(|m| !m.is_empty())
             .map(str::to_string);
+
+        // Codex→Anthropic：模型名带 [1m] 标记时，剥离后缀并补 context-1m beta 头。
+        let mut codex_anthropic_one_m = false;
 
         // 转换请求体（如果需要）
         let mut request_body = if codex_responses_to_chat {
@@ -1351,6 +1377,52 @@ impl RequestForwarder {
                 mapped_body,
                 reasoning_config.as_ref(),
             )?
+        } else if codex_responses_to_anthropic {
+            let mut mapped_body = mapped_body;
+            super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
+            // 供应商级输出上限覆写。Codex 不会把 model_max_output_tokens 放进请求体，
+            // 所以在这里按供应商配置注入：优先于请求自带的 max_output_tokens 与下方默认值。
+            // 注入到 body（而非转换后覆盖）能让 thinking 预算按真实上限留余量。
+            // 之所以按供应商配置而非全局大默认值：低输出上限的网关会直接 400。
+            if let Some(max_out) = provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.max_output_tokens)
+                .filter(|v| *v > 0)
+            {
+                mapped_body["max_output_tokens"] = Value::from(max_out);
+            }
+            // Anthropic 要求 max_tokens；仅当 Codex 请求没给 max_output_tokens 时才用这个
+            // 默认值（罕见，Codex 通常都会带）。保守取值：过高的默认值在低输出上限的模型
+            // 或中继上会硬 400 且不可重试；8192 被当前所有 Claude 模型与几乎所有网关接受。
+            // 转换层会把 thinking 预算夹到该值之下。
+            const DEFAULT_CODEX_ANTHROPIC_MAX_TOKENS: u64 = 8192;
+            let mut anthropic_body =
+                super::providers::transform_codex_anthropic::responses_request_to_anthropic(
+                    mapped_body,
+                    DEFAULT_CODEX_ANTHROPIC_MAX_TOKENS,
+                )?;
+            // 处理 1M 上下文标记 [1m]：剥离模型名后缀（网关不认）并置标志以补 beta 头。
+            // apply_codex_upstream_model 可能刚从供应商配置回写了带 [1m] 的模型名，
+            // 所以在最终 body 上再剥一次。
+            if let Some(model) = anthropic_body.get("model").and_then(|v| v.as_str()) {
+                let stripped = super::model_mapper::strip_one_m_suffix_for_upstream(model);
+                if stripped != model {
+                    codex_anthropic_one_m = true;
+                    anthropic_body["model"] = Value::String(stripped.to_string());
+                }
+            }
+            if codex_impersonate_claude_code {
+                prepend_claude_code_system_prompt(&mut anthropic_body);
+            }
+            // 开启 Anthropic 提示缓存（不需要 beta 头）。复用已配置的 TTL，而不是在这条
+            // 转换路径上偷偷强制 5m。不注入的话 system/tools/历史每轮都按全价重发，
+            // 既涨成本又拖慢首 token。注入器会处理 system 字符串→数组的转换与断点预算。
+            super::cache_injector::inject(
+                &mut anthropic_body,
+                &codex_anthropic_cache_config(&self.optimizer_config),
+            );
+            anthropic_body
         } else if needs_transform {
             if adapter.name() == "Claude" {
                 let api_format = resolved_claude_api_format
@@ -1538,6 +1610,13 @@ impl RequestForwarder {
                 .as_ref()
                 .and_then(|meta| meta.custom_user_agent_header().ok().flatten())
         };
+        // Codex→Anthropic 伪装：没有自定义 UA 时，用 Claude Code 的 UA 覆盖 Codex 的
+        // codex_cli_rs UA。
+        let custom_user_agent = if custom_user_agent.is_none() && codex_impersonate_claude_code {
+            Some(http::HeaderValue::from_static(CLAUDE_CODE_USER_AGENT))
+        } else {
+            custom_user_agent
+        };
 
         // --- Copilot 优化器：动态 header 注入 ---
         if let Some((ref classification, ref det_request_id, ref interaction_id)) =
@@ -1623,6 +1702,16 @@ impl RequestForwarder {
             } else {
                 CLAUDE_CODE_BETA.to_string()
             })
+        } else if codex_impersonate_claude_code || codex_anthropic_one_m {
+            // Codex→Anthropic：伪装注入 claude-code 标记；[1m] 模型注入 context-1m 标记。
+            let mut betas: Vec<&str> = Vec::new();
+            if codex_impersonate_claude_code {
+                betas.push("claude-code-20250219");
+            }
+            if codex_anthropic_one_m {
+                betas.push("context-1m-2025-08-07");
+            }
+            Some(betas.join(","))
         } else {
             None
         };
@@ -1633,6 +1722,7 @@ impl RequestForwarder {
         let mut ordered_headers = http::HeaderMap::new();
         let mut saw_auth = false;
         let mut saw_accept_encoding = false;
+        let mut saw_accept = false;
         let mut saw_user_agent = false;
         let mut saw_anthropic_beta = false;
         let mut saw_anthropic_version = false;
@@ -1694,6 +1784,35 @@ impl RequestForwarder {
                     for (ah_name, ah_value) in &auth_headers {
                         ordered_headers.append(ah_name.clone(), ah_value.clone());
                     }
+                }
+                continue;
+            }
+
+            // --- Codex/OpenAI 指纹头 —— 绝不泄漏给 Anthropic 上游 ---
+            // 这些是来自 Codex 请求的客户端/会话标识，不属于 Anthropic 协议头。
+            // 转发它们既泄漏身份，也会让严格网关的指纹校验失败。
+            // 完整集合放在 is_codex_client_fingerprint_header 里保持单一来源
+            // （http crate 已把 HeaderName 小写化，直接匹配是安全的）。
+            if codex_responses_to_anthropic && is_codex_client_fingerprint_header(key_str) {
+                continue;
+            }
+
+            // --- x-app —— Codex→Anthropic 伪装时统一在下方注入 cli ---
+            if codex_impersonate_claude_code && key_str.eq_ignore_ascii_case("x-app") {
+                continue;
+            }
+
+            // --- accept —— Codex→Anthropic 路径强制 application/json ---
+            // Codex CLI 发的是 `Accept: text/event-stream`，而原生 Anthropic 客户端
+            // 发 `application/json`（流式由 body 的 stream:true 驱动）。严格的
+            // Anthropic 网关对 event-stream 的 Accept 会返回 406，这里归一化。
+            if codex_responses_to_anthropic && key_str.eq_ignore_ascii_case("accept") {
+                if !saw_accept {
+                    saw_accept = true;
+                    ordered_headers.append(
+                        http::header::ACCEPT,
+                        http::HeaderValue::from_static("application/json"),
+                    );
                 }
                 continue;
             }
@@ -1782,6 +1901,20 @@ impl RequestForwarder {
             }
         }
 
+        // Codex→Anthropic：客户端未发 accept 时补 application/json（严格网关会对
+        // text/event-stream 的 accept 返回 406；流式由 body 的 stream:true 驱动）。
+        if codex_responses_to_anthropic && !saw_accept {
+            ordered_headers.append(
+                http::header::ACCEPT,
+                http::HeaderValue::from_static("application/json"),
+            );
+        }
+
+        // Codex→Anthropic 伪装：注入 Claude Code 的 x-app: cli
+        if codex_impersonate_claude_code {
+            ordered_headers.append("x-app", http::HeaderValue::from_static("cli"));
+        }
+
         // 如果原始请求中没有 anthropic-beta 且有值需要添加，追加
         if !saw_anthropic_beta {
             if let Some(ref beta_val) = anthropic_beta_value {
@@ -1791,8 +1924,10 @@ impl RequestForwarder {
             }
         }
 
-        // anthropic-version：仅在缺失时补充默认值
-        if should_send_anthropic_headers && !saw_anthropic_version {
+        // anthropic-version：仅在缺失时补充默认值。Codex→Anthropic 路径也必须带，
+        // 且与 anthropic-beta 解耦——伪装关闭时不发 beta，但 version 仍是必需的。
+        if (should_send_anthropic_headers || codex_responses_to_anthropic) && !saw_anthropic_version
+        {
             ordered_headers.append(
                 "anthropic-version",
                 http::HeaderValue::from_static("2023-06-01"),
@@ -1925,9 +2060,17 @@ impl RequestForwarder {
         let status = response.status();
 
         if status.is_success() {
-            let response = self
+            let mut response = self
                 .prepare_success_response_for_failover(response, request_is_streaming)
                 .await?;
+            // 流式请求正常返回 SSE。若兼容网关明确回了 JSON，就在 retry loop 内缓冲
+            // 校验，让 2xx 包裹的 Anthropic 错误信封仍能触发故障转移。不缓冲未知
+            // content-type：有些网关不带 SSE 头。
+            if codex_responses_to_anthropic && (!request_is_streaming || response.is_json()) {
+                response = self
+                    .validate_codex_anthropic_success_response(response)
+                    .await?;
+            }
             Ok((response, resolved_claude_api_format, outbound_model))
         } else {
             let status_code = status.as_u16();
@@ -1951,6 +2094,34 @@ impl RequestForwarder {
                 body: body_text,
             })
         }
+    }
+
+    /// Anthropic 网关可能用 HTTP 2xx 包裹语义错误信封（`{"type":"error",...}`）。
+    /// 在 retry loop 内缓冲校验，这样早期失败仍能选下一家供应商，而不是把错误
+    /// 当成成功透传给 Codex 客户端。
+    async fn validate_codex_anthropic_success_response(
+        &self,
+        response: ProxyResponse,
+    ) -> Result<ProxyResponse, ProxyError> {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let encoding = get_content_encoding(&headers);
+        let raw = response.bytes().await?;
+        let decoded = match encoding {
+            Some(encoding) => match decompress_body(&encoding, &raw) {
+                Ok(Some(decompressed)) => decompressed,
+                _ => raw.to_vec(),
+            },
+            None => raw.to_vec(),
+        };
+
+        if let Some(message) = codex_anthropic_error_envelope_message(&decoded) {
+            return Err(ProxyError::TransformError(format!(
+                "Anthropic upstream returned a 2xx error envelope: {message}"
+            )));
+        }
+
+        Ok(ProxyResponse::buffered(status, headers, raw))
     }
 
     /// 故障转移开启时，成功不能只看上游响应头。
@@ -2306,6 +2477,119 @@ fn strip_beta_query(query: Option<&str>) -> Option<String> {
 
 fn is_claude_messages_path(path: &str) -> bool {
     matches!(path, "/v1/messages" | "/claude/v1/messages")
+}
+
+
+const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/1.0.119 (external, cli)";
+const CLAUDE_CODE_SYSTEM_IDENTITY: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
+
+/// Codex→Anthropic 转换路径专用的优化器配置。
+///
+/// 只开缓存注入、关掉 thinking 改写：thinking 已由转换层按 reasoning.effort 决定，
+/// 再让优化器插手会互相覆盖。沿用用户配置的 TTL，不静默强制 5m。
+fn codex_anthropic_cache_config(config: &OptimizerConfig) -> OptimizerConfig {
+    OptimizerConfig {
+        enabled: true,
+        thinking_optimizer: false,
+        cache_injection: config.cache_injection,
+        cache_ttl: config.cache_ttl.clone(),
+    }
+}
+
+/// base_url 是否本身就是完整端点（结尾即 `endpoint_suffix`）。
+///
+/// 只比对路径部分：完整端点 URL 上的 `?query`/`#fragment` 不能掩盖后缀
+/// （`.../v1/messages?beta=true` 仍算以该端点结尾）。
+fn base_url_is_full_endpoint(base_url: &str, endpoint_suffix: &str) -> bool {
+    let trimmed = base_url.trim();
+    let path = match trimmed.split_once(['?', '#']) {
+        Some((head, _)) => head,
+        None => trimmed,
+    };
+    path.trim_end_matches('/')
+        .to_ascii_lowercase()
+        .ends_with(endpoint_suffix)
+}
+
+/// Codex 客户端指纹头：转发到 Anthropic 网关前必须剥掉。
+///
+/// 这些头是 OpenAI/Codex 特有的，泄漏到 Anthropic 侧既无意义，也会让声称
+/// 只服务 Claude Code 的网关识别出真实客户端。
+fn is_codex_client_fingerprint_header(key_str: &str) -> bool {
+    matches!(
+        key_str,
+        "originator"
+            | "session_id"
+            | "session-id"
+            | "thread-id"
+            | "conversation_id"
+            | "chatgpt-account-id"
+            | "x-openai-subagent"
+            | "x-client-request-id"
+            | "openai-beta"
+            | "openai-organization"
+            | "openai-project"
+    ) || key_str.starts_with("x-stainless-")
+        || key_str.starts_with("x-codex-")
+}
+
+/// 从 Anthropic 风格的错误体里提取可读信息（用于 2xx 里夹带失败信封的网关）。
+fn codex_anthropic_error_envelope_message(body: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("error") && value.get("error").is_none() {
+        return None;
+    }
+    let error = value.get("error").unwrap_or(&value);
+    let error_type = error.get("type").and_then(Value::as_str).unwrap_or("error");
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| error.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| error.to_string());
+    Some(format!("{error_type}: {message}"))
+}
+
+/// 把 Codex 的 `/responses` 端点改写成 Anthropic 的 `/v1/messages`，保留 query。
+fn rewrite_codex_responses_endpoint_to_anthropic(endpoint: &str) -> (String, Option<String>) {
+    let (_path, query) = split_endpoint_and_query(endpoint);
+    let passthrough_query = query.map(ToString::to_string);
+    let target_path = "/v1/messages";
+    let rewritten = match passthrough_query.as_deref() {
+        Some(query) if !query.is_empty() => format!("{target_path}?{query}"),
+        _ => target_path.to_string(),
+    };
+
+    (rewritten, passthrough_query)
+}
+
+/// 在 Anthropic 请求体的 `system` 前插入 Claude Code 身份首行。
+///
+/// Anthropic 订阅/OAuth 套餐要求首个 system block 恰为该身份行。转换后 `system`
+/// 是字符串（来自 Codex instructions），这里统一归一成数组：[身份行, 原 system...]。
+fn prepend_claude_code_system_prompt(body: &mut Value) {
+    let identity = serde_json::json!({ "type": "text", "text": CLAUDE_CODE_SYSTEM_IDENTITY });
+    let mut blocks: Vec<Value> = vec![identity];
+    match body.get("system") {
+        Some(Value::String(existing)) if !existing.is_empty() => {
+            blocks.push(serde_json::json!({ "type": "text", "text": existing }));
+        }
+        Some(Value::Array(existing)) => {
+            // 幂等：首块已是身份行就不重复注入。
+            if existing
+                .first()
+                .and_then(|b| b.get("text"))
+                .and_then(|t| t.as_str())
+                == Some(CLAUDE_CODE_SYSTEM_IDENTITY)
+            {
+                return;
+            }
+            blocks.extend(existing.iter().cloned());
+        }
+        _ => {}
+    }
+    body["system"] = Value::Array(blocks);
 }
 
 fn rewrite_codex_responses_endpoint_to_chat(endpoint: &str) -> (String, Option<String>) {
