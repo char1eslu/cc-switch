@@ -170,9 +170,9 @@ pub(crate) fn parse_mcp_apps(apps_str: &str) -> Result<McpApps, AppError> {
             // claude-desktop 不再支持 MCP 同步（3P Desktop 走 gateway 模式），
             // 显式拒绝以免 deep-link 静默落到无效状态。
             "claude-desktop" | "claude_desktop" | "claudedesktop" => {
-                return Err(AppError::InvalidInput(format!(
-                    "Claude Desktop 不支持 MCP 同步（3P 实例走 gateway 模式）"
-                )))
+                return Err(AppError::InvalidInput(
+                    "Claude Desktop 不支持 MCP 同步（3P 实例走 gateway 模式）".to_string(),
+                ))
             }
             other => {
                 return Err(AppError::InvalidInput(format!(

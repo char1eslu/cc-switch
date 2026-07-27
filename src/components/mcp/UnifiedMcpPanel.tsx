@@ -61,8 +61,9 @@ const UnifiedMcpPanel = React.forwardRef<
       codex: 0,
     };
     serverEntries.forEach(([_, server]) => {
+      const apps = server.apps as Partial<Record<AppId, boolean>>;
       for (const app of MCP_APP_IDS) {
-        if (server.apps[app]) counts[app] = (counts[app] ?? 0) + 1;
+        if (apps[app]) counts[app] = (counts[app] ?? 0) + 1;
       }
     });
     return counts;
