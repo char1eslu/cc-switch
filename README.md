@@ -27,7 +27,7 @@
 | 路径操作 | 会话详情支持 Reveal / Copy Path，Move dialog 对长路径和候选目录做了可用性处理 |
 | 技能更新 | 修正本地哈希与 GitHub tree 的排序口径，消除反复提示更新；大型仓库下载超时放宽，结构化错误显示可读文案 |
 | Codex 上游协议 | 支持只提供原生 Anthropic Messages（`/v1/messages`）的网关，由本地代理做 Responses ⇄ Anthropic 双向转换 |
-| MCP 覆盖 | MCP 服务器可同步到 Claude Code、Codex、Claude Desktop（3P 实例）三端 |
+| MCP 覆盖 | Claude Code 与 Codex 两端；Claude Desktop 因 gateway 接管无法支持，与上游一致 |
 | 数据库 | 清除上游版本在库中留下的已裁剪应用的遗留列与数据行 |
 | 应用自更新 | 屏蔽 Tauri updater、自更新 endpoint 和 updater artifact，避免应用内检查上游更新 |
 | 构建方式 | 保留 macOS Apple Silicon ad-hoc GitHub Actions 构建，当前不做 DMG、公证或自动更新包 |
@@ -60,16 +60,21 @@
 
 > 这条路径已通过编译、clippy 与单元测试，但**尚未在真实 Anthropic 网关上端到端验证过**。
 
-## MCP 三端覆盖
+## MCP / Skills 覆盖范围
 
 | 客户端 | MCP | Skills |
 | --- | --- | --- |
 | Claude Code | 支持 | 支持 |
 | Codex | 支持 | 支持 |
-| Claude Desktop | 支持（写入 3P 实例的 `claude_desktop_config.json`）| 不适用 |
+| Claude Desktop | 不支持（见下） | 不适用 |
 
-Claude Desktop 的 MCP 写入 cc-switch 管理的 3P 实例，不会改动用户原版 Desktop 的配置；
-写入采用读-改-写，只动 `mcpServers` 段，其余键原样保留。非 macOS / Windows 平台静默跳过。
+Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
+`inferenceProvider: "gateway"`。gateway 模式下 Desktop 从 managed config 读取 MCP，
+`claude_desktop_config.json` 里的 `mcpServers` 会被忽略并记为
+`Skipped invalid MCP server config entries`。
+
+这是 gateway 接管的固有代价，上游 cc-switch 同样不支持 3P Desktop 的本地 MCP。
+需要在 Desktop 里用 MCP 时，在 Desktop 自己的界面添加，或使用未被接管的原版实例。
 
 ## UI 和可用性改动
 
@@ -96,7 +101,7 @@ Claude Desktop 的 MCP 写入 cc-switch 管理的 3P 实例，不会改动用户
 
 - Claude Code、Claude Desktop、Codex provider 管理。
 - 官方登录 / 第三方 relay 切换、tray quick switch。
-- Unified MCP、Prompts、Skills 面板；MCP 可同步到 Claude Code、Codex、Claude Desktop 三端。
+- Unified MCP、Prompts、Skills 面板；MCP 同步到 Claude Code 与 Codex。
 - Local proxy、failover、usage dashboard、model test。
 - WebDAV / S3 config sync。
 - Deep Link import。

@@ -2,7 +2,7 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-07-26
+最后更新：2026-07-27
 
 ## 同步基线
 
@@ -43,18 +43,19 @@ git log --oneline 878c26f3..upstream/main
 
 | | SCHEMA_VERSION |
 | --- | --- |
-| 本 fork | **18** |
+| 本 fork | **19** |
 | 上游 (`934a2d03`) | 16 |
 
 fork 独有的迁移：
 
-- **v16 → v17**：`mcp_servers` 加 `enabled_claude_desktop` 列（MCP 支持 Claude Desktop）
+- **v16 → v17**：空迁移（原本给 `mcp_servers` 加 `enabled_claude_desktop`，功能已回退）
 - **v17 → v18**：清除上游版本留在库里的已裁剪应用遗留物
   - 删列：`mcp_servers` / `skills` 的 `enabled_gemini`、`enabled_opencode`、`enabled_hermes`、`enabled_grokbuild`
   - 删行：`providers` / `proxy_config` 中 `app_type` 属于已裁剪应用的行
+- **v18 → v19**：删掉 v17 加过的 `enabled_claude_desktop`（Desktop MCP 回退的收尾）
 
-**这是最容易踩的坑**：上游若也推进到 17/18，迁移编号会与 fork 的冲突。
-届时必须人工处理——把上游的迁移重编号到 19+，或合并进同一个版本步，
+**这是最容易踩的坑**：上游若也推进到 17/18/19，迁移编号会与 fork 的冲突。
+届时必须人工处理——把上游的迁移重编号到 20+，或合并进同一个版本步，
 不能直接 cherry-pick。合并前先确认 `set_user_version` 的目标值没有重复。
 
 另注：迁移循环是 `while version < SCHEMA_VERSION`。新列**必须**写进版本化迁移分支，
@@ -78,21 +79,41 @@ fork 独有的迁移：
 `reasoning_close`、`custom_tool_call_input_delta`）。按 fork 风格删除而非
 `#[allow(dead_code)]` 掩盖——上游若再动这些符号，注意 fork 里已经没有了。
 
-### Claude Desktop MCP
+### ⚠️ Claude Desktop MCP：已尝试并回退，不要再做一遍
 
-`src-tauri/src/mcp/claude_desktop.rs` 是**上游没有的新文件**。
-写入 cc-switch 管理的 3P 实例配置（`Claude-3p/claude_desktop_config.json`），
-读-改-写只动 `mcpServers` 段，其余键（`deploymentMode`、`enterpriseConfig` 等）原样保留。
-非 macOS / Windows 平台静默跳过。
+**结论：gateway 接管模式下做不成，上游也没做。别再尝试。**
+
+cc-switch 用独立 3P 实例接管 Claude Desktop，profile
+（`Claude-3p/configLibrary/<uuid>.json`）里写 `inferenceProvider: "gateway"`。
+gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
+`Credentials loaded from managed config { provider: 'gateway', mcpServerCount: 0 }`，
+而 `claude_desktop_config.json` 里的 `mcpServers` 被整体忽略并记为
+`Skipped invalid MCP server config entries`。
+
+验证过的事实：
+
+- 写 stdio 格式（`npx mcp-remote` 桥）→ 被拒
+- 写原生 HTTP 格式（`{type,url,headers}`，与用户原版 Desktop 里能用的完全一致）→ 同样被拒
+- 用户原版 Desktop 目录**没有** configLibrary profile，不走 gateway，所以本地
+  `mcpServers` 生效——这才是"原版能用、3P 不能用"的真正原因，不是格式问题
+- 上游 cc-switch 的 profile 同样只有推理字段（`inferenceGateway*` / `inferenceModels` /
+  `inferenceProvider`），**完全没有 MCP 处理**
+
+若真要做，唯一可能的方向是把 MCP 写进 profile 的 managed config，但上游没有先例，
+需要逆向 Desktop 的 profile schema。当前判断投入产出不值。
+
+回退提交：`664685b1`（及后续 CI 修复）。相关的 DB 列由 v18→v19 迁移删除。
 
 ## 已知的隐性约束（改动前先看这里）
 
-1. **`McpApps` 的 serde 键名必须是连字符。**
-   `claude_desktop` 字段需要 `#[serde(rename = "claude-desktop")]` +
-   `alias = "claudeDesktop"` / `alias = "claude_desktop"`。
-   前端一律按 `AppId`（连字符）索引 `apps[app]`；少了 rename 就读到 `undefined`，
-   表现为「图标点不动、编辑框勾不上，但数据其实写进了库」——因为 toggle 命令
-   走 `AppType::from_str`，那条路径认连字符。已踩过。
+1. **凡是前端按 `AppId` 索引的 Rust 结构，字段名必须 `#[serde(rename)]` 成连字符。**
+   前端一律用 `apps[app]`，其中 `app` 来自 `AppId`（`"claude-desktop"`）；
+   Rust 字段是下划线，不加 rename 就序列化成 `claude_desktop`，前端读到
+   `undefined`。症状很误导：**图标点不动、编辑框勾不上，但数据其实写进了库**
+   ——因为 toggle 命令走 `AppType::from_str`，那条路径认连字符。
+   已踩过（在已回退的 Desktop MCP 上）。参照 `AppType` / `McpConfig` /
+   `PromptConfig` 的写法：`rename` + `alias = "claudeDesktop"` +
+   `alias = "claude_desktop"`。
 
 2. **Skills 本地哈希的排序必须与 GitHub tree API 同口径（相对路径字节序）。**
    不能用 `Vec<PathBuf>::sort()`——`PathBuf: Ord` 是逐路径组件比较，
@@ -130,12 +151,9 @@ fork 独有的迁移：
 - **Codex ↔ Anthropic 协议桥未做真实端到端验证。**
   已过编译 / clippy / 单测，但从未跑通过一次真实请求。
   验证方式：新建 Codex 供应商 → 上游协议选 `Anthropic Messages` → 填可用网关与模型名 → 用 Codex 实跑。
-- **Claude Desktop MCP 已定位根因并修复。**
-  根因：Claude Desktop 的 `claude_desktop_config.json` 只接受 stdio 服务器
-  （校验 schema `gD` 要求 `command` 字段），HTTP/SSE 远程服务器会被跳过并报
-  "not valid MCP server configurations"。修复：`claude_desktop.rs` 同步时把
-  HTTP/SSE 服务器包装成 `npx mcp-remote` stdio 桥，headers 以 `--header` 传递。
-  待验证：重启 3P Desktop 后远程工具是否出现（依赖本机有 Node.js / npx）。
+- **Claude Desktop MCP 已回退，不再是待办。**
+  详见上方「Claude Desktop MCP：尝试过并已回退」。gateway 接管导致本地
+  `mcpServers` 被忽略，与格式无关，上游同样不支持。
 
 ## 验证手段
 
