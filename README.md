@@ -58,7 +58,12 @@
 - 请求侧会剥离 Codex/OpenAI 的指纹头，`Accept` 归一化为 `application/json`，避免严格网关返回 406。
 - 支持流式与非流式；上游返回 2xx 错误信封时仍可触发故障转移。
 
-> 这条路径已通过编译、clippy 与单元测试，但**尚未在真实 Anthropic 网关上端到端验证过**。
+> 转换后的请求已对真实 Anthropic 网关（智谱 `glm-5.2`）验证过 7 个场景：非流式、
+> 流式 SSE、工具调用、`[1m]` 标记剥离、空 text block 过滤、tool_result 多轮回传、
+> `cache_control` 注入，全部返回 200 且响应可正确解析。
+>
+> 但该验证是按转换层逻辑复现 payload 后直接发网关，**没有走应用内的 Rust 代码路径**。
+> Rust 实现与复现之间若有偏差不会被这个测试发现——首次在应用里启用时留意首轮请求。
 
 ## MCP / Skills 覆盖范围
 
@@ -95,7 +100,7 @@ Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
 | 跨工具会话写操作 | Repair / Move / Trim / Branch / Trash 只对 Codex 会话开放 |
 | 上游完整工具面 | 清理了当前不维护的旧工具入口，不保证覆盖上游全部 provider / 页面 |
 | 应用自更新 | 不接上游 updater，不在应用内检查或安装新版本 |
-| Anthropic 协议桥实测 | 已过编译 / clippy / 单测，但未在真实网关上跑通过端到端请求 |
+| Anthropic 协议桥实测 | 转换 payload 已对真实网关验证 7 个场景，但未走过应用内的 Rust 链路 |
 
 ## 仍保留的 CC Switch 能力
 

@@ -148,9 +148,23 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 ## 未完成 / 待验证
 
-- **Codex ↔ Anthropic 协议桥未做真实端到端验证。**
-  已过编译 / clippy / 单测，但从未跑通过一次真实请求。
-  验证方式：新建 Codex 供应商 → 上游协议选 `Anthropic Messages` → 填可用网关与模型名 → 用 Codex 实跑。
+- **Codex ↔ Anthropic 协议桥：转换 payload 已验证，应用内链路仍未跑过。**
+
+  2026-07-27 对真实网关（智谱 `open.bigmodel.cn/api/anthropic`，模型 `glm-5.2`）
+  验证了 7 个场景，全部返回 200：非流式、流式 SSE（事件序列完整到
+  `message_stop`）、工具调用（`stop_reason: tool_use` 且参数正确）、`[1m]`
+  标记剥离、空 text block 过滤、`tool_result` 多轮回传、`cache_control` 注入。
+
+  **但这是用 Python 按 `transform_codex_anthropic.rs` 的逻辑复现 payload 测的**，
+  验证的是「转换后的请求能被 Anthropic 网关接受、响应能被正确解析」。
+  Rust 实现与复现之间若有偏差，这个测试发现不了。
+
+  仍待验证：在应用里真配一个 `Anthropic Messages` 格式的 Codex 供应商，用
+  Codex 实跑一轮，走完整的 Rust 转换链路。
+
+  另：缓存未命中（`cache_creation=0 / cache_read=0`），可能是该中转不支持
+  prompt caching，也可能是测试 prompt 未达 Anthropic 的 1024 token 缓存下限。
+  这条没验证成功，但只影响成本，不影响功能。
 - **Claude Desktop MCP 已回退，不再是待办。**
   详见上方「Claude Desktop MCP：尝试过并已回退」。gateway 接管导致本地
   `mcpServers` 被忽略，与格式无关，上游同样不支持。
