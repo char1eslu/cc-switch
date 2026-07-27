@@ -130,8 +130,12 @@ fork 独有的迁移：
 - **Codex ↔ Anthropic 协议桥未做真实端到端验证。**
   已过编译 / clippy / 单测，但从未跑通过一次真实请求。
   验证方式：新建 Codex 供应商 → 上游协议选 `Anthropic Messages` → 填可用网关与模型名 → 用 Codex 实跑。
-- **Claude Desktop MCP 未确认在 Desktop 侧真正可见。**
-  已确认 DB 与 3P 配置文件写入正确；重启 Claude Desktop 后工具是否出现待验证。
+- **Claude Desktop MCP 已定位根因并修复。**
+  根因：Claude Desktop 的 `claude_desktop_config.json` 只接受 stdio 服务器
+  （校验 schema `gD` 要求 `command` 字段），HTTP/SSE 远程服务器会被跳过并报
+  "not valid MCP server configurations"。修复：`claude_desktop.rs` 同步时把
+  HTTP/SSE 服务器包装成 `npx mcp-remote` stdio 桥，headers 以 `--header` 传递。
+  待验证：重启 3P Desktop 后远程工具是否出现（依赖本机有 Node.js / npx）。
 
 ## 验证手段
 
