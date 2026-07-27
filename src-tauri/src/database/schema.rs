@@ -472,7 +472,9 @@ impl Database {
                         Self::set_user_version(conn, 18)?;
                     }
                     18 => {
-                        log::info!("迁移数据库从 v18 到 v19（删除 Desktop MCP 同步的列，功能已回退）");
+                        log::info!(
+                            "迁移数据库从 v18 到 v19（删除 Desktop MCP 同步的列，功能已回退）"
+                        );
                         Self::migrate_v18_to_v19(conn)?;
                         Self::set_user_version(conn, 19)?;
                     }
