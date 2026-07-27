@@ -713,7 +713,6 @@ command = "echo"
             apps: cc_switch_lib::McpApps {
                 claude: false,
                 codex: false, // 初始未启用
-                claude_desktop: false,
             },
             description: None,
             homepage: None,
@@ -840,7 +839,6 @@ fn import_from_claude_merges_into_config() {
             apps: cc_switch_lib::McpApps {
                 claude: false, // 初始未启用
                 codex: false,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,

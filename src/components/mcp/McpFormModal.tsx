@@ -65,19 +65,16 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
 
   const [enabledApps, setEnabledApps] = useState<{
     claude: boolean;
-    "claude-desktop": boolean;
     codex: boolean;
   }>(() => {
     if (initialData?.apps) {
       return {
         claude: initialData.apps.claude,
-        "claude-desktop": initialData.apps["claude-desktop"] ?? false,
         codex: initialData.apps.codex,
       };
     }
     return {
       claude: defaultEnabledApps.includes("claude"),
-      "claude-desktop": defaultEnabledApps.includes("claude-desktop"),
       codex: defaultEnabledApps.includes("codex"),
     };
   });
@@ -544,27 +541,6 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                     className="text-sm text-foreground cursor-pointer select-none"
                   >
                     {t("mcp.unifiedPanel.apps.claude")}
-                  </label>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-claude-desktop"
-                    checked={enabledApps["claude-desktop"]}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({
-                        ...enabledApps,
-                        "claude-desktop": checked,
-                      })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-claude-desktop"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.claude-desktop", {
-                      defaultValue: "Claude Desktop",
-                    })}
                   </label>
                 </div>
 

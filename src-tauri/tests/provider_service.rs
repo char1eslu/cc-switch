@@ -163,7 +163,6 @@ command = "say"
             apps: McpApps {
                 claude: false,
                 codex: true,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,

@@ -5,23 +5,15 @@ use std::str::FromStr;
 use crate::services::skill::SkillStore;
 
 /// MCP 服务器应用状态（标记应用到哪些客户端）
+///
+/// 不含 ClaudeDesktop：cc-switch 管理的 3P Desktop 实例走 gateway 模式，
+/// 本地 mcpServers 被忽略，MCP 不同步到 Desktop。详见 mcp 模块顶部说明。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct McpApps {
     #[serde(default)]
     pub claude: bool,
     #[serde(default)]
     pub codex: bool,
-    // 前端按 AppId 索引 apps（"claude-desktop"），必须与 AppType /
-    // McpConfig 的 JSON 键一致。少了这个 rename，UI 读到的是 undefined：
-    // 图标点不动、编辑框勾不上，而 toggle 命令走 AppType::from_str 仍能写库，
-    // 于是表现为「数据已存但界面毫无反应」。
-    #[serde(
-        rename = "claude-desktop",
-        alias = "claudeDesktop",
-        alias = "claude_desktop",
-        default
-    )]
-    pub claude_desktop: bool,
 }
 
 impl McpApps {
@@ -30,7 +22,7 @@ impl McpApps {
         match app {
             AppType::Claude => self.claude,
             AppType::Codex => self.codex,
-            AppType::ClaudeDesktop => self.claude_desktop,
+            AppType::ClaudeDesktop => false,
         }
     }
 
@@ -39,7 +31,7 @@ impl McpApps {
         match app {
             AppType::Claude => self.claude = enabled,
             AppType::Codex => self.codex = enabled,
-            AppType::ClaudeDesktop => self.claude_desktop = enabled,
+            AppType::ClaudeDesktop => {}
         }
     }
 
@@ -52,15 +44,12 @@ impl McpApps {
         if self.codex {
             apps.push(AppType::Codex);
         }
-        if self.claude_desktop {
-            apps.push(AppType::ClaudeDesktop);
-        }
         apps
     }
 
     /// 检查是否所有应用都未启用
     pub fn is_empty(&self) -> bool {
-        !self.claude && !self.codex && !self.claude_desktop
+        !self.claude && !self.codex
     }
 }
 

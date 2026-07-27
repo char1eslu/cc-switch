@@ -104,7 +104,8 @@ impl McpService {
                 mcp::sync_single_server_to_claude(&Default::default(), &server.id, &server.server)?;
             }
             AppType::ClaudeDesktop => {
-                mcp::sync_single_server_to_claude_desktop(&server.id, &server.server)?;
+                // 3P Desktop 走 gateway 模式，本地 mcpServers 被忽略，不同步。
+                // 详见 mcp 模块顶部说明。
             }
             AppType::Codex => {
                 // Codex uses TOML format, must use the correct function
@@ -130,7 +131,9 @@ impl McpService {
     fn remove_server_from_app(_state: &AppState, id: &str, app: &AppType) -> Result<(), AppError> {
         match app {
             AppType::Claude => mcp::remove_server_from_claude(id)?,
-            AppType::ClaudeDesktop => mcp::remove_server_from_claude_desktop(id)?,
+            AppType::ClaudeDesktop => {
+                // 3P Desktop 走 gateway 模式，本地 mcpServers 被忽略，无需移除。
+            }
             AppType::Codex => mcp::remove_server_from_codex(id)?,
         }
         Ok(())
@@ -138,14 +141,18 @@ impl McpService {
 
     /// 手动同步所有启用的 MCP 服务器到对应的应用，并移除 DB 已知但禁用的项。
     /// Reconcile 语义（逐 app 独立判断）：
+    /// Reconcile 语义（逐 app 独立判断）：
     /// 1. DB 已知 + 该 app 启用 → 写入/更新 live
     /// 2. DB 已知 + 该 app 禁用 → 从 live 移除
     /// 3. DB 不认识的 live 条目  → 保留（本函数只遍历 DB，天然不碰未知 id）
+    ///
+    /// 不含 ClaudeDesktop：3P 实例走 gateway 模式，本地 mcpServers 被忽略，
+    /// 同步无意义。详见 mcp 模块顶部说明。
     pub fn sync_all_enabled(state: &AppState) -> Result<(), AppError> {
         let servers = Self::get_all_servers(state)?;
 
         let mut failures: Vec<String> = Vec::new();
-        for app in [AppType::Claude, AppType::ClaudeDesktop, AppType::Codex] {
+        for app in [AppType::Claude, AppType::Codex] {
             if let Err(err) = Self::project_servers_to_app(state, &servers, &app) {
                 log::warn!("同步 MCP 到 {app:?} 失败: {err}");
                 failures.push(format!("{}: {err}", app.as_str()));

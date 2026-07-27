@@ -1511,8 +1511,7 @@
       "importSuccess": "成功导入 {{count}} 个 MCP 服务器",
       "apps": {
         "claude": "Claude",
-        "codex": "Codex",
-        "claude-desktop": "Claude Desktop"
+        "codex": "Codex"
       }
     },
     "userLevelPath": "用户级 MCP 配置路径",

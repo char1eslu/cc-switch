@@ -299,7 +299,6 @@ command = "say"
             apps: McpApps {
                 claude: false,
                 codex: true, // 启用 Codex,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,

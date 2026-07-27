@@ -418,7 +418,6 @@ type = "stdio"
     expect(entry.enabled).toBe(true);
     expect(entry.apps).toEqual({
       claude: true,
-      "claude-desktop": false,
       codex: false,
     });
     expect(onSave).toHaveBeenCalledTimes(1);
@@ -454,7 +453,6 @@ type = "stdio"
     expect(entry.id).toBe("no-apps");
     expect(entry.apps).toEqual({
       claude: false,
-      "claude-desktop": false,
       codex: false,
     });
     expect(onSave).toHaveBeenCalledTimes(1);

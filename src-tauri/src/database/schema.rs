@@ -64,8 +64,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS mcp_servers (
             id TEXT PRIMARY KEY, name TEXT NOT NULL, server_config TEXT NOT NULL,
             description TEXT, homepage TEXT, docs TEXT, tags TEXT NOT NULL DEFAULT '[]',
-            enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0,
-            enabled_claude_desktop BOOLEAN NOT NULL DEFAULT 0
+            enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0
         )",
             [],
         )
@@ -472,6 +471,11 @@ impl Database {
                         Self::migrate_v17_to_v18(conn)?;
                         Self::set_user_version(conn, 18)?;
                     }
+                    18 => {
+                        log::info!("迁移数据库从 v18 到 v19（删除 Desktop MCP 同步的列，功能已回退）");
+                        Self::migrate_v18_to_v19(conn)?;
+                        Self::set_user_version(conn, 19)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -526,12 +530,6 @@ impl Database {
             conn,
             "mcp_servers",
             "enabled_codex",
-            "BOOLEAN NOT NULL DEFAULT 0",
-        )?;
-        Self::add_column_if_missing(
-            conn,
-            "mcp_servers",
-            "enabled_claude_desktop",
             "BOOLEAN NOT NULL DEFAULT 0",
         )?;
         // prompts 表
@@ -1255,23 +1253,12 @@ impl Database {
     }
 
     /// v16 -> v17：MCP 服务器新增 Claude Desktop 启用列。
+    /// v16 -> v17：历史遗留空迁移。
     ///
-    /// 必须走版本化迁移，不能只写在 `migrate_v0_to_v1` 里：那条只对 v0/全新库
-    /// 执行，已有库（user_version 已是 16）永远不会跑到，缺列会让 mcp_servers
-    /// 的 SELECT 直接失败、界面上 MCP 列表整体读不出来。
-    fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
-        // 表缺失时跳过而不是报错：迁移链必须能跑在只建了部分表的库上
-        // （测试用的最小库就是这样），否则整条链在这里断掉。
-        // create_tables 已包含该列，建表路径不依赖这里。
-        if !Self::table_exists(conn, "mcp_servers")? {
-            return Ok(());
-        }
-        Self::add_column_if_missing(
-            conn,
-            "mcp_servers",
-            "enabled_claude_desktop",
-            "BOOLEAN NOT NULL DEFAULT 0",
-        )?;
+    /// 此前用于给 mcp_servers 加 enabled_claude_desktop 列以支持 Claude Desktop
+    /// MCP 同步。后证实 3P Desktop 走 gateway 模式，本地 mcpServers 被忽略，
+    /// 该功能不可行已回退（见 v18->v19 删列）。保留空迁移以维持版本号连续。
+    fn migrate_v16_to_v17(_conn: &Connection) -> Result<(), AppError> {
         Ok(())
     }
 
@@ -1341,6 +1328,30 @@ impl Database {
             }
         }
 
+        Ok(())
+    }
+
+    /// v18 -> v19：删除 mcp_servers.enabled_claude_desktop 列。
+    ///
+    /// 该列是 v16->v17 为「MCP 同步到 Claude Desktop」加的，后证实 3P Desktop
+    /// 走 gateway 模式、本地 mcpServers 被忽略，功能不可行已回退。删列让
+    /// schema 与代码一致，避免遗留 NOT NULL 列干扰 INSERT OR REPLACE。
+    /// 列不存在时跳过（全新库或已迁移库）。
+    fn migrate_v18_to_v19(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "mcp_servers")? {
+            return Ok(());
+        }
+        if !Self::has_column(conn, "mcp_servers", "enabled_claude_desktop")? {
+            return Ok(());
+        }
+        conn.execute(
+            "ALTER TABLE \"mcp_servers\" DROP COLUMN \"enabled_claude_desktop\";",
+            [],
+        )
+        .map_err(|e| {
+            AppError::Database(format!("删除 mcp_servers.enabled_claude_desktop 失败: {e}"))
+        })?;
+        log::info!("已删除 mcp_servers.enabled_claude_desktop（Desktop MCP 同步已回退）");
         Ok(())
     }
 

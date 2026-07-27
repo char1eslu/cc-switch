@@ -225,7 +225,6 @@ command = "echo"
             apps: McpApps {
                 claude: false,
                 codex: true,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,
@@ -317,7 +316,6 @@ fn set_mcp_enabled_for_codex_writes_live_config() {
             apps: McpApps {
                 claude: false,
                 codex: false, // 初始未启用,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,
@@ -380,7 +378,6 @@ fn enabling_codex_mcp_skips_when_codex_dir_missing() {
             apps: McpApps {
                 claude: false,
                 codex: false,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,
@@ -423,7 +420,6 @@ fn upsert_mcp_server_disabling_app_removes_from_claude_live_config() {
             apps: McpApps {
                 claude: true,
                 codex: false,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,
@@ -455,7 +451,6 @@ fn upsert_mcp_server_disabling_app_removes_from_claude_live_config() {
             apps: McpApps {
                 claude: false,
                 codex: false,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,
@@ -551,7 +546,6 @@ fn enabling_claude_mcp_skips_when_claude_config_absent() {
             apps: McpApps {
                 claude: false,
                 codex: false,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,
@@ -610,7 +604,6 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
             apps: McpApps {
                 claude: false,
                 codex: false,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,
@@ -630,7 +623,6 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
             apps: McpApps {
                 claude: true,
                 codex: false,
-                claude_desktop: false,
             },
             description: None,
             homepage: None,
