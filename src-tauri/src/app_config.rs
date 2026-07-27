@@ -566,7 +566,7 @@ impl MultiAppConfig {
     /// 适用于「老版本已经生成过 config.json，但当时还没有 Prompt 功能」的升级场景。
     /// 判定规则：
     /// - 仅当所有应用的 prompts 都为空时才尝试导入（避免打扰已经在使用 Prompt 功能的用户）
-    /// - 每个应用最多导入一次，对应各自的提示词文件（如 CLAUDE.md/AGENTS.md/GEMINI.md）
+    /// - 每个应用最多导入一次，对应各自的提示词文件（如 CLAUDE.md / AGENTS.md）
     ///
     /// 返回值：
     /// - Ok(true)  表示至少有一个应用成功导入了提示词
