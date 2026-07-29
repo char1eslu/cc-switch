@@ -2778,6 +2778,18 @@ impl SkillService {
                 continue;
             }
 
+            // zip-slip 防护：压缩包条目名里可能含 `..`，join 后逃出 dest。
+            // 逐组件比 contains("..") 更稳：同时挡掉 `a/./b`、`a/.../b` 这类变形
+            // （Windows 上 root_name 可含反斜杠而被当作多段，逃逸深度随之放大）。
+            // join 之前必须对实际使用的相对路径再验一次。
+            if std::path::Path::new(relative_path)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                log::warn!("跳过越界的压缩包条目: {}", file.name());
+                continue;
+            }
+
             let outpath = dest.join(relative_path);
 
             if file.is_symlink() {

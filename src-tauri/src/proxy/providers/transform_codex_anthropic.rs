@@ -1417,13 +1417,29 @@ pub fn anthropic_sse_to_message_value(body: &str) -> Result<Value, ProxyError> {
         };
         match value.get("type").and_then(|t| t.as_str()).unwrap_or("") {
             "message_start" => {
-                if let Some(msg) = value.get("message") {
+                // 只接受 object message：畸形上游可能发 scalar/array，随后
+                // `message["content"] = …` 的索引赋值会对非 object Value panic。
+                if let Some(msg) = value.get("message").filter(|m| m.is_object()) {
                     *message = Some(msg.clone());
                 }
             }
             "content_block_start" => {
                 if let Some(index) = value.get("index").and_then(|v| v.as_u64()) {
-                    let block = value.get("content_block").cloned().unwrap_or(json!({}));
+                    // 归一化成 object：后续的索引赋值（`["text"]`/`["signature"]`/`["input"]`）
+                    // 都要求 JSON object，所以畸形的非 object block 不能原样存（下一个 delta 会 panic）。
+                    // 用 `type: "text"` 而非空对象兜底：随后的 delta 通常正常，无 type 的 block
+                    // 会被最终 Responses 转换静默丢弃，把乱掉的 block 头变成无输出的 completed 响应。
+                    let block = match value.get("content_block") {
+                        Some(block) if block.is_object() => block.clone(),
+                        malformed => {
+                            if malformed.is_some() {
+                                log::warn!(
+                                    "Anthropic upstream sent a non-object content_block at index {index}; recovering it as a text block"
+                                );
+                            }
+                            json!({ "type": "text" })
+                        }
+                    };
                     blocks.insert(index, block);
                     json_accum.entry(index).or_default();
                 }

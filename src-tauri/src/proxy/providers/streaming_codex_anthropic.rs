@@ -589,6 +589,20 @@ pub(crate) fn responses_sse_events_from_anthropic_message(
     tool_context: CodexToolContext,
 ) -> Vec<Bytes> {
     let mut state = AnthropicToResponsesState::with_tool_context(tool_context);
+
+    // 下面的整个转换都假设 body 是 Anthropic message object。
+    // 行为异常的网关可能在 stream:true 时仍返回顶层 JSON 数组/标量（HTTP 200）；
+    // 对这种非 object 做 `message_start["content"] = …` 索引赋值会 panic。优雅退出。
+    if !body.is_object() {
+        return state
+            .failed_event(
+                "upstream returned a non-object Anthropic message body".to_string(),
+                Some("invalid_response".to_string()),
+            )
+            .into_iter()
+            .collect();
+    }
+
     if body.get("type").and_then(Value::as_str) == Some("error") || body.get("error").is_some() {
         let (message, error_type) = extract_anthropic_sse_error(body);
         return state

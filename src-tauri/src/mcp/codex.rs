@@ -334,6 +334,74 @@ pub fn sync_enabled_to_codex(config: &MultiAppConfig) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 把单个 MCP server 表写入 `[mcp_servers]`，并保证该键是「表」。
+///
+/// `~/.codex/config.toml` 是用户可手改的：若 `mcp_servers` 存在但不是表
+/// （如 `mcp_servers = "x"` / `[]`），仅判 `contains_key` 会跳过重建，随后的
+/// `doc["mcp_servers"][id] = …` 会触发 toml_edit 的 `IndexMut` panic
+/// （panic 发生在 Tauri command 内、跨 FFI 展开）。这里统一归一化后再插入。
+fn upsert_mcp_server_table(
+    doc: &mut toml_edit::DocumentMut,
+    id: &str,
+    table: toml_edit::Table,
+) -> Result<(), AppError> {
+    if doc
+        .get_mut("mcp_servers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .is_none()
+    {
+        // 键存在但不是表时，归一化会丢掉用户手写的那个值——必须留痕，
+        // 否则用户只会看到自己的改动凭空消失。
+        if doc
+            .get("mcp_servers")
+            .is_some_and(|item| !item.is_none())
+        {
+            log::warn!("config.toml 的 mcp_servers 不是表，已重置为空表");
+        }
+        doc["mcp_servers"] = toml_edit::table();
+    }
+    let servers = doc
+        .get_mut("mcp_servers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .ok_or_else(|| AppError::McpValidation("config.toml 的 mcp_servers 不是表".to_string()))?;
+    servers.insert(id, toml_edit::Item::Table(table));
+    Ok(())
+}
+
+/// 从 `[mcp_servers]`（以及历史错误格式 `[mcp.servers]`）中删除单个 MCP server。
+///
+/// 与 `upsert_mcp_server_table` 对称地使用 `as_table_like_mut`：用户若把配置写成
+/// inline table（`mcp_servers = { foo = {...} }`，TOML 合法），`as_table_mut` 会返回
+/// None 导致删除**静默失效**——界面提示已移除，条目却还在文件里，Codex 下次启动照样
+/// 加载。这比 panic 更隐蔽，因为用户往往正是发现某个 MCP 有问题才来关它的。
+fn remove_mcp_server_from_doc(doc: &mut toml_edit::DocumentMut, id: &str) {
+    if let Some(item) = doc.get_mut("mcp_servers") {
+        // `Item::None` 是 toml_edit 的占位形态，不是用户写下的值——对它告警是噪音。
+        let user_authored = !item.is_none();
+        match item.as_table_like_mut() {
+            Some(mcp_servers) => {
+                mcp_servers.remove(id);
+            }
+            None if user_authored => {
+                log::warn!("config.toml 的 mcp_servers 不是表，无法删除服务器 '{id}'");
+            }
+            None => {}
+        }
+    }
+
+    // 同时清理可能存在于错误位置的数据：[mcp.servers]（如果存在）
+    if let Some(mcp_table) = doc.get_mut("mcp").and_then(|t| t.as_table_like_mut()) {
+        if let Some(servers) = mcp_table
+            .get_mut("servers")
+            .and_then(|s| s.as_table_like_mut())
+        {
+            if servers.remove(id).is_some() {
+                log::warn!("从错误的 MCP 格式 [mcp.servers] 中清理了服务器 '{id}'");
+            }
+        }
+    }
+}
+
 /// 将单个 MCP 服务器同步到 Codex live 配置
 /// 始终使用 Codex 官方格式 [mcp_servers]，并清理可能存在的错误格式 [mcp.servers]
 pub fn sync_single_server_to_codex(
@@ -344,7 +412,6 @@ pub fn sync_single_server_to_codex(
     if !should_sync_codex_mcp() {
         return Ok(());
     }
-    use toml_edit::Item;
 
     // 读取现有的 config.toml；若已有配置语法无效，直接报错，不覆盖用户文件。
     let config_path = crate::codex_config::get_codex_config_path();
@@ -369,16 +436,9 @@ pub fn sync_single_server_to_codex(
         }
     }
 
-    // 确保 [mcp_servers] 表存在
-    if !doc.contains_key("mcp_servers") {
-        doc["mcp_servers"] = toml_edit::table();
-    }
-
     // 将 JSON 服务器规范转换为 TOML 表
     let toml_table = json_server_to_toml_table(server_spec)?;
-
-    // 使用唯一正确的格式：[mcp_servers]
-    doc["mcp_servers"][id] = Item::Table(toml_table);
+    upsert_mcp_server_table(&mut doc, id, toml_table)?;
 
     // 写回文件
     let new_text = doc.to_string();
@@ -411,19 +471,7 @@ pub fn remove_server_from_codex(id: &str) -> Result<(), AppError> {
         }
     };
 
-    // 从正确的位置删除：[mcp_servers]
-    if let Some(mcp_servers) = doc.get_mut("mcp_servers").and_then(|s| s.as_table_mut()) {
-        mcp_servers.remove(id);
-    }
-
-    // 同时清理可能存在于错误位置的数据：[mcp.servers]（如果存在）
-    if let Some(mcp_table) = doc.get_mut("mcp").and_then(|t| t.as_table_mut()) {
-        if let Some(servers) = mcp_table.get_mut("servers").and_then(|s| s.as_table_mut()) {
-            if servers.remove(id).is_some() {
-                log::warn!("从错误的 MCP 格式 [mcp.servers] 中清理了服务器 '{id}'");
-            }
-        }
-    }
+    remove_mcp_server_from_doc(&mut doc, id);
 
     // 写回文件
     let new_text = doc.to_string();
