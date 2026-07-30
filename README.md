@@ -6,6 +6,7 @@
 
 [![Fork branch](https://img.shields.io/badge/fork-dev-blue)](https://github.com/char1eslu/cc-switch/tree/dev)
 [![Upstream](https://img.shields.io/badge/upstream-farion1231%2Fcc--switch-lightgrey)](https://github.com/farion1231/cc-switch)
+[![CI](https://github.com/char1eslu/cc-switch/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/char1eslu/cc-switch/actions/workflows/ci.yml)
 [![macOS arm64 ad hoc](https://github.com/char1eslu/cc-switch/actions/workflows/build-macos-ad-hoc.yml/badge.svg?branch=dev)](https://github.com/char1eslu/cc-switch/actions/workflows/build-macos-ad-hoc.yml)
 
 </div>
@@ -113,6 +114,9 @@ Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
 - 简体中文 / English UI、深浅色主题和 Tauri 桌面壳。
 
 ## 构建和下载
+
+当前 fork 的 bundle 版本仍为 `3.16.3`。这里的手动 macOS arm64 ad-hoc
+产物不是上游 `v3.19.0` 的官方发布包，也不包含上游已裁剪的应用面。
 
 ### GitHub Actions 自用构建
 

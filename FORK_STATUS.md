@@ -2,25 +2,26 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-07-27
+最后更新：2026-07-30
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已搬运到的上游提交 | `878c26f3` (`feat(proxy): extend tool-result media handling to all conversion bridges`) |
-| 评估过但决定跳过的上游 head | `934a2d03` |
-| 本 fork 分支 | `dev`，当时 head `9ac11113` |
+| 已完整评估到的上游 head | `c0ff89b9`（`v3.19.0`） |
+| 最近一轮已适配的上游安全修复 | `ff3bc242` 及 deeplink / SQL import / terminal quoting / prototype pollution 修复链 |
+| 本 fork 分支 | `dev`（以 `origin/dev` 为准，不在文档里固定易过期的 head） |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 878c26f3..upstream/main
+git log --oneline c0ff89b9..upstream/main
 ```
 
-`878c26f3..934a2d03` 之间的 7 个提交已逐个看过，结论见下方「已评估并跳过」，不必重复。
-若上游 head 已超过 `934a2d03`，只需看 `934a2d03..upstream/main`。
+截至 2026-07-30，上游 `v3.19.0` 已逐项评估。安全修复按 fork 的三应用结构
+cherry-pick 或手工适配；发行版本、updater / R2、赞助商预设、已裁剪应用和
+不适合三应用 UI 的提交均明确跳过。下次只需检查 `c0ff89b9..upstream/main`。
 
 ## 裁剪边界（决定哪些上游提交天然不用看）
 
@@ -44,7 +45,7 @@ git log --oneline 878c26f3..upstream/main
 | | SCHEMA_VERSION |
 | --- | --- |
 | 本 fork | **19** |
-| 上游 (`934a2d03`) | 16 |
+| 上游 (`v3.19.0`, `c0ff89b9`) | 16 |
 
 fork 独有的迁移：
 
@@ -145,6 +146,33 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 | `b0482320` | 刷新赞助商域名与推荐链接 | 赞助商内容 |
 | `934a2d03` | 同步赞助商列表到各应用与 README | 赞助商内容 |
 | `414b7150` | 发布产物镜像到 Cloudflare R2 | fork 不做正式分发 |
+
+## 2026-07-30 同步审计（`934a2d03..c0ff89b9`）
+
+### 已搬运或按 fork 结构适配
+
+| 上游提交 | fork 提交 | 处理 |
+| --- | --- | --- |
+| `c98913df` | `2c035726` | SQL 导入拒绝跨文件语句，patch-equivalent |
+| `35486afd` | `4ba0f254` | terminal cwd 使用 POSIX 单引号转义，patch-equivalent |
+| `cd17912f` | `72ca87b8`, `e7d85ad0` | 防止 common config walker 触碰 `Object.prototype`，并补回冲突遗漏的 Codex model TOML 转义 |
+| `6dbb944b` | `7ca36906` | deeplink 风险分级 helper，patch-equivalent |
+| `a443eae9` | `064e543b` | 导入确认显示 MCP args/env 并标记风险，按两语言和三应用结构适配 |
+| `19bf236e` | `f62f53ad` | URL-safe Base64 解码，patch-equivalent |
+| `cfa90f39` | `53615055` | usage scripts 默认禁用并显示代码，按 fork 结构适配 |
+| `ff3bc242` | `4f96131d` | 只搬适用的协议桥 panic、Codex MCP 非表 panic、skill zip-slip；跳过已裁剪应用部分 |
+
+### 已评估并跳过或延期
+
+| 上游提交 / 范围 | 结论 |
+| --- | --- |
+| `708b3879`, `2b2f2cfa`, `414b7150` | 上游正式发布、updater 和 R2 镜像链；fork 只做手动 ad-hoc artifact |
+| `12b972a6` | models.dev 自动定价同步涉及 20 个文件和独立持久化架构；非当前需求，延期 |
+| `87b0e3fb` | 仅修上游 ZIP 测试的 TMPDIR 并发隔离；fork CI 未出现对应 flaky failure，延期 |
+| `56fb46c0` | Codex parent rollout timeline cache 是大型性能改造，fork 的 usage 实现差异很大，延期 |
+| `f5f4281d` | 上游为 8 个应用永久改成 icon-only；fork 只有 3 个应用，保留名称并按宽度自动收起更易用 |
+| `6b13d018`, `3b9d0593`, `c0ff89b9` | 上游 `v3.19.0` 版本号、CHANGELOG 和发行说明；会误报已裁剪功能，跳过 |
+| sponsor / preset / Gemini / Grok Build / OpenClaw-only commits | 超出 fork 的三应用裁剪边界 |
 
 ## 未完成 / 待验证
 
