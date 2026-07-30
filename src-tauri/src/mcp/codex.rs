@@ -352,10 +352,7 @@ fn upsert_mcp_server_table(
     {
         // 键存在但不是表时，归一化会丢掉用户手写的那个值——必须留痕，
         // 否则用户只会看到自己的改动凭空消失。
-        if doc
-            .get("mcp_servers")
-            .is_some_and(|item| !item.is_none())
-        {
+        if doc.get("mcp_servers").is_some_and(|item| !item.is_none()) {
             log::warn!("config.toml 的 mcp_servers 不是表，已重置为空表");
         }
         doc["mcp_servers"] = toml_edit::table();
