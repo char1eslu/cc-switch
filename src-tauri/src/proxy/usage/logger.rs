@@ -424,6 +424,61 @@ mod tests {
     }
 
     #[test]
+    fn claude_desktop_proxy_replaces_matching_session_log_row() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model, input_tokens,
+                    output_tokens, cache_read_tokens, cache_creation_tokens,
+                    latency_ms, status_code, created_at, data_source
+                 ) VALUES ('session:msg_desktop', '_session', 'claude',
+                    'claude-sonnet-4-5', 10, 5, 2, 1, 0, 200, 1, 'session_log')",
+                [],
+            )?;
+        }
+
+        let usage = TokenUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 2,
+            cache_creation_tokens: 1,
+            model: Some("claude-sonnet-4-5".to_string()),
+            message_id: Some("msg_desktop".to_string()),
+        };
+        let request_id = usage.dedup_request_id();
+        UsageLogger::new(&db).log_with_calculation(
+            request_id,
+            "desktop-provider".to_string(),
+            "claude-desktop".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            usage,
+            Decimal::ONE,
+            10,
+            None,
+            200,
+            None,
+            Some("claude-desktop".to_string()),
+            false,
+        )?;
+
+        let conn = crate::database::lock_conn!(db.conn);
+        let (count, source, app_type): (i64, String, String) = conn.query_row(
+            "SELECT COUNT(*), data_source, app_type FROM proxy_request_logs
+             WHERE request_id = 'session:msg_desktop'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(count, 1);
+        assert_eq!(source, "proxy");
+        assert_eq!(app_type, "claude-desktop");
+        Ok(())
+    }
+
+    #[test]
     fn test_log_error() -> Result<(), AppError> {
         let db = Database::memory()?;
         let logger = UsageLogger::new(&db);
