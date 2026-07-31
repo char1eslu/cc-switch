@@ -1036,6 +1036,7 @@ impl ProviderService {
         // Use effective current provider (validated existence) to ensure backfill targets valid provider
         let current_id = crate::settings::get_effective_current_provider(&state.db, &app_type)?;
 
+        let mut backfill_completed = false;
         if let Some(current_id) = current_id {
             if current_id != id {
                 // Only backfill when switching to a different provider
@@ -1053,6 +1054,8 @@ impl ProviderService {
                             result
                                 .warnings
                                 .push(format!("backfill_failed:{current_id}"));
+                        } else {
+                            backfill_completed = true;
                         }
                     }
                 }
@@ -1064,6 +1067,25 @@ impl ProviderService {
 
         // Sync to live.
         write_live_with_common_config(state.db.as_ref(), &app_type, provider)?;
+
+        // A config-only official provider leaves the outgoing third-party key in
+        // auth.json. Remove it only after that key has been safely backfilled.
+        if matches!(app_type, AppType::Codex)
+            && backfill_completed
+            && provider.category.as_deref() == Some("official")
+        {
+            let db_auth = provider.settings_config.get("auth");
+            match crate::codex_config::clear_stale_codex_live_auth_after_official_switch(
+                db_auth.unwrap_or(&serde_json::Value::Null),
+            ) {
+                Ok(true) => log::info!(
+                    "Removed stale third-party auth.json after switching to official Codex provider '{}'",
+                    provider.id
+                ),
+                Ok(false) => {}
+                Err(e) => log::warn!("Failed to clean stale Codex auth.json: {e}"),
+            }
+        }
 
         // Sync MCP
         McpService::sync_all_enabled(state)?;
