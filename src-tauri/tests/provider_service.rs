@@ -971,7 +971,9 @@ fn provider_service_reswitch_current_official_keeps_live_auth() {
     let auth_value: serde_json::Value =
         read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("auth.json must survive");
     assert_eq!(
-        auth_value.get("OPENAI_API_KEY").and_then(|value| value.as_str()),
+        auth_value
+            .get("OPENAI_API_KEY")
+            .and_then(|value| value.as_str()),
         Some("residue-key"),
         "without a fresh backfill the live auth file must remain untouched"
     );
@@ -986,14 +988,16 @@ fn read_codex_live_settings_tolerates_missing_auth_when_config_file_exists() {
     assert!(cc_switch_lib::read_codex_live_settings().is_err());
 
     let config_path = cc_switch_lib::get_codex_config_path();
-    std::fs::create_dir_all(config_path.parent().expect("codex dir"))
-        .expect("create codex dir");
+    std::fs::create_dir_all(config_path.parent().expect("codex dir")).expect("create codex dir");
     std::fs::write(&config_path, "").expect("write empty config.toml");
 
     let live = cc_switch_lib::read_codex_live_settings()
         .expect("an existing empty config.toml must be readable without auth.json");
     assert_eq!(live.get("auth"), Some(&json!({})));
-    assert_eq!(live.get("config").and_then(|value| value.as_str()), Some(""));
+    assert_eq!(
+        live.get("config").and_then(|value| value.as_str()),
+        Some("")
+    );
 }
 
 #[test]
