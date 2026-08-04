@@ -932,15 +932,25 @@ fn legacy_fork_v19_is_normalized_without_losing_core_rows() {
         [],
     )
     .expect("seed mcp");
-    for column in [
-        "enabled_gemini",
-        "enabled_grokbuild",
-        "enabled_opencode",
-        "enabled_hermes",
-    ] {
-        conn.execute(&format!("ALTER TABLE mcp_servers DROP COLUMN {column}"), [])
-            .expect("remove official column from legacy fixture");
+    for table in ["mcp_servers", "skills"] {
+        for column in [
+            "enabled_gemini",
+            "enabled_grokbuild",
+            "enabled_opencode",
+            "enabled_hermes",
+        ] {
+            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
+                .expect("remove official column from legacy fixture");
+        }
     }
+    conn.execute_batch(
+        "DROP TABLE proxy_config;
+         CREATE TABLE proxy_config (
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex')),
+            max_retries INTEGER NOT NULL DEFAULT 3
+         );",
+    )
+    .expect("restore legacy two-app proxy constraint");
     Database::set_user_version(&conn, 19).expect("set legacy fork version");
 
     Database::apply_schema_migrations_on_conn(&conn).expect("normalize legacy fork db");
@@ -970,9 +980,53 @@ fn legacy_fork_v19_is_normalized_without_losing_core_rows() {
 }
 
 #[test]
+fn future_v19_without_complete_legacy_fingerprint_is_rejected() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create current tables");
+    for column in [
+        "enabled_gemini",
+        "enabled_grokbuild",
+        "enabled_opencode",
+        "enabled_hermes",
+    ] {
+        conn.execute(&format!("ALTER TABLE mcp_servers DROP COLUMN {column}"), [])
+            .expect("simulate an incomplete or hand-edited future schema");
+    }
+    Database::set_user_version(&conn, 19).expect("set future version");
+
+    let error = Database::apply_schema_migrations_on_conn(&conn)
+        .expect_err("incomplete legacy fingerprint must not be downgraded");
+
+    assert!(error.to_string().contains("数据库版本过新"));
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version after rejection"),
+        19
+    );
+}
+
+#[test]
 fn legacy_fork_v17_is_distinguished_from_future_upstream_v17() {
     let conn = Connection::open_in_memory().expect("open in-memory db");
     Database::create_tables_on_conn(&conn).expect("create tables");
+    for table in ["mcp_servers", "skills"] {
+        for column in [
+            "enabled_gemini",
+            "enabled_grokbuild",
+            "enabled_opencode",
+            "enabled_hermes",
+        ] {
+            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
+                .expect("remove official column from legacy fixture");
+        }
+    }
+    conn.execute_batch(
+        "DROP TABLE proxy_config;
+         CREATE TABLE proxy_config (
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex')),
+            max_retries INTEGER NOT NULL DEFAULT 3
+         );",
+    )
+    .expect("restore legacy two-app proxy constraint");
     conn.execute(
         "ALTER TABLE mcp_servers ADD COLUMN enabled_claude_desktop BOOLEAN NOT NULL DEFAULT 0",
         [],

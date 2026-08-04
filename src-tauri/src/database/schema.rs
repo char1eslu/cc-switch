@@ -388,12 +388,39 @@ impl Database {
         let legacy_fork_version = version;
         let has_desktop_mcp_column =
             Self::has_column(conn, "mcp_servers", "enabled_claude_desktop")?;
-        let lacks_upstream_grokbuild_column =
-            !Self::has_column(conn, "mcp_servers", "enabled_grokbuild")?;
+        let lacks_upstream_app_columns = ["mcp_servers", "skills"]
+            .into_iter()
+            .map(|table| {
+                Ok(Self::table_exists(conn, table)?
+                    && Self::has_column(conn, table, "enabled_claude")?
+                    && Self::has_column(conn, table, "enabled_codex")?
+                    && !Self::has_column(conn, table, "enabled_gemini")?
+                    && !Self::has_column(conn, table, "enabled_grokbuild")?
+                    && !Self::has_column(conn, table, "enabled_opencode")?
+                    && !Self::has_column(conn, table, "enabled_hermes")?)
+            })
+            .collect::<Result<Vec<_>, AppError>>()?
+            .into_iter()
+            .all(|matches| matches);
+        let has_legacy_two_app_proxy_constraint = if Self::table_exists(conn, "proxy_config")? {
+            let sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='proxy_config'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| AppError::Database(format!("读取 proxy_config schema 失败: {e}")))?;
+            sql.contains("'claude','codex'")
+                && !sql.contains("'gemini'")
+                && !sql.contains("'grokbuild'")
+        } else {
+            false
+        };
         let is_legacy_fork_schema = Self::table_exists(conn, "settings")?
             && Self::has_column(conn, "mcp_servers", "enabled_claude")?
-            && ((version == 17 && has_desktop_mcp_column)
-                || ((18..=19).contains(&version) && lacks_upstream_grokbuild_column));
+            && lacks_upstream_app_columns
+            && has_legacy_two_app_proxy_constraint
+            && ((version == 17 && has_desktop_mcp_column) || (18..=19).contains(&version));
 
         if is_legacy_fork_schema {
             log::info!(
@@ -495,9 +522,7 @@ impl Database {
                         Self::set_user_version(conn, 15)?;
                     }
                     15 => {
-                        log::info!(
-                            "迁移数据库从 v15 到 v16（上游 Codex 用量重置，本 fork 不适用）"
-                        );
+                        log::info!("迁移数据库从 v15 到 v16（重置可从 JSONL 重建的 Codex 用量）");
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
                     }
