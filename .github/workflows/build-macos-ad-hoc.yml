@@ -83,7 +83,9 @@ jobs:
           set -euo pipefail
           APP_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -type d | head -1)"
           test -n "$APP_PATH"
-          APP_BINARY="$APP_PATH/Contents/MacOS/CC Switch"
+          EXECUTABLE_NAME="$(plutil -extract CFBundleExecutable raw "$APP_PATH/Contents/Info.plist")"
+          APP_BINARY="$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME"
+          test -f "$APP_BINARY"
           test "$(lipo -archs "$APP_BINARY")" = "arm64"
           codesign --force --deep --sign - "$APP_PATH"
           codesign --verify --deep --strict "$APP_PATH"
