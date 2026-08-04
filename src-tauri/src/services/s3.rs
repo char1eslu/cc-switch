@@ -831,8 +831,8 @@ mod tests {
             bucket: "bucket".to_string(),
             endpoint: String::new(),
         };
-        let url = Url::parse("https://bucket.s3.us-east-1.amazonaws.com/key")
-            .expect("valid test URL");
+        let url =
+            Url::parse("https://bucket.s3.us-east-1.amazonaws.com/key").expect("valid test URL");
         let mut headers = reqwest::header::HeaderMap::new();
 
         let result = sign_request(

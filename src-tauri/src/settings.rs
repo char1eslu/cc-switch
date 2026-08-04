@@ -249,17 +249,15 @@ impl S3SyncSettings {
             } else {
                 format!("https://{endpoint}")
             };
-            let valid = url::Url::parse(&candidate)
-                .ok()
-                .is_some_and(|url| {
-                    matches!(url.scheme(), "http" | "https")
-                        && url.host_str().is_some()
-                        && url.username().is_empty()
-                        && url.password().is_none()
-                        && matches!(url.path(), "" | "/")
-                        && url.query().is_none()
-                        && url.fragment().is_none()
-                });
+            let valid = url::Url::parse(&candidate).ok().is_some_and(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && matches!(url.path(), "" | "/")
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+            });
             if !valid {
                 return Err(crate::error::AppError::localized(
                     "s3.endpoint.invalid",
@@ -1058,7 +1056,10 @@ mod tests {
         for endpoint in ["minio:9000", "http://minio:9000", "https://s3.example.com"] {
             let mut settings = valid_s3_settings();
             settings.endpoint = endpoint.to_string();
-            assert!(settings.validate().is_ok(), "endpoint should be valid: {endpoint}");
+            assert!(
+                settings.validate().is_ok(),
+                "endpoint should be valid: {endpoint}"
+            );
         }
 
         for endpoint in [
@@ -1070,7 +1071,10 @@ mod tests {
         ] {
             let mut settings = valid_s3_settings();
             settings.endpoint = endpoint.to_string();
-            assert!(settings.validate().is_err(), "endpoint should be rejected: {endpoint}");
+            assert!(
+                settings.validate().is_err(),
+                "endpoint should be rejected: {endpoint}"
+            );
         }
     }
 

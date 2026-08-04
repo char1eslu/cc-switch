@@ -2547,7 +2547,13 @@ fn write_claude_config(
 
     let safe_provider_id: String = provider_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let mut file = tempfile::Builder::new()
         .prefix(&format!("claude_{safe_provider_id}_"))
@@ -2556,8 +2562,7 @@ fn write_claude_config(
         .map_err(|e| format!("创建临时配置文件失败: {e}"))?;
     file.write_all(config_json.as_bytes())
         .map_err(|e| format!("写入配置文件失败: {e}"))?;
-    file.flush()
-        .map_err(|e| format!("刷新配置文件失败: {e}"))?;
+    file.flush().map_err(|e| format!("刷新配置文件失败: {e}"))?;
 
     #[cfg(unix)]
     {
