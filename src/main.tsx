@@ -13,6 +13,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import { exit } from "@tauri-apps/plugin-process";
+import { initializeWindowActivity } from "@/lib/windowActivity";
 
 // 根据平台添加 body class，便于平台特定样式
 try {
@@ -85,6 +86,8 @@ async function bootstrap() {
     // 忽略拉取错误，继续渲染
     console.error("拉取初始化错误失败", e);
   }
+
+  initializeWindowActivity();
 
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>

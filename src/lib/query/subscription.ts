@@ -53,12 +53,11 @@ export interface UseCodexOauthQuotaOptions {
  * Query key 包含 accountId，多张卡片绑定到同一账号时会自动去重共享请求。
  * accountId 为 null 时使用 "default" 占位，让后端 fallback 到默认账号。
  */
-export function useCodexOauthQuota(
-  meta: ProviderMeta | undefined,
+export function useCodexOauthQuotaByAccountId(
+  accountId: string | null,
   options: UseCodexOauthQuotaOptions = {},
 ) {
   const { enabled = true, autoQuery = false } = options;
-  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CODEX_OAUTH);
   return useQuery({
     queryKey: ["codex_oauth", "quota", accountId ?? "default"],
     queryFn: () => subscriptionApi.getCodexOauthQuota(accountId),
@@ -69,4 +68,12 @@ export function useCodexOauthQuota(
     staleTime: REFETCH_INTERVAL,
     retry: 1,
   });
+}
+
+export function useCodexOauthQuota(
+  meta: ProviderMeta | undefined,
+  options: UseCodexOauthQuotaOptions = {},
+) {
+  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CODEX_OAUTH);
+  return useCodexOauthQuotaByAccountId(accountId, options);
 }

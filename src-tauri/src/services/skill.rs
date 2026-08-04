@@ -2640,18 +2640,18 @@ impl SkillService {
 
     /// 将 discoverable skill 的目录信息重新解析为解压目录中的真实源目录。
     ///
-    /// 兼容三种情况：
-    /// 1. `skills/foo` 这类直接相对路径；
-    /// 2. 仅持有安装名 `foo`，需要在仓库中递归查找真实目录；
-    /// 3. 仓库根目录本身就是 skill，此时回退到解压根目录。
+    /// 返回的目录必须包含 `SKILL.md`。解析顺序：
+    /// 1. 校验 `skills/foo` 这类直接相对路径；
+    /// 2. 按安装名递归查找含 `SKILL.md` 的目录；
+    /// 3. 仓库根目录本身是 skill 时回退到解压根目录。
     fn resolve_skill_source_dir(root: &Path, raw_directory: &str) -> Option<PathBuf> {
         let source_rel = Self::sanitize_skill_source_path(raw_directory)?;
+        let target_name = source_rel.file_name()?.to_string_lossy().to_string();
         let direct = root.join(&source_rel);
-        if direct.is_dir() {
+        if direct.is_dir() && direct.join("SKILL.md").is_file() {
             return Some(direct);
         }
 
-        let target_name = source_rel.file_name()?.to_string_lossy().to_string();
         if let Some(found) = Self::find_skill_dir_by_name(root, &target_name) {
             log::info!(
                 "Skill directory '{}' not found at direct path, using fallback: {}",
@@ -2661,7 +2661,7 @@ impl SkillService {
             return Some(found);
         }
 
-        if root.is_dir() && root.join("SKILL.md").exists() {
+        if root.join("SKILL.md").is_file() {
             log::info!(
                 "Skill directory '{}' not found, but SKILL.md exists at root, using repo root",
                 target_name,
@@ -3599,6 +3599,30 @@ mod tests {
             .expect("install name should fall back to the matching discovered skill directory");
 
         assert_eq!(resolved, nested);
+    }
+
+    #[test]
+    fn resolve_skill_source_dir_skips_same_name_wrapper_without_skill_md() {
+        let temp = tempdir().expect("tempdir");
+        let wrapper = temp.path().join("ast-grep");
+        fs::create_dir_all(wrapper.join(".claude-plugin"))
+            .expect("create wrapper plugin dir");
+        let real_skill = wrapper.join("skills").join("ast-grep");
+        write_skill(&real_skill, "ast-grep");
+
+        let resolved = SkillService::resolve_skill_source_dir(temp.path(), "ast-grep")
+            .expect("resolve inner skill");
+
+        assert_eq!(resolved, real_skill);
+    }
+
+    #[test]
+    fn resolve_skill_source_dir_rejects_wrapper_without_any_skill_md() {
+        let temp = tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("ast-grep").join(".claude-plugin"))
+            .expect("create wrapper plugin dir");
+
+        assert!(SkillService::resolve_skill_source_dir(temp.path(), "ast-grep").is_none());
     }
 
     #[test]
