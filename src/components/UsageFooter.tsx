@@ -6,6 +6,8 @@ import { useUsageQuery } from "@/lib/query/queries";
 import { UsageData, Provider } from "@/types";
 import { TierBadge } from "@/components/SubscriptionQuotaFooter";
 import type { QuotaTier } from "@/types/subscription";
+import { useRelativeTimeNow } from "@/hooks/useRelativeTimeNow";
+import { formatUsageRelativeTime } from "@/utils/usageDisplay";
 
 interface UsageFooterProps {
   provider: Provider;
@@ -71,19 +73,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
     autoQueryInterval,
   });
 
-  // 🆕 定期更新当前时间，用于刷新相对时间显示
-  const [now, setNow] = React.useState(Date.now());
-
-  React.useEffect(() => {
-    if (!lastQueriedAt) return;
-
-    // 每30秒更新一次当前时间，触发相对时间显示的刷新
-    const interval = setInterval(() => {
-      setNow(Date.now());
-    }, 30000); // 30秒
-
-    return () => clearInterval(interval);
-  }, [lastQueriedAt]);
+  const now = useRelativeTimeNow(Boolean(lastQueriedAt));
 
   // 只在启用用量查询且有数据时显示
   if (!usageEnabled || !usage) return null;
@@ -145,7 +135,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
           <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
             <Clock size={10} />
             {lastQueriedAt
-              ? formatRelativeTime(lastQueriedAt, now, t)
+              ? formatUsageRelativeTime(lastQueriedAt, now, t)
               : t("usage.never", { defaultValue: "从未更新" })}
           </span>
           <button
@@ -196,7 +186,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
           <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
             <Clock size={10} />
             {lastQueriedAt
-              ? formatRelativeTime(lastQueriedAt, now, t)
+              ? formatUsageRelativeTime(lastQueriedAt, now, t)
               : t("usage.never", { defaultValue: "从未更新" })}
           </span>
 
@@ -282,7 +272,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
           {lastQueriedAt && (
             <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
               <Clock size={10} />
-              {formatRelativeTime(lastQueriedAt, now, t)}
+              {formatUsageRelativeTime(lastQueriedAt, now, t)}
             </span>
           )}
           <button
@@ -422,27 +412,5 @@ const UsagePlanItem: React.FC<{ data: UsageData }> = ({ data }) => {
     </div>
   );
 };
-
-// 格式化相对时间
-function formatRelativeTime(
-  timestamp: number,
-  now: number,
-  t: (key: string, options?: { count?: number }) => string,
-): string {
-  const diff = Math.floor((now - timestamp) / 1000); // 秒
-
-  if (diff < 60) {
-    return t("usage.justNow");
-  } else if (diff < 3600) {
-    const minutes = Math.floor(diff / 60);
-    return t("usage.minutesAgo", { count: minutes });
-  } else if (diff < 86400) {
-    const hours = Math.floor(diff / 3600);
-    return t("usage.hoursAgo", { count: hours });
-  } else {
-    const days = Math.floor(diff / 86400);
-    return t("usage.daysAgo", { count: days });
-  }
-}
 
 export default UsageFooter;

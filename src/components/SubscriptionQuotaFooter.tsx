@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import { useSubscriptionQuota } from "@/lib/query/subscription";
 import type { QuotaTier, SubscriptionQuota } from "@/types/subscription";
+import { useRelativeTimeNow } from "@/hooks/useRelativeTimeNow";
+import { formatUsageRelativeTime } from "@/utils/usageDisplay";
 
 interface SubscriptionQuotaFooterProps {
   appId: AppId;
@@ -69,21 +71,6 @@ function formatResetTime(
 /** 不需要在 inline 模式显示的 tier */
 const HIDDEN_INLINE_TIERS = new Set(["seven_day_sonnet"]);
 
-/** 格式化相对时间（与 UsageFooter 一致） */
-function formatRelativeTime(
-  timestamp: number,
-  now: number,
-  t: (key: string, options?: { count?: number }) => string,
-): string {
-  const diff = Math.floor((now - timestamp) / 1000);
-  if (diff < 60) return t("usage.justNow");
-  if (diff < 3600)
-    return t("usage.minutesAgo", { count: Math.floor(diff / 60) });
-  if (diff < 86400)
-    return t("usage.hoursAgo", { count: Math.floor(diff / 3600) });
-  return t("usage.daysAgo", { count: Math.floor(diff / 86400) });
-}
-
 /**
  * 纯展示组件：渲染 SubscriptionQuota 的 5 种状态（not_found / parse_error /
  * expired / API 失败 / 成功），支持 inline / expanded 两种布局。
@@ -101,13 +88,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
 }) => {
   const { t } = useTranslation();
 
-  // 定期更新相对时间显示
-  const [now, setNow] = React.useState(Date.now());
-  React.useEffect(() => {
-    if (!quota?.queriedAt) return;
-    const interval = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(interval);
-  }, [quota?.queriedAt]);
+  const now = useRelativeTimeNow(Boolean(quota?.queriedAt));
 
   // 无凭据 → 不显示
   if (!quota || quota.credentialStatus === "not_found") return null;
@@ -215,7 +196,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
           <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
             <Clock size={10} />
             {quota.queriedAt
-              ? formatRelativeTime(quota.queriedAt, now, t)
+              ? formatUsageRelativeTime(quota.queriedAt, now, t)
               : t("usage.never", { defaultValue: "从未更新" })}
           </span>
           <button
@@ -254,7 +235,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
           {quota.queriedAt && (
             <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
               <Clock size={10} />
-              {formatRelativeTime(quota.queriedAt, now, t)}
+              {formatUsageRelativeTime(quota.queriedAt, now, t)}
             </span>
           )}
           <button

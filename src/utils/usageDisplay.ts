@@ -6,6 +6,26 @@ interface UsageSummaryLabels {
   used: string;
 }
 
+type RelativeTimeTranslator = (
+  key: string,
+  options?: { count?: number },
+) => string;
+
+export function formatUsageRelativeTime(
+  timestamp: number,
+  now: number,
+  t: RelativeTimeTranslator,
+): string {
+  const diff = Math.max(0, Math.floor((now - timestamp) / 1000));
+
+  if (diff < 60) return t("usage.justNow");
+  if (diff < 3600)
+    return t("usage.minutesAgo", { count: Math.floor(diff / 60) });
+  if (diff < 86400)
+    return t("usage.hoursAgo", { count: Math.floor(diff / 3600) });
+  return t("usage.daysAgo", { count: Math.floor(diff / 86400) });
+}
+
 function formatNumber(value: number): string {
   return Number.isInteger(value) ? value.toString() : value.toFixed(2);
 }

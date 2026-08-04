@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { formatUsageDataSummary } from "@/utils/usageDisplay";
+import {
+  formatUsageDataSummary,
+  formatUsageRelativeTime,
+} from "@/utils/usageDisplay";
 
 const labels = {
   invalid: "Invalid",
@@ -45,5 +48,21 @@ describe("formatUsageDataSummary", () => {
         labels,
       ),
     ).toBe("Unauthorized");
+  });
+});
+
+describe("formatUsageRelativeTime", () => {
+  const t = (key: string, options?: { count?: number }) =>
+    options?.count === undefined ? key : `${key}:${options.count}`;
+  const now = 1_000_000_000;
+
+  it.each([
+    [now + 1_000, "usage.justNow"],
+    [now - 59_000, "usage.justNow"],
+    [now - 60_000, "usage.minutesAgo:1"],
+    [now - 3_600_000, "usage.hoursAgo:1"],
+    [now - 86_400_000, "usage.daysAgo:1"],
+  ])("formats %s relative to now", (timestamp, expected) => {
+    expect(formatUsageRelativeTime(timestamp, now, t)).toBe(expected);
   });
 });
