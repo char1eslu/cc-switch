@@ -15,7 +15,7 @@
 > 这个分支主要记录相对上游的自用改动，稳定跨平台版本请优先看上游项目。
 
 > 同步上游前先读 [FORK_STATUS.md](FORK_STATUS.md)：记录了同步基线、裁剪边界、
-> 数据库版本已领先上游（迁移号会撞车）以及若干已踩过的坑。
+> 数据库版本已与上游对齐；fork 私有迁移独立记账。更多维护边界和已踩过的坑见下文。
 
 ## 和上游的主要区别
 
@@ -29,7 +29,7 @@
 | 技能更新 | 修正本地哈希与 GitHub tree 的排序口径，消除反复提示更新；大型仓库下载超时放宽，结构化错误显示可读文案 |
 | Codex 上游协议 | 支持只提供原生 Anthropic Messages（`/v1/messages`）的网关，由本地代理做 Responses ⇄ Anthropic 双向转换 |
 | MCP 覆盖 | Claude Code 与 Codex 两端；Claude Desktop 因 gateway 接管无法支持，与上游一致 |
-| 数据库 | 清除上游版本在库中留下的已裁剪应用的遗留列与数据行 |
+| 数据库 | `user_version` 与上游一致；仅保留已裁剪应用的空兼容字段，fork 私有迁移独立记账 |
 | 应用自更新 | 屏蔽 Tauri updater、自更新 endpoint 和 updater artifact，避免应用内检查上游更新 |
 | 构建方式 | 保留 macOS Apple Silicon ad-hoc GitHub Actions 构建，当前不做 DMG、公证或自动更新包 |
 

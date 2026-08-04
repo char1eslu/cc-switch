@@ -2,7 +2,7 @@
 //!
 //! 负责数据库表结构的创建和版本迁移。
 
-use super::{lock_conn, Database, SCHEMA_VERSION};
+use super::{lock_conn, Database, FORK_SCHEMA_VERSION, SCHEMA_VERSION};
 use crate::error::AppError;
 use rusqlite::Connection;
 use serde::Serialize;
@@ -64,7 +64,9 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS mcp_servers (
             id TEXT PRIMARY KEY, name TEXT NOT NULL, server_config TEXT NOT NULL,
             description TEXT, homepage TEXT, docs TEXT, tags TEXT NOT NULL DEFAULT '[]',
-            enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0
+            enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0,
+            enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
+            enabled_opencode BOOLEAN NOT NULL DEFAULT 0, enabled_hermes BOOLEAN NOT NULL DEFAULT 0
         )",
             [],
         )
@@ -90,6 +92,10 @@ impl Database {
             readme_url TEXT,
             enabled_claude BOOLEAN NOT NULL DEFAULT 0,
             enabled_codex BOOLEAN NOT NULL DEFAULT 0,
+            enabled_gemini BOOLEAN NOT NULL DEFAULT 0,
+            enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
+            enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
+            enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
             installed_at INTEGER NOT NULL DEFAULT 0,
             content_hash TEXT,
             updated_at INTEGER NOT NULL DEFAULT 0
@@ -115,9 +121,9 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 8. Proxy Config 表（Claude/Codex 两行结构，app_type 主键）
+        // 8. Proxy Config 表（保持上游 schema 兼容；fork 只使用 Claude/Codex）
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
-            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex')),
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -128,8 +134,24 @@ impl Database {
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
+            live_takeover_active INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 19. Profiles 表由上游 schema v12 定义。fork 不暴露该功能，
+        // 但保留空兼容表使官方 App 能读取同一数据库。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                sort_order INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
         // 初始化两行数据（每应用不同默认值）
         //
@@ -363,6 +385,24 @@ impl Database {
             .map_err(|e| AppError::Database(format!("开启迁移 savepoint 失败: {e}")))?;
 
         let mut version = Self::get_user_version(conn)?;
+        let legacy_fork_version = version;
+        let has_desktop_mcp_column =
+            Self::has_column(conn, "mcp_servers", "enabled_claude_desktop")?;
+        let lacks_upstream_grokbuild_column =
+            !Self::has_column(conn, "mcp_servers", "enabled_grokbuild")?;
+        let is_legacy_fork_schema = Self::table_exists(conn, "settings")?
+            && Self::has_column(conn, "mcp_servers", "enabled_claude")?
+            && ((version == 17 && has_desktop_mcp_column)
+                || ((18..=19).contains(&version) && lacks_upstream_grokbuild_column));
+
+        if is_legacy_fork_schema {
+            log::info!(
+                "检测到 fork 历史数据库 v{legacy_fork_version}，转换为上游 schema v{SCHEMA_VERSION} 兼容结构"
+            );
+            Self::ensure_upstream_schema_compatibility(conn)?;
+            Self::set_user_version(conn, SCHEMA_VERSION)?;
+            version = SCHEMA_VERSION;
+        }
 
         if version > SCHEMA_VERSION {
             conn.execute("ROLLBACK TO schema_migration;", []).ok();
@@ -461,23 +501,6 @@ impl Database {
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
                     }
-                    16 => {
-                        log::info!("迁移数据库从 v16 到 v17（MCP 支持 Claude Desktop）");
-                        Self::migrate_v16_to_v17(conn)?;
-                        Self::set_user_version(conn, 17)?;
-                    }
-                    17 => {
-                        log::info!("迁移数据库从 v17 到 v18（清除已裁剪应用的遗留列与数据行）");
-                        Self::migrate_v17_to_v18(conn)?;
-                        Self::set_user_version(conn, 18)?;
-                    }
-                    18 => {
-                        log::info!(
-                            "迁移数据库从 v18 到 v19（删除 Desktop MCP 同步的列，功能已回退）"
-                        );
-                        Self::migrate_v18_to_v19(conn)?;
-                        Self::set_user_version(conn, 19)?;
-                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -486,6 +509,12 @@ impl Database {
                 }
                 version = Self::get_user_version(conn)?;
             }
+            Self::ensure_upstream_schema_compatibility(conn)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('fork_schema_version', ?1)",
+                [FORK_SCHEMA_VERSION.to_string()],
+            )
+            .map_err(|e| AppError::Database(format!("写入 fork schema 版本失败: {e}")))?;
             Ok(())
         })();
 
@@ -1245,115 +1274,150 @@ impl Database {
         Ok(())
     }
 
-    /// v15 -> v16：上游在此版重置 Codex 会话用量（换算口径变更后的一次性清理）。
-    ///
-    /// 不在本 fork 复制该清理：它会删除既有 codex 会话用量行，而本 fork 从
-    /// 未写入过上游那套需要被纠正的数据。对已由上游迁移到 v16 的库，清理
-    /// 也早已执行过，重复执行只会误删。
-    fn migrate_v15_to_v16(_conn: &Connection) -> Result<(), AppError> {
-        Ok(())
+    /// v15 -> v16：与上游一致，清理可从 JSONL 重建的 Codex 会话用量。
+    fn migrate_v15_to_v16(conn: &Connection) -> Result<(), AppError> {
+        let codex_dir = crate::codex_config::get_codex_config_dir();
+        crate::services::session_usage_codex::reset_codex_usage_on_conn(conn, &codex_dir)
     }
 
-    /// v16 -> v17：MCP 服务器新增 Claude Desktop 启用列。
-    /// v16 -> v17：历史遗留空迁移。
-    ///
-    /// 此前用于给 mcp_servers 加 enabled_claude_desktop 列以支持 Claude Desktop
-    /// MCP 同步。后证实 3P Desktop 走 gateway 模式，本地 mcpServers 被忽略，
-    /// 该功能不可行已回退（见 v18->v19 删列）。保留空迁移以维持版本号连续。
-    fn migrate_v16_to_v17(_conn: &Connection) -> Result<(), AppError> {
-        Ok(())
-    }
+    /// 保持上游 schema v16 的列/表/约束。fork 业务代码只读写
+    /// Claude/Codex 字段，其它列是默认为 0 的兼容占位。
+    fn ensure_upstream_schema_compatibility(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 settings 表失败: {e}")))?;
 
-    /// v17 -> v18：清除上游遗留的已裁剪应用痕迹。
-    ///
-    /// 本 fork 只保留 Claude / ClaudeDesktop / Codex。用户库若曾被上游版本打开
-    /// 过，上游迁移会留下 Gemini/OpenCode/Hermes/GrokBuild 的列与数据行。fork
-    /// 代码不再读它们，功能上无害，但会让 schema 与代码脱节：`INSERT OR REPLACE`
-    /// 这类不列全字段的写法会把这些 NOT NULL 列静默重置，排查时极易误判。
-    ///
-    /// 幂等：列/行不存在就跳过，所以在没有这些遗留的库上是空操作。
-    fn migrate_v17_to_v18(conn: &Connection) -> Result<(), AppError> {
-        const LEGACY_APP_COLUMNS: [&str; 4] = [
-            "enabled_gemini",
-            "enabled_opencode",
-            "enabled_hermes",
-            "enabled_grokbuild",
-        ];
-
-        // SQLite 3.35+ 支持 DROP COLUMN（捆绑版本远高于此），比手工
-        // 建新表+搬数据+改名更安全：不必复制 schema，也不会漏掉索引。
         for table in ["mcp_servers", "skills"] {
             if !Self::table_exists(conn, table)? {
                 continue;
             }
-            for column in LEGACY_APP_COLUMNS {
-                if !Self::has_column(conn, table, column)? {
-                    continue;
-                }
-                Self::validate_identifier(table, "表名")?;
-                Self::validate_identifier(column, "列名")?;
-                conn.execute(
-                    &format!("ALTER TABLE \"{table}\" DROP COLUMN \"{column}\";"),
-                    [],
-                )
-                .map_err(|e| {
-                    AppError::Database(format!("删除表 {table} 的遗留列 {column} 失败: {e}"))
-                })?;
-                log::info!("已删除表 {table} 的遗留列 {column}");
+            for column in [
+                "enabled_gemini",
+                "enabled_grokbuild",
+                "enabled_opencode",
+                "enabled_hermes",
+            ] {
+                Self::add_column_if_missing(conn, table, column, "BOOLEAN NOT NULL DEFAULT 0")?;
             }
         }
 
-        // 已裁剪应用的数据行。app_type 不在 fork 的 AppType 枚举里，这些行
-        // 永远不会被读到，只会在排查时造成困扰。
-        const LEGACY_APP_TYPES: [&str; 5] =
-            ["gemini", "grokbuild", "opencode", "hermes", "openclaw"];
-        for table in ["providers", "proxy_config"] {
-            if !Self::table_exists(conn, table)? {
-                continue;
-            }
-            if !Self::has_column(conn, table, "app_type")? {
-                continue;
-            }
-            Self::validate_identifier(table, "表名")?;
-            for app_type in LEGACY_APP_TYPES {
-                let removed = conn
-                    .execute(
-                        &format!("DELETE FROM \"{table}\" WHERE app_type = ?1"),
-                        [app_type],
-                    )
-                    .map_err(|e| {
-                        AppError::Database(format!("删除表 {table} 的 {app_type} 行失败: {e}"))
-                    })?;
-                if removed > 0 {
-                    log::info!("已删除表 {table} 中 {removed} 行 app_type={app_type} 的遗留数据");
-                }
-            }
-        }
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS profiles (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, payload TEXT NOT NULL,
+                sort_order INTEGER, created_at INTEGER, updated_at INTEGER
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 profiles 兼容表失败: {e}")))?;
 
+        Self::ensure_upstream_proxy_config(conn)?;
         Ok(())
     }
 
-    /// v18 -> v19：删除 mcp_servers.enabled_claude_desktop 列。
-    ///
-    /// 该列是 v16->v17 为「MCP 同步到 Claude Desktop」加的，后证实 3P Desktop
-    /// 走 gateway 模式、本地 mcpServers 被忽略，功能不可行已回退。删列让
-    /// schema 与代码一致，避免遗留 NOT NULL 列干扰 INSERT OR REPLACE。
-    /// 列不存在时跳过（全新库或已迁移库）。
-    fn migrate_v18_to_v19(conn: &Connection) -> Result<(), AppError> {
-        if !Self::table_exists(conn, "mcp_servers")? {
+    fn ensure_upstream_proxy_config(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
             return Ok(());
         }
-        if !Self::has_column(conn, "mcp_servers", "enabled_claude_desktop")? {
-            return Ok(());
+        let table_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='proxy_config'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| AppError::Database(format!("读取 proxy_config schema 失败: {e}")))?;
+        if !table_sql.contains("'grokbuild'") {
+            let copied_columns = [
+                ("app_type", "'claude'"),
+                ("proxy_enabled", "0"),
+                ("listen_address", "'127.0.0.1'"),
+                ("listen_port", "15721"),
+                ("enable_logging", "1"),
+                ("enabled", "0"),
+                ("auto_failover_enabled", "0"),
+                ("max_retries", "3"),
+                ("streaming_first_byte_timeout", "60"),
+                ("streaming_idle_timeout", "120"),
+                ("non_streaming_timeout", "600"),
+                ("circuit_failure_threshold", "4"),
+                ("circuit_success_threshold", "2"),
+                ("circuit_timeout_seconds", "60"),
+                ("circuit_error_rate_threshold", "0.6"),
+                ("circuit_min_requests", "10"),
+                ("default_cost_multiplier", "'1'"),
+                ("pricing_model_source", "'response'"),
+                ("live_takeover_active", "0"),
+                ("created_at", "datetime('now')"),
+                ("updated_at", "datetime('now')"),
+            ]
+            .into_iter()
+            .map(|(column, fallback)| {
+                Self::has_column(conn, "proxy_config", column).map(|exists| {
+                    if exists {
+                        format!("\"{column}\"")
+                    } else {
+                        fallback.to_string()
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?
+            .join(", ");
+
+            conn.execute_batch(
+                "ALTER TABLE proxy_config RENAME TO proxy_config_fork_legacy;
+                 CREATE TABLE proxy_config (
+                    app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
+                    proxy_enabled INTEGER NOT NULL DEFAULT 0,
+                    listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+                    listen_port INTEGER NOT NULL DEFAULT 15721,
+                    enable_logging INTEGER NOT NULL DEFAULT 1,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+                    max_retries INTEGER NOT NULL DEFAULT 3,
+                    streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
+                    streaming_idle_timeout INTEGER NOT NULL DEFAULT 120,
+                    non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
+                    circuit_failure_threshold INTEGER NOT NULL DEFAULT 4,
+                    circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
+                    circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60,
+                    circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
+                    circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+                    default_cost_multiplier TEXT NOT NULL DEFAULT '1',
+                    pricing_model_source TEXT NOT NULL DEFAULT 'response',
+                    live_takeover_active INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );"
+            )
+            .map_err(|e| AppError::Database(format!("重建上游兼容 proxy_config 失败: {e}")))?;
+            conn.execute(
+                &format!(
+                    "INSERT INTO proxy_config (
+                        app_type, proxy_enabled, listen_address, listen_port, enable_logging,
+                        enabled, auto_failover_enabled, max_retries,
+                        streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
+                        circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
+                        circuit_error_rate_threshold, circuit_min_requests, default_cost_multiplier,
+                        pricing_model_source, live_takeover_active, created_at, updated_at
+                     ) SELECT {copied_columns} FROM proxy_config_fork_legacy"
+                ),
+                [],
+            )
+            .map_err(|e| AppError::Database(format!("重建上游兼容 proxy_config 失败: {e}")))?;
+            conn.execute("DROP TABLE proxy_config_fork_legacy", [])
+                .map_err(|e| AppError::Database(format!("清理旧 proxy_config 失败: {e}")))?;
         }
         conn.execute(
-            "ALTER TABLE \"mcp_servers\" DROP COLUMN \"enabled_claude_desktop\";",
+            "INSERT OR IGNORE INTO proxy_config (app_type, max_retries) VALUES ('gemini', 5)",
             [],
         )
-        .map_err(|e| {
-            AppError::Database(format!("删除 mcp_servers.enabled_claude_desktop 失败: {e}"))
-        })?;
-        log::info!("已删除 mcp_servers.enabled_claude_desktop（Desktop MCP 同步已回退）");
+        .map_err(|e| AppError::Database(format!("补齐上游 Gemini proxy_config 失败: {e}")))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO proxy_config (app_type, max_retries) VALUES ('grokbuild', 3)",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("补齐上游 proxy_config 占位行失败: {e}")))?;
         Ok(())
     }
 

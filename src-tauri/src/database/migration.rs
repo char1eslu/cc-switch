@@ -125,10 +125,19 @@ impl Database {
         if let Some(servers) = &config.mcp.servers {
             for (id, server) in servers {
                 tx.execute(
-                    "INSERT OR REPLACE INTO mcp_servers (
+                    "INSERT INTO mcp_servers (
                         id, name, server_config, description, homepage, docs, tags,
                         enabled_claude, enabled_codex
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    ON CONFLICT(id) DO UPDATE SET
+                        name = excluded.name,
+                        server_config = excluded.server_config,
+                        description = excluded.description,
+                        homepage = excluded.homepage,
+                        docs = excluded.docs,
+                        tags = excluded.tags,
+                        enabled_claude = excluded.enabled_claude,
+                        enabled_codex = excluded.enabled_codex",
                     params![
                         id,
                         server.name,

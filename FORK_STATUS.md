@@ -40,28 +40,28 @@ cherry-pick 或手工适配；发行版本、updater / R2、赞助商预设、�
 凡是只动这些应用的上游提交，一律跳过。赞助商预设、推荐链接、域名刷新同理
 （上游商业合作内容，与自用无关）。
 
-## ⚠️ 数据库版本已领先上游，迁移号会撞车
+## 数据库版本与上游对齐，fork 迁移单独记账
 
 | | SCHEMA_VERSION |
 | --- | --- |
-| 本 fork | **19** |
+| 本 fork | **16** |
 | 上游 (`v3.19.0`, `c0ff89b9`) | 16 |
 
-fork 独有的迁移：
+fork 曾经占用 `PRAGMA user_version` 17–19；现在已停止这种做法。启动时若检测到
+历史 fork v17–19 数据库，会在事务内补回官方 v16 所需的兼容列、`profiles` 表
+及 `proxy_config` 约束，然后把 `user_version` 规范化为 16。fork 自身版本写在
+`settings.fork_schema_version`，不再与上游迁移号冲突。
 
-- **v16 → v17**：空迁移（原本给 `mcp_servers` 加 `enabled_claude_desktop`，功能已回退）
-- **v17 → v18**：清除上游版本留在库里的已裁剪应用遗留物
-  - 删列：`mcp_servers` / `skills` 的 `enabled_gemini`、`enabled_opencode`、`enabled_hermes`、`enabled_grokbuild`
-  - 删行：`providers` / `proxy_config` 中 `app_type` 属于已裁剪应用的行
-- **v18 → v19**：删掉 v17 加过的 `enabled_claude_desktop`（Desktop MCP 回退的收尾）
+兼容列和空表不表示恢复了对应功能：fork 仍只维护 Claude Code、Claude Desktop、
+Codex；Gemini/GrokBuild/OpenCode/Hermes 的列默认值为 0，业务代码不读取。
 
-**这是最容易踩的坑**：上游若也推进到 17/18/19，迁移编号会与 fork 的冲突。
-届时必须人工处理——把上游的迁移重编号到 20+，或合并进同一个版本步，
-不能直接 cherry-pick。合并前先确认 `set_user_version` 的目标值没有重复。
+上游将来推进到 17+ 时，按正常上游迁移号适配；fork 独有结构只递增
+`fork_schema_version`。不要再次为 fork 私有改动提升 `PRAGMA user_version`。
 
-另注：迁移循环是 `while version < SCHEMA_VERSION`。新列**必须**写进版本化迁移分支，
-只写在 `migrate_v0_to_v1` 里对已有库无效（那条只对 v0/全新库执行）——
-这个坑已经踩过一次，表现为「列没建出来，DAO 的 SELECT 整体失败，界面数据像是全丢了」。
+另注：官方共享结构仍走 `while version < SCHEMA_VERSION`；fork 兼容列
+则必须由幂等的 `ensure_upstream_schema_compatibility` 补齐，不能只写在
+`migrate_v0_to_v1` 里（那条只对 v0/全新库执行）。否则 DAO 的 SELECT 会因缺列
+整体失败，界面数据看起来像是丢了。
 
 ## fork 独有的实现（上游没有，或与上游不同）
 
@@ -103,7 +103,8 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 若真要做，唯一可能的方向是把 MCP 写进 profile 的 managed config，但上游没有先例，
 需要逆向 Desktop 的 profile schema。当前判断投入产出不值。
 
-回退提交：`664685b1`（及后续 CI 修复）。相关的 DB 列由 v18→v19 迁移删除。
+回退提交：`664685b1`（及后续 CI 修复）。历史 DB 列已回退；官方兼容字段与
+该不可行功能无关。
 
 ## 已知的隐性约束（改动前先看这里）
 

@@ -211,6 +211,70 @@ fn collect_codex_session_files(codex_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+pub(crate) fn reset_codex_usage_on_conn(
+    conn: &rusqlite::Connection,
+    codex_dir: &Path,
+) -> Result<(), AppError> {
+    if Database::table_exists(conn, "proxy_request_logs")?
+        && Database::has_column(conn, "proxy_request_logs", "data_source")?
+    {
+        conn.execute(
+            "DELETE FROM proxy_request_logs WHERE data_source = 'codex_session'",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("清理 Codex 会话明细失败: {e}")))?;
+    }
+    if Database::table_exists(conn, "usage_daily_rollups")?
+        && Database::has_column(conn, "usage_daily_rollups", "provider_id")?
+    {
+        conn.execute(
+            "DELETE FROM usage_daily_rollups WHERE provider_id = '_codex_session'",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("清理 Codex 用量汇总失败: {e}")))?;
+    }
+    if Database::table_exists(conn, "session_log_sync")?
+        && Database::has_column(conn, "session_log_sync", "file_path")?
+    {
+        let mut stmt = conn
+            .prepare("SELECT file_path FROM session_log_sync")
+            .map_err(|e| AppError::Database(format!("读取会话同步 cursor 失败: {e}")))?;
+        let paths = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| AppError::Database(format!("查询会话同步 cursor 失败: {e}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(format!("解析会话同步 cursor 失败: {e}")))?;
+        for file_path in paths.into_iter().filter(|file_path| {
+            let normalized = file_path.replace('\\', "/");
+            let file_name = normalized.rsplit('/').next().unwrap_or_default();
+            let is_rollout = file_name.starts_with("rollout-")
+                && file_name.ends_with(".jsonl")
+                && file_name
+                    .trim_end_matches(".jsonl")
+                    .get(
+                        file_name
+                            .trim_end_matches(".jsonl")
+                            .len()
+                            .saturating_sub(36)..,
+                    )
+                    .is_some_and(|candidate| uuid::Uuid::parse_str(candidate).is_ok());
+            is_rollout
+                && (Path::new(file_path).starts_with(codex_dir.join("sessions"))
+                    || Path::new(file_path).starts_with(codex_dir.join("archived_sessions"))
+                    || normalized
+                        .split('/')
+                        .any(|part| matches!(part, "sessions" | "archived_sessions")))
+        }) {
+            conn.execute(
+                "DELETE FROM session_log_sync WHERE file_path = ?1",
+                [file_path],
+            )
+            .map_err(|e| AppError::Database(format!("清理 Codex 同步 cursor 失败: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
 /// 递归扫描目录下的 .jsonl 文件（限制最大深度）
 fn collect_jsonl_recursive(dir: &Path, files: &mut Vec<PathBuf>, depth: u32, max_depth: u32) {
     let entries = match fs::read_dir(dir) {

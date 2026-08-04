@@ -47,9 +47,12 @@ use std::sync::Mutex;
 
 // DAO 方法通过 impl Database 提供，无需额外导出
 
-/// 当前 Schema 版本号
-/// 每次修改表结构时递增，并在 schema.rs 中添加相应的迁移逻辑
-pub(crate) const SCHEMA_VERSION: i32 = 19;
+/// 与上游共享的 SQLite schema 版本。
+///
+/// fork 自身的兼容迁移不得占用 `PRAGMA user_version`，否则上游 App
+/// 会将同一数据库判定为“版本过新”而拒绝打开。
+pub(crate) const SCHEMA_VERSION: i32 = 16;
+pub(crate) const FORK_SCHEMA_VERSION: i32 = 1;
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
@@ -125,7 +128,7 @@ impl Database {
             let conn = lock_conn!(db.conn);
             let version = Self::get_user_version(&conn)?;
             drop(conn);
-            if version > 0 && version < SCHEMA_VERSION {
+            if version > 0 && (version < SCHEMA_VERSION || (17..=19).contains(&version)) {
                 log::info!(
                     "Creating pre-migration database backup (v{version} → v{SCHEMA_VERSION})"
                 );

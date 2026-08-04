@@ -593,11 +593,11 @@ fn migration_from_v3_8_schema_v1_to_current_schema_v3() {
         "skills migration snapshot should preserve legacy app mapping"
     );
 
-    // v3.9+ 新增：proxy_config 双行 seed 必须存在（claude + codex；否则 UI 会查不到默认值）
+    // 上游兼容 schema 保留四行；fork UI 只使用 claude + codex。
     let proxy_rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM proxy_config", [], |r| r.get(0))
         .expect("count proxy_config rows");
-    assert_eq!(proxy_rows, 2);
+    assert_eq!(proxy_rows, 4);
 
     // model_pricing 应具备默认数据（迁移时会 seed）
     let pricing_rows: i64 = conn
@@ -837,11 +837,48 @@ fn migrate_v12_to_v13_adds_input_token_semantics_columns() {
     }
 }
 
-/// 由上游版本迁移到 v16 的库必须能被本 fork 直接打开：v11 之后的版本号
-/// 若不连续推进，迁移循环会走进 `_ =>` 分支报"未知的数据库版本"而拒绝启动。
-///
-/// 断言推进到 SCHEMA_VERSION 而非硬编码 16：v16 之后本 fork 自己还有迁移，
-/// 这些必须照常执行。
+#[test]
+fn migrate_v15_to_v16_resets_only_codex_session_usage() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+    conn.execute_batch(
+        "INSERT INTO proxy_request_logs (
+            request_id, provider_id, app_type, model, input_tokens, output_tokens,
+            cache_read_tokens, latency_ms, status_code, created_at, data_source
+         ) VALUES
+            ('codex-row', '_codex_session', 'codex', 'gpt', 1, 1, 0, 0, 200, 1, 'codex_session'),
+            ('claude-row', '_claude_session', 'claude', 'claude', 1, 1, 0, 0, 200, 1, 'claude_session');
+         INSERT INTO usage_daily_rollups (date, app_type, provider_id, model)
+         VALUES
+            ('2026-08-04', 'codex', '_codex_session', 'gpt'),
+            ('2026-08-04', 'claude', '_claude_session', 'claude');
+         INSERT INTO session_log_sync
+            (file_path, last_modified, last_line_offset, last_synced_at)
+         VALUES
+            ('/old/sessions/rollout-2026-08-04T00-00-00-00000000-0000-4000-8000-000000000001.jsonl', 1, 1, 1),
+            ('/claude/projects/session.jsonl', 1, 1, 1);",
+    )
+    .expect("seed v15 usage");
+    Database::set_user_version(&conn, 15).expect("set v15");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate v15 to v16");
+
+    let counts: (i64, i64, i64, i64) = conn
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM proxy_request_logs WHERE data_source='codex_session'),
+                (SELECT COUNT(*) FROM proxy_request_logs WHERE data_source='claude_session'),
+                (SELECT COUNT(*) FROM usage_daily_rollups WHERE provider_id='_codex_session'),
+                (SELECT COUNT(*) FROM session_log_sync)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("read post-migration counts");
+    assert_eq!(counts, (0, 1, 0, 1));
+}
+
+/// 官方 v16 数据库必须能被 fork 幂等打开，且不改写
+/// `PRAGMA user_version`。fork 自身版本改用 settings 独立记录。
 #[test]
 fn upstream_v16_database_is_accepted() {
     let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -854,12 +891,143 @@ fn upstream_v16_database_is_accepted() {
         Database::get_user_version(&conn).expect("version"),
         SCHEMA_VERSION
     );
-    // Desktop MCP 同步已回退（3P 实例走 gateway 模式，本地 mcpServers 不生效），
-    // v19 会把这列删掉。守住这一点，避免以后又被无意加回来。
+    let fork_version: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'fork_schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("fork schema marker");
+    assert_eq!(fork_version, FORK_SCHEMA_VERSION.to_string());
     assert!(
-        !Database::has_column(&conn, "mcp_servers", "enabled_claude_desktop").expect("has_column"),
-        "enabled_claude_desktop 应已被 v19 迁移删除"
+        Database::has_column(&conn, "mcp_servers", "enabled_grokbuild")
+            .expect("official compatibility column")
     );
+    let proxy_defaults: (i64, i64) = conn
+        .query_row(
+            "SELECT
+                (SELECT max_retries FROM proxy_config WHERE app_type='gemini'),
+                (SELECT max_retries FROM proxy_config WHERE app_type='grokbuild')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("official proxy defaults");
+    assert_eq!(proxy_defaults, (5, 3));
+}
+
+#[test]
+fn legacy_fork_v19_is_normalized_without_losing_core_rows() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create current tables");
+    conn.execute(
+        "INSERT INTO providers (id, app_type, name, settings_config)
+         VALUES ('p1', 'codex', 'Provider 1', '{}')",
+        [],
+    )
+    .expect("seed provider");
+    conn.execute(
+        "INSERT INTO mcp_servers
+         (id, name, server_config, enabled_claude, enabled_codex)
+         VALUES ('m1', 'MCP 1', '{}', 1, 1)",
+        [],
+    )
+    .expect("seed mcp");
+    for column in [
+        "enabled_gemini",
+        "enabled_grokbuild",
+        "enabled_opencode",
+        "enabled_hermes",
+    ] {
+        conn.execute(&format!("ALTER TABLE mcp_servers DROP COLUMN {column}"), [])
+            .expect("remove official column from legacy fixture");
+    }
+    Database::set_user_version(&conn, 19).expect("set legacy fork version");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("normalize legacy fork db");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("official version"),
+        SCHEMA_VERSION
+    );
+    let provider_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM providers WHERE id='p1'", [], |row| {
+            row.get(0)
+        })
+        .expect("provider count");
+    let mcp_flags: (i64, i64) = conn
+        .query_row(
+            "SELECT enabled_claude, enabled_codex FROM mcp_servers WHERE id='m1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("mcp flags");
+    assert_eq!(provider_count, 1);
+    assert_eq!(mcp_flags, (1, 1));
+    assert!(
+        Database::has_column(&conn, "mcp_servers", "enabled_grokbuild")
+            .expect("restored official column")
+    );
+}
+
+#[test]
+fn legacy_fork_v17_is_distinguished_from_future_upstream_v17() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+    conn.execute(
+        "ALTER TABLE mcp_servers ADD COLUMN enabled_claude_desktop BOOLEAN NOT NULL DEFAULT 0",
+        [],
+    )
+    .expect("add legacy fork marker column");
+    Database::set_user_version(&conn, 17).expect("set legacy fork version");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("normalize legacy fork v17");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("official version"),
+        SCHEMA_VERSION
+    );
+}
+
+#[test]
+fn saving_mcp_preserves_official_app_flags() {
+    let db = Database::memory().expect("create memory db");
+    {
+        let conn = db.conn.lock().expect("lock db");
+        conn.execute(
+            "INSERT INTO mcp_servers (
+                id, name, server_config, enabled_gemini, enabled_grokbuild,
+                enabled_opencode, enabled_hermes
+             ) VALUES ('shared', 'old', '{}', 1, 1, 1, 1)",
+            [],
+        )
+        .expect("seed upstream flags");
+    }
+
+    db.save_mcp_server(&crate::app_config::McpServer {
+        id: "shared".into(),
+        name: "updated".into(),
+        server: serde_json::json!({"command": "demo"}),
+        apps: crate::app_config::McpApps {
+            claude: true,
+            codex: true,
+        },
+        description: None,
+        homepage: None,
+        docs: None,
+        tags: Vec::new(),
+    })
+    .expect("save fork mcp fields");
+
+    let conn = db.conn.lock().expect("lock db");
+    let flags: (i64, i64, i64, i64) = conn
+        .query_row(
+            "SELECT enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes
+             FROM mcp_servers WHERE id='shared'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("read upstream flags");
+    assert_eq!(flags, (1, 1, 1, 1));
 }
 
 /// 全新库走完整迁移链后必须落在 SCHEMA_VERSION，且新列齐备。
@@ -876,4 +1044,15 @@ fn fresh_database_migrates_to_current_schema_version() {
     );
     get_column_info(&conn, "proxy_request_logs", "input_token_semantics");
     get_column_info(&conn, "usage_daily_rollups", "input_token_semantics");
+    assert!(Database::table_exists(&conn, "profiles").expect("profiles table"));
+    for table in ["mcp_servers", "skills"] {
+        for column in [
+            "enabled_gemini",
+            "enabled_grokbuild",
+            "enabled_opencode",
+            "enabled_hermes",
+        ] {
+            assert!(Database::has_column(&conn, table, column).expect("compatibility column"));
+        }
+    }
 }
