@@ -33,10 +33,13 @@ jobs:
         run: rustup target add aarch64-apple-darwin
 
       - name: Setup pnpm
-        shell: bash
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
         run: |
           corepack enable
-          corepack prepare pnpm@10.12.3 --activate
+          corepack install
+          node --version
+          pnpm --version
 
       - name: Get pnpm store directory
         id: pnpm-store
