@@ -643,7 +643,6 @@ pub fn refresh_tray_menu(app: &tauri::AppHandle) {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub fn apply_tray_policy(app: &tauri::AppHandle, dock_visible: bool) {
     use tauri::ActivationPolicy;
 
@@ -669,21 +668,10 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
     match event_id {
         "show_main" => {
             if let Some(window) = app.get_webview_window("main") {
-                #[cfg(target_os = "windows")]
-                {
-                    let _ = window.set_skip_taskbar(false);
-                }
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
-                #[cfg(target_os = "linux")]
-                {
-                    crate::linux_fix::nudge_main_window(window.clone());
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    apply_tray_policy(app, true);
-                }
+                apply_tray_policy(app, true);
             } else if crate::lightweight::is_lightweight_mode() {
                 if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
                     log::error!("退出轻量模式重建窗口失败: {e}");

@@ -465,10 +465,8 @@ pub struct AppSettings {
     pub backup_retain_count: Option<u32>,
 
     // ===== 终端设置 =====
-    /// 首选终端应用（可选，默认使用系统默认终端）
-    /// - macOS: "terminal" | "iterm2" | "warp" | "alacritty" | "kitty" | "ghostty" | "wezterm" | "kaku"
-    /// - Windows: "cmd" | "powershell" | "wt" (Windows Terminal)
-    /// - Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
+    /// macOS 首选终端应用（可选，默认使用 Terminal.app）
+    /// "terminal" | "iterm2" | "warp" | "alacritty" | "kitty" | "ghostty" | "wezterm" | "kaku"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_terminal: Option<String>,
 

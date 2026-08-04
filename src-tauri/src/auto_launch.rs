@@ -3,7 +3,6 @@ use auto_launch::{AutoLaunch, AutoLaunchBuilder};
 
 /// 获取 macOS 上的 .app bundle 路径
 /// 将 `/path/to/CC Switch.app/Contents/MacOS/CC Switch` 转换为 `/path/to/CC Switch.app`
-#[cfg(target_os = "macos")]
 fn get_macos_app_bundle_path(exe_path: &std::path::Path) -> Option<std::path::PathBuf> {
     let path_str = exe_path.to_string_lossy();
     // 查找 .app/Contents/MacOS/ 模式
@@ -22,15 +21,9 @@ fn get_auto_launch() -> Result<AutoLaunch, AppError> {
         std::env::current_exe().map_err(|e| AppError::Message(format!("无法获取应用路径: {e}")))?;
 
     // macOS 需要使用 .app bundle 路径，否则 AppleScript login item 会打开终端
-    #[cfg(target_os = "macos")]
     let app_path = get_macos_app_bundle_path(&exe_path).unwrap_or(exe_path);
 
-    #[cfg(not(target_os = "macos"))]
-    let app_path = exe_path;
-
-    // 使用 AutoLaunchBuilder 消除平台差异
-    // macOS: 使用 AppleScript 方式（默认），需要 .app bundle 路径
-    // Windows/Linux: 使用注册表/XDG autostart
+    // macOS 使用 AppleScript login item，需要 .app bundle 路径。
     let auto_launch = AutoLaunchBuilder::new()
         .set_app_name(app_name)
         .set_app_path(&app_path.to_string_lossy())
@@ -73,7 +66,6 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn test_get_macos_app_bundle_path_valid() {
         let exe_path = std::path::Path::new("/Applications/CC Switch.app/Contents/MacOS/CC Switch");
@@ -84,7 +76,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn test_get_macos_app_bundle_path_with_spaces() {
         let exe_path =
@@ -98,7 +89,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn test_get_macos_app_bundle_path_not_in_bundle() {
         let exe_path = std::path::Path::new("/usr/local/bin/cc-switch");
@@ -106,7 +96,6 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn test_get_macos_app_bundle_path_dev_build() {
         // 开发环境下的路径通常不在 .app bundle 内

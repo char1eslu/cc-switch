@@ -1,3 +1,6 @@
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+compile_error!("CC Switch supports only macOS on Apple Silicon (arm64).");
+
 mod app_config;
 mod app_store;
 mod auto_launch;
@@ -13,8 +16,6 @@ mod deeplink;
 mod error;
 mod init_status;
 mod lightweight;
-#[cfg(target_os = "linux")]
-mod linux_fix;
 mod mcp;
 mod panic_hook;
 mod prompt;
@@ -46,6 +47,7 @@ pub use mcp::{
     sync_single_server_to_codex,
 };
 pub use provider::{Provider, ProviderMeta};
+pub use proxy::types::ProxyConfig;
 pub use services::{
     skill::{migrate_skills_to_ssot, ImportSkillSelection},
     ConfigService, EndpointLatency, McpService, PromptService, ProviderService, ProxyService,
@@ -57,28 +59,11 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use std::sync::Arc;
-#[cfg(target_os = "macos")]
 use tauri::image::Image;
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
-
-#[cfg(target_os = "windows")]
-fn set_windows_app_user_model_id(app: &tauri::AppHandle) {
-    let app_id = app.config().identifier.clone();
-    let wide_app_id: Vec<u16> = app_id.encode_utf16().chain(std::iter::once(0)).collect();
-
-    let result = unsafe {
-        windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(wide_app_id.as_ptr())
-    };
-
-    if result < 0 {
-        log::warn!("设置 Windows AppUserModelID 失败: 0x{result:08X}");
-    } else {
-        log::debug!("Windows AppUserModelID 已设置为 {app_id}");
-    }
-}
 
 fn redact_url_for_log(url_str: &str) -> String {
     match url::Url::parse(url_str) {
@@ -150,10 +135,6 @@ fn handle_deeplink_url(
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
-                    #[cfg(target_os = "linux")]
-                    {
-                        linux_fix::nudge_main_window(window.clone());
-                    }
                     log::info!("✓ Window shown and focused");
                 }
             }
@@ -198,7 +179,6 @@ async fn update_tray_menu(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn macos_tray_icon() -> Option<Image<'static>> {
     const ICON_BYTES: &[u8] = include_bytes!("../icons/tray/macos/statusbar_template_3x.png");
 
@@ -216,11 +196,8 @@ pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 <app_config_dir>/crash.log（默认 ~/.cc-switch/crash.log）
     panic_hook::setup_panic_hook();
 
-    let mut builder = tauri::Builder::default();
-
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
+        |app, args, _cwd| {
             log::info!("=== Single Instance Callback Triggered ===");
             log::debug!("Args count: {}", args.len());
             for (i, arg) in args.iter().enumerate() {
@@ -251,13 +228,9 @@ pub fn run() {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
-                #[cfg(target_os = "linux")]
-                {
-                    linux_fix::nudge_main_window(window.clone());
-                }
             }
-        }));
-    }
+        },
+    ));
 
     let builder = builder
         // 注册 deep-link 插件（处理 macOS AppleEvent 和其他平台的深链接）
@@ -270,14 +243,7 @@ pub fn run() {
                 if settings.minimize_to_tray_on_close {
                     api.prevent_close();
                     let _ = window.hide();
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = window.set_skip_taskbar(true);
-                    }
-                    #[cfg(target_os = "macos")]
-                    {
-                        tray::apply_tray_policy(window.app_handle(), false);
-                    }
+                    tray::apply_tray_policy(window.app_handle(), false);
                 } else {
                     api.prevent_close();
                     window.app_handle().exit(0);
@@ -299,8 +265,6 @@ pub fn run() {
             // 预先刷新 Store 覆盖配置，确保后续路径读取正确（日志/数据库等）
             app_store::refresh_app_config_dir_override(app.handle());
             panic_hook::init_app_config_dir(crate::config::get_app_config_dir());
-            #[cfg(target_os = "windows")]
-            set_windows_app_user_model_id(app.handle());
 
             // 初始化日志（单文件输出到 <app_config_dir>/logs/cc-switch.log）
             {
@@ -677,41 +641,6 @@ pub fn run() {
             // 注册 deep-link URL 处理器（使用正确的 DeepLinkExt API）
             log::info!("=== Registering deep-link URL handler ===");
 
-            // Linux 和 Windows 调试模式需要显式注册
-            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
-            {
-                #[cfg(target_os = "linux")]
-                {
-                    // Use Tauri's path API to get correct path (includes app identifier)
-                    // tauri-plugin-deep-link writes to: ~/.local/share/com.ccswitch.desktop/applications/cc-switch-handler.desktop
-                    // Only register if .desktop file doesn't exist to avoid overwriting user customizations
-                    let should_register = app
-                        .path()
-                        .data_dir()
-                        .map(|d| !d.join("applications/cc-switch-handler.desktop").exists())
-                        .unwrap_or(true);
-
-                    if should_register {
-                        if let Err(e) = app.deep_link().register_all() {
-                            log::error!("✗ Failed to register deep link schemes: {}", e);
-                        } else {
-                            log::info!("✓ Deep link schemes registered (Linux)");
-                        }
-                    } else {
-                        log::info!("⊘ Deep link handler already exists, skipping registration");
-                    }
-                }
-
-                #[cfg(all(debug_assertions, windows))]
-                {
-                    if let Err(e) = app.deep_link().register_all() {
-                        log::error!("✗ Failed to register deep link schemes: {}", e);
-                    } else {
-                        log::info!("✓ Deep link schemes registered (Windows debug)");
-                    }
-                }
-            }
-
             // 注册 URL 处理回调（所有平台通用）
             app.deep_link().on_open_url({
                 let app_handle = app.handle().clone();
@@ -762,26 +691,14 @@ pub fn run() {
                 })
                 .show_menu_on_left_click(true);
 
-            // 使用平台对应的托盘图标（macOS 使用模板图标适配深浅色）
-            #[cfg(target_os = "macos")]
-            {
-                if let Some(icon) = macos_tray_icon() {
-                    tray_builder = tray_builder.icon(icon).icon_as_template(true);
-                } else if let Some(icon) = app.default_window_icon() {
-                    log::warn!("Falling back to default window icon for tray");
-                    tray_builder = tray_builder.icon(icon.clone());
-                } else {
-                    log::warn!("Failed to load macOS tray icon for tray");
-                }
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                if let Some(icon) = app.default_window_icon() {
-                    tray_builder = tray_builder.icon(icon.clone());
-                } else {
-                    log::warn!("Failed to get default window icon for tray");
-                }
+            // macOS 模板图标可自动适配深浅色。
+            if let Some(icon) = macos_tray_icon() {
+                tray_builder = tray_builder.icon(icon).icon_as_template(true);
+            } else if let Some(icon) = app.default_window_icon() {
+                log::warn!("Falling back to default window icon for tray");
+                tray_builder = tray_builder.icon(icon.clone());
+            } else {
+                log::warn!("Failed to load macOS tray icon for tray");
             }
 
             let _tray = tray_builder.build(app)?;
@@ -953,48 +870,18 @@ pub fn run() {
                 });
             });
 
-            // Linux: 禁用 WebKitGTK 硬件加速，防止 EGL 初始化失败导致白屏
-            #[cfg(target_os = "linux")]
-            {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.with_webview(|webview| {
-                        use webkit2gtk::{WebViewExt, SettingsExt, HardwareAccelerationPolicy};
-                        let wk_webview = webview.inner();
-                        if let Some(settings) = WebViewExt::settings(&wk_webview) {
-                            SettingsExt::set_hardware_acceleration_policy(&settings, HardwareAccelerationPolicy::Never);
-                            log::info!("已禁用 WebKitGTK 硬件加速");
-                        }
-                    });
-                }
-            }
-
             // 静默启动：根据设置决定是否显示主窗口
             let settings = crate::settings::get_settings();
             if let Some(window) = app.get_webview_window("main") {
-                // 在窗口首次显示前同步装饰状态，避免前端加载后再切换导致标题栏闪烁
-                // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
-                #[cfg(target_os = "linux")]
-                let _ = window.set_decorations(!settings.use_app_window_controls);
                 if settings.silent_startup {
                     // 静默启动模式：保持窗口隐藏
                     let _ = window.hide();
-                    #[cfg(target_os = "windows")]
-                    let _ = window.set_skip_taskbar(true);
-                    #[cfg(target_os = "macos")]
                     tray::apply_tray_policy(app.handle(), false);
                     log::info!("静默启动模式：主窗口已隐藏");
                 } else {
                     // 正常启动模式：显示窗口
                     let _ = window.show();
                     log::info!("正常启动模式：主窗口已显示");
-
-                    // Linux: 解决首次启动 UI 无响应问题（Tauri #10746 + wry #637）。
-                    // 启动时 webview 未获取焦点 + surface 尺寸协商失败，导致点击无效。
-                    // 这里做 set_focus + 伪 resize，等价于无视觉版本的"最大化-还原"。
-                    #[cfg(target_os = "linux")]
-                    {
-                        linux_fix::nudge_main_window(window.clone());
-                    }
                 }
             }
 
@@ -1329,16 +1216,10 @@ pub fn run() {
             return;
         }
 
-        #[cfg(target_os = "macos")]
-        {
-            match event {
+        match event {
                 // macOS 在 Dock 图标被点击并重新激活应用时会触发 Reopen 事件，这里手动恢复主窗口
                 RunEvent::Reopen { .. } => {
                     if let Some(window) = app_handle.get_webview_window("main") {
-                        #[cfg(target_os = "windows")]
-                        {
-                            let _ = window.set_skip_taskbar(false);
-                        }
                         let _ = window.unminimize();
                         let _ = window.show();
                         let _ = window.set_focus();
@@ -1409,12 +1290,6 @@ pub fn run() {
                     }
                 }
                 _ => {}
-            }
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (app_handle, event);
         }
     });
 }
@@ -1797,7 +1672,6 @@ pub fn save_window_state_before_exit(app_handle: &tauri::AppHandle) {
 /// `std::process::exit(0)`，不会触发插件挂在 `RunEvent::Exit` 上的清理钩子。
 /// 重启前主动 destroy 可以避免新进程误连旧 listener 后自行退出。
 pub fn destroy_single_instance_lock(app_handle: &tauri::AppHandle) {
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     tauri_plugin_single_instance::destroy(app_handle);
 }
 

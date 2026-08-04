@@ -9,7 +9,7 @@ permissions:
 jobs:
   macos-ad-hoc:
     name: macOS Ad Hoc App
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - name: Configure Git defaults
@@ -25,6 +25,9 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = "arm64"
 
       - name: Add macOS target
         run: rustup target add aarch64-apple-darwin
@@ -80,6 +83,8 @@ jobs:
           set -euo pipefail
           APP_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -type d | head -1)"
           test -n "$APP_PATH"
+          APP_BINARY="$APP_PATH/Contents/MacOS/CC Switch"
+          test "$(lipo -archs "$APP_BINARY")" = "arm64"
           codesign --force --deep --sign - "$APP_PATH"
           codesign --verify --deep --strict "$APP_PATH"
           mkdir -p release-assets

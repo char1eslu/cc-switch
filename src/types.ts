@@ -388,10 +388,8 @@ export interface Settings {
   backupRetainCount?: number;
 
   // ===== 终端设置 =====
-  // 首选终端应用（可选，默认使用系统默认终端）
+  // macOS 首选终端应用（可选，默认 Terminal.app）
   // macOS: "terminal" | "iterm2" | "warp" | "alacritty" | "kitty" | "ghostty" | "wezterm" | "kaku"
-  // Windows: "cmd" | "powershell" | "wt"
-  // Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
   preferredTerminal?: string;
 
   // ===== 本机自动迁移状态 =====

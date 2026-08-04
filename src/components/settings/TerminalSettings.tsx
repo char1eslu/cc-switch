@@ -6,10 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { isMac, isWindows, isLinux } from "@/lib/platform";
-
-// Terminal options per platform
-const MACOS_TERMINALS = [
+const TERMINALS = [
   { value: "terminal", labelKey: "settings.terminal.options.macos.terminal" },
   { value: "iterm2", labelKey: "settings.terminal.options.macos.iterm2" },
   { value: "alacritty", labelKey: "settings.terminal.options.macos.alacritty" },
@@ -20,59 +17,6 @@ const MACOS_TERMINALS = [
   { value: "warp", labelKey: "settings.terminal.options.macos.warp" },
 ] as const;
 
-const WINDOWS_TERMINALS = [
-  { value: "cmd", labelKey: "settings.terminal.options.windows.cmd" },
-  {
-    value: "powershell",
-    labelKey: "settings.terminal.options.windows.powershell",
-  },
-  { value: "wt", labelKey: "settings.terminal.options.windows.wt" },
-] as const;
-
-const LINUX_TERMINALS = [
-  {
-    value: "gnome-terminal",
-    labelKey: "settings.terminal.options.linux.gnomeTerminal",
-  },
-  { value: "konsole", labelKey: "settings.terminal.options.linux.konsole" },
-  {
-    value: "xfce4-terminal",
-    labelKey: "settings.terminal.options.linux.xfce4Terminal",
-  },
-  { value: "alacritty", labelKey: "settings.terminal.options.linux.alacritty" },
-  { value: "kitty", labelKey: "settings.terminal.options.linux.kitty" },
-  { value: "ghostty", labelKey: "settings.terminal.options.linux.ghostty" },
-] as const;
-
-// Get terminals for the current platform
-function getTerminalOptions() {
-  if (isMac()) {
-    return MACOS_TERMINALS;
-  }
-  if (isWindows()) {
-    return WINDOWS_TERMINALS;
-  }
-  if (isLinux()) {
-    return LINUX_TERMINALS;
-  }
-  // Fallback to macOS options
-  return MACOS_TERMINALS;
-}
-
-// Get default terminal for the current platform
-function getDefaultTerminal(): string {
-  if (isMac()) {
-    return "terminal";
-  }
-  if (isWindows()) {
-    return "cmd";
-  }
-  if (isLinux()) {
-    return "gnome-terminal";
-  }
-  return "terminal";
-}
-
 export interface TerminalSettingsProps {
   value?: string;
   onChange: (value: string) => void;
@@ -80,11 +24,8 @@ export interface TerminalSettingsProps {
 
 export function TerminalSettings({ value, onChange }: TerminalSettingsProps) {
   const { t } = useTranslation();
-  const terminals = getTerminalOptions();
-  const defaultTerminal = getDefaultTerminal();
-
-  // Use value or default
-  const currentValue = value || defaultTerminal;
+  const currentValue =
+    TERMINALS.find((terminal) => terminal.value === value)?.value ?? "terminal";
 
   return (
     <section className="space-y-2">
@@ -99,7 +40,7 @@ export function TerminalSettings({ value, onChange }: TerminalSettingsProps) {
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {terminals.map((terminal) => (
+          {TERMINALS.map((terminal) => (
             <SelectItem key={terminal.value} value={terminal.value}>
               {t(terminal.labelKey)}
             </SelectItem>

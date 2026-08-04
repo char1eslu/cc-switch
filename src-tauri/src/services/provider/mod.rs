@@ -113,7 +113,6 @@ mod tests {
     use serde_json::json;
     use serial_test::serial;
     use std::env;
-    use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, OnceLock};
     use tempfile::TempDir;
@@ -419,6 +418,7 @@ command = "legacy-cmd"
             .expect("set local current provider");
 
         db.update_proxy_config(ProxyConfig {
+            listen_port: 0,
             live_takeover_active: true,
             ..Default::default()
         })
@@ -439,7 +439,7 @@ command = "legacy-cmd"
             &get_claude_settings_path(),
             &json!({
                 "env": {
-                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:0",
                     "ANTHROPIC_API_KEY": "PROXY_MANAGED",
                     "ANTHROPIC_MODEL": "stale-model"
                 },
@@ -448,7 +448,7 @@ command = "legacy-cmd"
         )
         .expect("seed taken-over live file");
 
-        state
+        let proxy_info = state
             .proxy_service
             .start()
             .await
@@ -501,7 +501,7 @@ command = "legacy-cmd"
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721"),
+            Some(format!("http://127.0.0.1:{}", proxy_info.port).as_str()),
             "proxy base URL should stay intact"
         );
         assert!(
@@ -521,6 +521,13 @@ command = "legacy-cmd"
 
         let db = Arc::new(Database::memory().expect("init db"));
         let state = AppState::new(db.clone());
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        })
+        .await
+        .expect("update proxy config");
 
         let mut original = Provider::with_id(
             "p1".into(),
@@ -569,7 +576,7 @@ command = "legacy-cmd"
                 .expect("update app proxy config");
         }
 
-        state
+        let proxy_info = state
             .proxy_service
             .start()
             .await
@@ -617,7 +624,10 @@ command = "legacy-cmd"
         let profile: Value = read_json_file(&profile_path).expect("read desktop profile");
         assert_eq!(
             profile["inferenceGatewayBaseUrl"],
-            json!("http://127.0.0.1:15721/claude-desktop"),
+            json!(format!(
+                "http://127.0.0.1:{}/claude-desktop",
+                proxy_info.port
+            )),
             "desktop profile should stay pointed at the local gateway during takeover"
         );
         assert_eq!(profile["inferenceGatewayAuthScheme"], json!("bearer"));
