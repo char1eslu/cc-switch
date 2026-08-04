@@ -3605,8 +3605,7 @@ mod tests {
     fn resolve_skill_source_dir_skips_same_name_wrapper_without_skill_md() {
         let temp = tempdir().expect("tempdir");
         let wrapper = temp.path().join("ast-grep");
-        fs::create_dir_all(wrapper.join(".claude-plugin"))
-            .expect("create wrapper plugin dir");
+        fs::create_dir_all(wrapper.join(".claude-plugin")).expect("create wrapper plugin dir");
         let real_skill = wrapper.join("skills").join("ast-grep");
         write_skill(&real_skill, "ast-grep");
 
