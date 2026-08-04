@@ -26,7 +26,15 @@ export default defineConfig(({ command }) => ({
     rollupOptions: {
       output: {
         manualChunks: {
-          vendor: ["react", "react-dom"],
+          vendor: ["react", "react-dom", "react-hook-form", "zod"],
+          ui: [
+            "framer-motion",
+            "sonner",
+            "@dnd-kit/core",
+            "@dnd-kit/sortable",
+            "@dnd-kit/utilities",
+            "tailwind-merge",
+          ],
           codemirror: [
             "codemirror",
             "@codemirror/lang-javascript",

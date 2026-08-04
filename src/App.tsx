@@ -50,7 +50,6 @@ import {
 } from "@/lib/platform";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
-import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { UpdateBadge } from "@/components/UpdateBadge";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
@@ -92,6 +91,11 @@ const UniversalProviderPanel = lazy(() =>
 const AddProviderDialog = lazy(() =>
   import("@/components/providers/AddProviderDialog").then((m) => ({
     default: m.AddProviderDialog,
+  })),
+);
+const EditProviderDialog = lazy(() =>
+  import("@/components/providers/EditProviderDialog").then((m) => ({
+    default: m.EditProviderDialog,
   })),
 );
 const SessionManagerPage = lazy(() =>
@@ -1237,18 +1241,22 @@ function App() {
         </Suspense>
       )}
 
-      <EditProviderDialog
-        open={Boolean(editingProvider)}
-        provider={effectiveEditingProvider}
-        onOpenChange={(open) => {
-          if (!open) {
-            setEditingProvider(null);
-          }
-        }}
-        onSubmit={handleEditProvider}
-        appId={activeApp}
-        isProxyTakeover={isCurrentAppTakeoverActive}
-      />
+      {effectiveEditingProvider && (
+        <Suspense fallback={null}>
+          <EditProviderDialog
+            open={Boolean(editingProvider)}
+            provider={effectiveEditingProvider}
+            onOpenChange={(open) => {
+              if (!open) {
+                setEditingProvider(null);
+              }
+            }}
+            onSubmit={handleEditProvider}
+            appId={activeApp}
+            isProxyTakeover={isCurrentAppTakeoverActive}
+          />
+        </Suspense>
+      )}
 
       {effectiveUsageProvider && (
         <Suspense fallback={null}>
