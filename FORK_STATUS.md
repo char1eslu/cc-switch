@@ -2,26 +2,28 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-07-30
+最后更新：2026-08-04
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游 head | `c0ff89b9`（`v3.19.0`） |
+| 已完整评估到的上游基线 | `28529620`（`v3.19.1` 同步基线） |
+| 2026-08-03 上游增量审计 | `28529620..upstream/main`；5 个新增提交均不适合三应用 fork |
 | 最近一轮已适配的上游安全修复 | `ff3bc242` 及 deeplink / SQL import / terminal quoting / prototype pollution 修复链 |
-| 本 fork 分支 | `dev`（以 `origin/dev` 为准，不在文档里固定易过期的 head） |
+| 当前已验证代码 head | `ba9e37c2`（`dev`；其后的纯文档提交不改变构建） |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline c0ff89b9..upstream/main
+git log --oneline 28529620..upstream/main
 ```
 
-截至 2026-07-30，上游 `v3.19.0` 已逐项评估。安全修复按 fork 的三应用结构
+截至 2026-08-03，上游 `v3.19.1` 之后的真实增量已逐项评估。安全修复按 fork 的三应用结构
 cherry-pick 或手工适配；发行版本、updater / R2、赞助商预设、已裁剪应用和
-不适合三应用 UI 的提交均明确跳过。下次只需检查 `c0ff89b9..upstream/main`。
+不适合三应用 UI 的提交均明确跳过。不要用 `dev..upstream/main` 统计差异：
+选择性同步历史会夸大提交数；下次从 `28529620..upstream/main` 检查。
 
 ## 裁剪边界（决定哪些上游提交天然不用看）
 
@@ -45,11 +47,13 @@ cherry-pick 或手工适配；发行版本、updater / R2、赞助商预设、�
 | | SCHEMA_VERSION |
 | --- | --- |
 | 本 fork | **16** |
-| 上游 (`v3.19.0`, `c0ff89b9`) | 16 |
+| 上游 (`v3.19.1` 基线 `28529620`) | 16 |
 
 fork 曾经占用 `PRAGMA user_version` 17–19；现在已停止这种做法。启动时若检测到
 历史 fork v17–19 数据库，会在事务内补回官方 v16 所需的兼容列、`profiles` 表
-及 `proxy_config` 约束，然后把 `user_version` 规范化为 16。fork 自身版本写在
+及 `proxy_config` 约束，然后把 `user_version` 规范化为 16。识别逻辑同时覆盖
+早期转换留下的“proxy_config 已兼容、MCP/Skills 仍为双应用列”的部分规范化 v19。
+fork 自身版本写在
 `settings.fork_schema_version`，不再与上游迁移号冲突。
 
 兼容列和空表不表示恢复了对应功能：fork 仍只维护 Claude Code、Claude Desktop、
@@ -57,6 +61,23 @@ Codex；Gemini/GrokBuild/OpenCode/Hermes 的列默认值为 0，业务代码不�
 
 上游将来推进到 17+ 时，按正常上游迁移号适配；fork 独有结构只递增
 `fork_schema_version`。不要再次为 fork 私有改动提升 `PRAGMA user_version`。
+也不要用手工 `PRAGMA user_version=16` 代替结构迁移。
+
+### 2026-08-04 数据库兼容改造验证
+
+- 核心提交：`4553aaa3`（官方 v16 结构）、`309cbb51`（收紧旧 fork 识别）、
+  `3a9c2a73`（部分规范化 v19）、`ba9e37c2`（最终 rustfmt）。
+- 最终 CI：[`30911059851`](https://github.com/char1eslu/cc-switch/actions/runs/30911059851)，
+  前端 typecheck / format / unit tests、Rust fmt / Clippy / tests 全部通过。
+- 最终 arm64 Ad Hoc 构建：[`30911416458`](https://github.com/char1eslu/cc-switch/actions/runs/30911416458)，
+  thin arm64、Ad Hoc 签名有效。
+- 安装前用最终构建二进制在隔离 HOME 中迁移真实数据库副本：
+  `user_version 19 -> 16`、`fork_schema_version=1`、`integrity_check=ok`；
+  providers / MCP / skills / request logs / rollups 计数迁移前后完全一致。
+- 真实库迁移后再次确认完整性、核心表计数和本地代理健康；安装前备份保留在
+  `~/.cc-switch/backups/`。
+- v15 -> v16 保持官方语义：清理可从 JSONL 重建的 Codex session usage；
+  Gemini/GrokBuild 仅保留官方兼容占位行，默认重试值分别为 5/3。
 
 另注：官方共享结构仍走 `while version < SCHEMA_VERSION`；fork 兼容列
 则必须由幂等的 `ensure_upstream_schema_compatibility` 补齐，不能只写在
@@ -200,7 +221,8 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 ## 验证手段
 
-本机无 Rust toolchain，后端改动**只能靠 CI 验证**：
+本机默认不保留 Rust toolchain；后端改动以 GitHub CI 为最终验证，若临时在本机
+验证，必须使用隔离目录并在完成后删除 Rustup/Cargo/target 缓存：
 
 ```bash
 gh workflow run "CI" --ref dev -R char1eslu/cc-switch

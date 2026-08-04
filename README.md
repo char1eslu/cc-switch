@@ -29,7 +29,7 @@
 | 技能更新 | 修正本地哈希与 GitHub tree 的排序口径，消除反复提示更新；大型仓库下载超时放宽，结构化错误显示可读文案 |
 | Codex 上游协议 | 支持只提供原生 Anthropic Messages（`/v1/messages`）的网关，由本地代理做 Responses ⇄ Anthropic 双向转换 |
 | MCP 覆盖 | Claude Code 与 Codex 两端；Claude Desktop 因 gateway 接管无法支持，与上游一致 |
-| 数据库 | `user_version` 与上游一致；仅保留已裁剪应用的空兼容字段，fork 私有迁移独立记账 |
+| 数据库 | 与上游 v3.19.1 共用 `user_version=16`；仅保留已裁剪应用的空兼容字段，fork 私有迁移独立记账 |
 | 应用自更新 | 屏蔽 Tauri updater、自更新 endpoint 和 updater artifact，避免应用内检查上游更新 |
 | 构建方式 | 保留 macOS Apple Silicon ad-hoc GitHub Actions 构建，当前不做 DMG、公证或自动更新包 |
 
@@ -116,7 +116,7 @@ Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
 ## 构建和下载
 
 当前 fork 的 bundle 版本仍为 `3.16.3`。这里的手动 macOS arm64 ad-hoc
-产物不是上游 `v3.19.0` 的官方发布包，也不包含上游已裁剪的应用面。
+产物不是上游 `v3.19.1` 的官方发布包，也不包含上游已裁剪的应用面。
 
 ### GitHub Actions 自用构建
 
@@ -124,6 +124,8 @@ Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
 - 目标架构：`aarch64-apple-darwin`
 - 产物名：`CC-Switch-macOS-arm64-ad-hoc`
 - 产物内容：ad-hoc signed `CC Switch.app` zip
+- 当前已验证代码 head：[`ba9e37c2`](https://github.com/char1eslu/cc-switch/commit/ba9e37c243b4b844ef74e0673b7b631a251e72aa)
+- 最终验证：[CI 30911059851](https://github.com/char1eslu/cc-switch/actions/runs/30911059851) / [Build 30911416458](https://github.com/char1eslu/cc-switch/actions/runs/30911416458)
 
 如果 macOS 拦截，可以右键打开，或清理 quarantine：
 
@@ -145,6 +147,12 @@ Rust/Tauri 完整打包需要本机有 Rust toolchain 和 Tauri 依赖。
 
 ## 使用注意
 
+- 从本 fork 旧版（数据库 v17–19）首次升级前，先备份整个 `~/.cc-switch`。新版会把
+  历史 fork 数据库事务化规范为官方兼容 v16，并在
+  `settings.fork_schema_version` 记录 fork 私有迁移版本。迁移不会恢复 Gemini、
+  GrokBuild、OpenCode 或 Hermes 的 UI/业务功能。
+- 不要只手工修改 `PRAGMA user_version`。数据库兼容还依赖 MCP、Skills、profiles
+  和 proxy_config 的结构；直接改版本号可能令官方版或 fork 在启动时拒绝数据库。
 - Codex 会话维护会修改 `~/.codex/sqlite/state_5.sqlite`、`session_index.jsonl` 和 `sessions/**/*.jsonl`。
 - Move、Repair、Branch、Trash、Restore 等写操作会尽量先创建 `.codex-rescue-backup-*` 备份。
 - 操作同一个会话前建议关闭正在运行的 Codex 进程，避免 SQLite/WAL 或 JSONL 同时写入。
