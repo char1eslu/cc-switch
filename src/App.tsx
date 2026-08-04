@@ -50,7 +50,6 @@ import {
 } from "@/lib/platform";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
-import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { UpdateBadge } from "@/components/UpdateBadge";
@@ -86,8 +85,13 @@ const AgentsPanel = lazy(() =>
   })),
 );
 const UniversalProviderPanel = lazy(() =>
-  import("@/components/universal").then((m) => ({
+  import("@/components/universal/UniversalProviderPanel").then((m) => ({
     default: m.UniversalProviderPanel,
+  })),
+);
+const AddProviderDialog = lazy(() =>
+  import("@/components/providers/AddProviderDialog").then((m) => ({
+    default: m.AddProviderDialog,
   })),
 );
 const SessionManagerPage = lazy(() =>
@@ -1222,12 +1226,16 @@ function App() {
         {renderContent()}
       </main>
 
-      <AddProviderDialog
-        open={isAddOpen}
-        onOpenChange={setIsAddOpen}
-        appId={activeApp}
-        onSubmit={addProvider}
-      />
+      {isAddOpen && (
+        <Suspense fallback={null}>
+          <AddProviderDialog
+            open
+            onOpenChange={setIsAddOpen}
+            appId={activeApp}
+            onSubmit={addProvider}
+          />
+        </Suspense>
+      )}
 
       <EditProviderDialog
         open={Boolean(editingProvider)}

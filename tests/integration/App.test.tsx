@@ -180,7 +180,7 @@ describe("App integration with MSW", () => {
     fireEvent.click(screen.getByText("close-usage"));
 
     fireEvent.click(screen.getByText("create"));
-    expect(screen.getByTestId("add-provider-dialog")).toBeInTheDocument();
+    expect(await screen.findByTestId("add-provider-dialog")).toBeInTheDocument();
     fireEvent.click(screen.getByText("confirm-add"));
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toMatch(

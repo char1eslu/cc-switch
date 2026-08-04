@@ -4,6 +4,7 @@
 //! Implements AWS Signature Version 4 request signing.
 //! The sync protocol logic lives in the upcoming `s3_sync` module.
 
+use reqwest::header::HeaderValue;
 use reqwest::StatusCode;
 use std::time::Duration;
 use url::Url;
@@ -31,9 +32,20 @@ pub(crate) struct S3Credentials {
 
 // ─── URL construction ────────────────────────────────────────
 
-/// Returns `true` for AWS official endpoints (empty or contains `amazonaws.com`).
+/// Returns `true` for AWS official endpoints.
 fn is_aws_endpoint(endpoint: &str) -> bool {
-    endpoint.is_empty() || endpoint.contains("amazonaws.com")
+    if endpoint.is_empty() {
+        return true;
+    }
+    let candidate = if endpoint.contains("://") {
+        endpoint.to_string()
+    } else {
+        format!("https://{endpoint}")
+    };
+    Url::parse(&candidate)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "amazonaws.com" || host.ends_with(".amazonaws.com"))
 }
 
 /// Split an endpoint into its scheme and host-with-port parts.
@@ -133,7 +145,7 @@ fn sign_request(
     body_hash: &str,
     creds: &S3Credentials,
     now: chrono::DateTime<chrono::Utc>,
-) {
+) -> Result<(), AppError> {
     let timestamp = now.format("%Y%m%dT%H%M%SZ").to_string();
     let datestamp = now.format("%Y%m%d").to_string();
 
@@ -142,9 +154,12 @@ fn sign_request(
         Some(port) => format!("{}:{}", url.host_str().unwrap_or_default(), port),
         None => url.host_str().unwrap_or_default().to_string(),
     };
-    headers.insert("host", host_value.parse().unwrap());
-    headers.insert("x-amz-date", timestamp.parse().unwrap());
-    headers.insert("x-amz-content-sha256", body_hash.parse().unwrap());
+    headers.insert("host", parse_header_value("host", &host_value)?);
+    headers.insert("x-amz-date", parse_header_value("x-amz-date", &timestamp)?);
+    headers.insert(
+        "x-amz-content-sha256",
+        parse_header_value("x-amz-content-sha256", body_hash)?,
+    );
 
     // ── Step 2: Build canonical request ──
 
@@ -223,7 +238,21 @@ fn sign_request(
         "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
         creds.access_key_id, scope, signed_headers, signature
     );
-    headers.insert("authorization", authorization.parse().unwrap());
+    headers.insert(
+        "authorization",
+        parse_header_value("authorization", &authorization)?,
+    );
+    Ok(())
+}
+
+fn parse_header_value(name: &str, value: &str) -> Result<HeaderValue, AppError> {
+    value.parse::<HeaderValue>().map_err(|_| {
+        AppError::localized(
+            "s3.header.invalid",
+            format!("S3 {name} 请求头包含非法字符"),
+            format!("S3 {name} header contains invalid characters"),
+        )
+    })
 }
 
 // ─── Error helpers ───────────────────────────────────────────
@@ -342,7 +371,7 @@ pub(crate) async fn test_connection(creds: &S3Credentials) -> Result<(), AppErro
         &body_hash,
         creds,
         chrono::Utc::now(),
-    );
+    )?;
 
     let resp = client
         .head(url.as_str())
@@ -377,7 +406,10 @@ pub(crate) async fn put_object(
     let client = http_client::get();
     let body_hash = sha256_hex(&bytes);
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("content-type", content_type.parse().unwrap());
+    headers.insert(
+        "content-type",
+        parse_header_value("content-type", content_type)?,
+    );
     sign_request(
         "PUT",
         &url,
@@ -385,7 +417,7 @@ pub(crate) async fn put_object(
         &body_hash,
         creds,
         chrono::Utc::now(),
-    );
+    )?;
 
     let resp = client
         .put(url.as_str())
@@ -429,7 +461,7 @@ pub(crate) async fn get_object(
         &body_hash,
         creds,
         chrono::Utc::now(),
-    );
+    )?;
 
     let resp = client
         .get(url.as_str())
@@ -495,7 +527,7 @@ pub(crate) async fn head_object(
         &body_hash,
         creds,
         chrono::Utc::now(),
-    );
+    )?;
 
     let resp = client
         .head(url.as_str())
@@ -692,6 +724,8 @@ mod tests {
         assert!(!is_aws_endpoint("minio.example.com"));
         assert!(!is_aws_endpoint("storage.googleapis.com"));
         assert!(!is_aws_endpoint("r2.cloudflarestorage.com"));
+        assert!(!is_aws_endpoint("amazonaws.com.evil.example"));
+        assert!(!is_aws_endpoint("https://evil.example/amazonaws.com"));
     }
 
     // ── URI encoding ──
@@ -735,7 +769,8 @@ mod tests {
         let body_hash = sha256_hex(b"");
 
         let mut headers = reqwest::header::HeaderMap::new();
-        sign_request("GET", &url, &mut headers, &body_hash, &creds, now);
+        sign_request("GET", &url, &mut headers, &body_hash, &creds, now)
+            .expect("valid signature headers");
 
         let auth = headers.get("authorization").unwrap().to_str().unwrap();
 
@@ -776,7 +811,8 @@ mod tests {
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("content-type", "application/json".parse().unwrap());
-        sign_request("PUT", &url, &mut headers, &body_hash, &creds, now);
+        sign_request("PUT", &url, &mut headers, &body_hash, &creds, now)
+            .expect("valid signature headers");
 
         let auth = headers.get("authorization").unwrap().to_str().unwrap();
         // content-type must appear in the signed headers
@@ -784,6 +820,31 @@ mod tests {
             auth.contains("content-type"),
             "content-type should be in signed headers: {auth}"
         );
+    }
+
+    #[test]
+    fn signing_rejects_invalid_access_key_header_without_panicking() {
+        let creds = S3Credentials {
+            access_key_id: "bad\nkey".to_string(),
+            secret_access_key: "secret".to_string(),
+            region: "us-east-1".to_string(),
+            bucket: "bucket".to_string(),
+            endpoint: String::new(),
+        };
+        let url = Url::parse("https://bucket.s3.us-east-1.amazonaws.com/key")
+            .expect("valid test URL");
+        let mut headers = reqwest::header::HeaderMap::new();
+
+        let result = sign_request(
+            "GET",
+            &url,
+            &mut headers,
+            &sha256_hex(b""),
+            &creds,
+            chrono::Utc::now(),
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

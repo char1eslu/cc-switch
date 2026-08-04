@@ -233,6 +233,41 @@ impl S3SyncSettings {
                 "S3 Secret Access Key is required.",
             ));
         }
+        if self.access_key_id.chars().any(char::is_control)
+            || self.region.chars().any(char::is_control)
+        {
+            return Err(crate::error::AppError::localized(
+                "s3.credentials.invalid_characters",
+                "S3 Access Key ID 或区域包含非法控制字符",
+                "S3 Access Key ID or region contains invalid control characters.",
+            ));
+        }
+        if !self.endpoint.trim().is_empty() {
+            let endpoint = self.endpoint.trim();
+            let candidate = if endpoint.contains("://") {
+                endpoint.to_string()
+            } else {
+                format!("https://{endpoint}")
+            };
+            let valid = url::Url::parse(&candidate)
+                .ok()
+                .is_some_and(|url| {
+                    matches!(url.scheme(), "http" | "https")
+                        && url.host_str().is_some()
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                        && matches!(url.path(), "" | "/")
+                        && url.query().is_none()
+                        && url.fragment().is_none()
+                });
+            if !valid {
+                return Err(crate::error::AppError::localized(
+                    "s3.endpoint.invalid",
+                    "S3 endpoint 必须是有效的 HTTP(S) 主机或 host:port，且不能包含凭据、查询或片段",
+                    "S3 endpoint must be a valid HTTP(S) host or host:port without credentials, query, or fragment.",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1000,6 +1035,44 @@ pub fn update_s3_sync_status(status: WebDavSyncStatus) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use crate::app_config::AppType;
+
+    fn valid_s3_settings() -> S3SyncSettings {
+        S3SyncSettings {
+            region: "us-east-1".to_string(),
+            bucket: "bucket".to_string(),
+            access_key_id: "access-key".to_string(),
+            secret_access_key: "secret".to_string(),
+            ..S3SyncSettings::default()
+        }
+    }
+
+    #[test]
+    fn s3_settings_reject_header_control_characters() {
+        let mut settings = valid_s3_settings();
+        settings.access_key_id = "bad\nkey".to_string();
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn s3_settings_validate_custom_endpoints() {
+        for endpoint in ["minio:9000", "http://minio:9000", "https://s3.example.com"] {
+            let mut settings = valid_s3_settings();
+            settings.endpoint = endpoint.to_string();
+            assert!(settings.validate().is_ok(), "endpoint should be valid: {endpoint}");
+        }
+
+        for endpoint in [
+            "ftp://minio.example.com",
+            "https://user:secret@minio.example.com",
+            "https://minio.example.com/storage",
+            "https://minio.example.com?token=secret",
+            "https://minio.example.com#fragment",
+        ] {
+            let mut settings = valid_s3_settings();
+            settings.endpoint = endpoint.to_string();
+            assert!(settings.validate().is_err(), "endpoint should be rejected: {endpoint}");
+        }
+    }
 
     #[test]
     fn visible_apps_old_settings_default_claude_desktop_visible() {

@@ -2490,43 +2490,49 @@ fn launch_terminal_with_env(
     provider_id: &str,
     cwd: Option<&Path>,
 ) -> Result<(), String> {
-    let temp_dir = std::env::temp_dir();
-    let config_file = temp_dir.join(format!(
-        "claude_{}_{}.json",
-        provider_id,
-        std::process::id()
-    ));
-
-    // 创建并写入配置文件
-    write_claude_config(&config_file, &env_vars)?;
+    let config_file = write_claude_config(provider_id, &env_vars)?;
 
     #[cfg(target_os = "macos")]
     {
-        launch_macos_terminal(&config_file, cwd)?;
-        Ok(())
+        let result = launch_macos_terminal(&config_file, cwd);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&config_file);
+        }
+        result
     }
 
     #[cfg(target_os = "linux")]
     {
-        launch_linux_terminal(&config_file, cwd)?;
-        Ok(())
+        let result = launch_linux_terminal(&config_file, cwd);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&config_file);
+        }
+        result
     }
 
     #[cfg(target_os = "windows")]
     {
-        launch_windows_terminal(&temp_dir, &config_file, cwd)?;
-        return Ok(());
+        let result = launch_windows_terminal(&config_file, cwd);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&config_file);
+        }
+        return result;
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    Err("不支持的操作系统".to_string())
+    {
+        let _ = std::fs::remove_file(&config_file);
+        Err("不支持的操作系统".to_string())
+    }
 }
 
 /// 写入 claude 配置文件
 fn write_claude_config(
-    config_file: &std::path::Path,
+    provider_id: &str,
     env_vars: &[(String, String)],
-) -> Result<(), String> {
+) -> Result<std::path::PathBuf, String> {
+    use std::io::Write;
+
     let mut config_obj = serde_json::Map::new();
     let mut env_obj = serde_json::Map::new();
 
@@ -2539,7 +2545,31 @@ fn write_claude_config(
     let config_json =
         serde_json::to_string_pretty(&config_obj).map_err(|e| format!("序列化配置失败: {e}"))?;
 
-    std::fs::write(config_file, config_json).map_err(|e| format!("写入配置文件失败: {e}"))
+    let safe_provider_id: String = provider_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let mut file = tempfile::Builder::new()
+        .prefix(&format!("claude_{safe_provider_id}_"))
+        .suffix(".json")
+        .tempfile()
+        .map_err(|e| format!("创建临时配置文件失败: {e}"))?;
+    file.write_all(config_json.as_bytes())
+        .map_err(|e| format!("写入配置文件失败: {e}"))?;
+    file.flush()
+        .map_err(|e| format!("刷新配置文件失败: {e}"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("设置配置文件权限失败: {e}"))?;
+    }
+
+    file.into_temp_path()
+        .keep()
+        .map_err(|e| format!("保留临时配置文件失败: {e}"))
 }
 
 /// macOS: 根据用户首选终端启动
@@ -2554,8 +2584,14 @@ fn launch_macos_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> R
     let exec_line = build_exec_line(&shell, cwd);
     let final_cd_command = build_final_shell_cd_command(&shell, cwd);
 
-    let temp_dir = std::env::temp_dir();
-    let script_file = temp_dir.join(format!("cc_switch_launcher_{}.sh", std::process::id()));
+    let script_file = tempfile::Builder::new()
+        .prefix("cc_switch_launcher_")
+        .suffix(".sh")
+        .tempfile()
+        .map_err(|e| format!("创建启动脚本失败: {e}"))?
+        .into_temp_path()
+        .keep()
+        .map_err(|e| format!("保留启动脚本失败: {e}"))?;
     let config_path = config_file.to_string_lossy();
     let provider_command = build_provider_command_line(&shell, &config_path, cwd);
 
@@ -2603,9 +2639,16 @@ echo "{config_path}"
             terminal,
             result.as_ref().err()
         );
-        return launch_macos_terminal_app(&script_file);
+        let fallback = launch_macos_terminal_app(&script_file);
+        if fallback.is_err() {
+            let _ = std::fs::remove_file(&script_file);
+        }
+        return fallback;
     }
 
+    if result.is_err() {
+        let _ = std::fs::remove_file(&script_file);
+    }
     result
 }
 
@@ -2887,8 +2930,14 @@ fn launch_linux_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> R
     ];
 
     // Create temp script file
-    let temp_dir = std::env::temp_dir();
-    let script_file = temp_dir.join(format!("cc_switch_launcher_{}.sh", std::process::id()));
+    let script_file = tempfile::Builder::new()
+        .prefix("cc_switch_launcher_")
+        .suffix(".sh")
+        .tempfile()
+        .map_err(|e| format!("创建启动脚本失败: {e}"))?
+        .into_temp_path()
+        .keep()
+        .map_err(|e| format!("保留启动脚本失败: {e}"))?;
     let config_path = config_file.to_string_lossy();
     let provider_command = build_provider_command_line(&shell, &config_path, cwd);
 
@@ -2982,14 +3031,20 @@ fn which_command(cmd: &str) -> bool {
 /// Windows: 根据用户首选终端启动
 #[cfg(target_os = "windows")]
 fn launch_windows_terminal(
-    temp_dir: &std::path::Path,
     config_file: &std::path::Path,
     cwd: Option<&Path>,
 ) -> Result<(), String> {
     let preferred = crate::settings::get_preferred_terminal();
     let terminal = preferred.as_deref().unwrap_or("cmd");
 
-    let bat_file = temp_dir.join(format!("cc_switch_claude_{}.bat", std::process::id()));
+    let bat_file = tempfile::Builder::new()
+        .prefix("cc_switch_claude_")
+        .suffix(".bat")
+        .tempfile()
+        .map_err(|e| format!("创建启动脚本失败: {e}"))?
+        .into_temp_path()
+        .keep()
+        .map_err(|e| format!("保留启动脚本失败: {e}"))?;
     let config_path_for_batch = escape_windows_batch_value(&config_file.to_string_lossy());
     let cwd_command = build_windows_cwd_command(cwd);
 
@@ -3033,6 +3088,9 @@ del \"%~f0\" >nul 2>&1
         return run_windows_start_command(&["cmd", "/K", &bat_path], "cmd");
     }
 
+    if result.is_err() {
+        let _ = std::fs::remove_file(&bat_file);
+    }
     result
 }
 
@@ -3307,6 +3365,38 @@ pub async fn set_window_theme(window: tauri::Window, theme: String) -> Result<()
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn claude_temp_configs_are_unique_and_keep_secrets_private() {
+        let env = vec![("ANTHROPIC_AUTH_TOKEN".to_string(), "secret".to_string())];
+        let first = write_claude_config("provider/one", &env).expect("first temp config");
+        let second = write_claude_config("provider/one", &env).expect("second temp config");
+
+        assert_ne!(first, second);
+        assert!(first
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("claude_provider_one_")));
+        assert!(std::fs::read_to_string(&first)
+            .expect("read temp config")
+            .contains("secret"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&first)
+                    .expect("temp config metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        std::fs::remove_file(first).expect("remove first temp config");
+        std::fs::remove_file(second).expect("remove second temp config");
+    }
 
     #[cfg(unix)]
     fn set_test_executable(path: &Path, executable: bool) {
