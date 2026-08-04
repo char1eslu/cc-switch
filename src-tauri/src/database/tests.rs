@@ -1004,10 +1004,8 @@ fn partially_normalized_fork_v19_is_completed() {
         SCHEMA_VERSION
     );
     for table in ["mcp_servers", "skills"] {
-        assert!(
-            Database::has_column(&conn, table, "enabled_grokbuild")
-                .expect("restored official compatibility column")
-        );
+        assert!(Database::has_column(&conn, table, "enabled_grokbuild")
+            .expect("restored official compatibility column"));
     }
 }
 
