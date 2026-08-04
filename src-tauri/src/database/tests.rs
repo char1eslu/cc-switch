@@ -980,6 +980,38 @@ fn legacy_fork_v19_is_normalized_without_losing_core_rows() {
 }
 
 #[test]
+fn partially_normalized_fork_v19_is_completed() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create current tables");
+    for table in ["mcp_servers", "skills"] {
+        for column in [
+            "enabled_gemini",
+            "enabled_grokbuild",
+            "enabled_opencode",
+            "enabled_hermes",
+        ] {
+            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
+                .expect("restore legacy fork columns");
+        }
+    }
+    Database::set_user_version(&conn, 19).expect("set partially normalized version");
+
+    Database::apply_schema_migrations_on_conn(&conn)
+        .expect("complete partially normalized fork migration");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("official version"),
+        SCHEMA_VERSION
+    );
+    for table in ["mcp_servers", "skills"] {
+        assert!(
+            Database::has_column(&conn, table, "enabled_grokbuild")
+                .expect("restored official compatibility column")
+        );
+    }
+}
+
+#[test]
 fn future_v19_without_complete_legacy_fingerprint_is_rejected() {
     let conn = Connection::open_in_memory().expect("open in-memory db");
     Database::create_tables_on_conn(&conn).expect("create current tables");

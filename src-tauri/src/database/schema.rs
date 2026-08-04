@@ -419,8 +419,10 @@ impl Database {
         let is_legacy_fork_schema = Self::table_exists(conn, "settings")?
             && Self::has_column(conn, "mcp_servers", "enabled_claude")?
             && lacks_upstream_app_columns
-            && has_legacy_two_app_proxy_constraint
-            && ((version == 17 && has_desktop_mcp_column) || (18..=19).contains(&version));
+            && ((version == 17
+                && has_desktop_mcp_column
+                && has_legacy_two_app_proxy_constraint)
+                || (18..=19).contains(&version));
 
         if is_legacy_fork_schema {
             log::info!(
