@@ -2,28 +2,31 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-08-04
+最后更新：2026-08-08
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `28529620`（`v3.19.1` 同步基线） |
-| 2026-08-03 上游增量审计 | `28529620..upstream/main`；5 个新增提交均不适合三应用 fork |
-| 最近一轮已适配的上游安全修复 | `ff3bc242` 及 deeplink / SQL import / terminal quoting / prototype pollution 修复链 |
-| 当前已验证代码 head | `ba9e37c2`（`dev`；其后的纯文档提交不改变构建） |
+| 已完整评估到的上游基线 | `413c09e0`（`v3.19.2` 之后的上游 head） |
+| 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
+| 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
+| 当前已验证代码 head | `6394ebed`（`dev`；CI 全绿、macOS 构建通过） |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 28529620..upstream/main
+git log --oneline 413c09e0..upstream/main
 ```
 
-截至 2026-08-03，上游 `v3.19.1` 之后的真实增量已逐项评估。安全修复按 fork 的三应用结构
-cherry-pick 或手工适配；发行版本、updater / R2、赞助商预设、已裁剪应用和
-不适合三应用 UI 的提交均明确跳过。不要用 `dev..upstream/main` 统计差异：
-选择性同步历史会夸大提交数；下次从 `28529620..upstream/main` 检查。
+不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
+用 `413c09e0..upstream/main` 才是真实增量。
+
+**搬运前先核实 fork 是否已有该实现**。这轮 27 个提交里有 2 个（`9db9c56f`
+Chat tool call 报错、`eb356e15` SKILL.md 锚点）我先判断为"值得搬"，cherry-pick
+时才发现 fork 早已有完整实现（连 7 个测试都在），白做了两次冲突解决。
+判断依据不能只看 commit message，要 grep 核心符号和测试函数名。
 
 ## 裁剪边界（决定哪些上游提交天然不用看）
 
@@ -47,7 +50,7 @@ cherry-pick 或手工适配；发行版本、updater / R2、赞助商预设、�
 | | SCHEMA_VERSION |
 | --- | --- |
 | 本 fork | **16** |
-| 上游 (`v3.19.1` 基线 `28529620`) | 16 |
+| 上游 (`v3.19.2` 之后 `413c09e0`，2026-08-08 复核) | 16 |
 
 fork 曾经占用 `PRAGMA user_version` 17–19；现在已停止这种做法。启动时若检测到
 历史 fork v17–19 数据库，会在事务内补回官方 v16 所需的兼容列、`profiles` 表
@@ -195,6 +198,47 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 | `f5f4281d` | 上游为 8 个应用永久改成 icon-only；fork 只有 3 个应用，保留名称并按宽度自动收起更易用 |
 | `6b13d018`, `3b9d0593`, `c0ff89b9` | 上游 `v3.19.0` 版本号、CHANGELOG 和发行说明；会误报已裁剪功能，跳过 |
 | sponsor / preset / Gemini / Grok Build / OpenClaw-only commits | 超出 fork 的三应用裁剪边界 |
+
+## 2026-08-08 同步审计（`28529620..413c09e0`，27 个）
+
+### 已搬运
+
+| 上游提交 | fork 提交 | 处理 |
+| --- | --- | --- |
+| `6b8f3643` | `053859b9` | 4 个安全上限：usage_script 加 5s 中断 / 16 MiB 内存 / 256 KiB 栈；`model_catalog_json` 路径限制在预期目录内 + 32 MiB 上限；proxy 响应体与解压 128 MiB 上限（压缩炸弹）；deeplink 导入前展示 usageAccessToken / usageUserId。剔除 `session_usage_grokbuild.rs`，i18n 只取 en/zh。附带 CI/release 的 pnpm 改用 `corepack install` 从 `packageManager` 读版本 |
+| `413c09e0` | `1722c1a8` | 生成 catalog 时尊重用户手写的 `model_catalog_json`，patch-equivalent |
+| `40b6376b` | `1cf8517a` | skill `readme_url` 从解析后的源目录构建（新增 `choose_doc_path` / `doc_path_for_source`），修 nested path 404 |
+
+### 搬运过程中发现并修复的 fork 自身问题
+
+| fork 提交 | 问题 |
+| --- | --- |
+| `abf1f953` | 解 `forwarder.rs` 冲突时把上游整块照单保留，误带入 `validate_responses_success_response` / `validate_responses_stream_start`。二者依赖 fork 从未搬过的流式预检地基（`inspect_responses_json_document` / `inspect_responses_start_event` / `responses_error_envelope_message`），且无任何调用方 → 7 个 E0425/E0433。核实后删掉 109 行死代码，而非为死代码补地基 |
+| `6394ebed` | **凭证泄漏**：搬 `6b8f3643` 时带进了 `format_headers` 的回归测试却漏了实现，测试因此暴露出 fork 的 `format_headers` 无条件输出所有响应头的值——`set-cookie` 的 session、`authorization` 的 token 明文进日志。改为上游的白名单设计（只有 content-type / content-encoding / content-length / retry-after / cf-ray / x-request-id / request-id / x-correlation-id 及 `x-ratelimit-*` / `ratelimit-*` 前缀输出值），并加 160 字符截断 |
+
+### 已核实 fork 已有实现，无需搬运
+
+| 上游提交 | 核实结论 |
+| --- | --- |
+| `9db9c56f` | Chat tool call 被丢弃时报 failed 而非假装 completed。核心标识 `upstream_tool_call_dropped` 在 `streaming_codex_chat.rs:659`，7 个测试全部存在，`transform_codex_chat.rs` 的 cherry-pick 暂存 diff 为空 |
+| `eb356e15` | 源目录按 SKILL.md 锚点解析。fork 的 `resolve_skill_source_dir` 已是 `direct.is_dir() && direct.join("SKILL.md").is_file()` 三步结构，含两个 ast-grep wrapper 负例测试 |
+
+### 明确跳过
+
+| 上游提交 | 跳过原因 |
+| --- | --- |
+| `59a2bd10`, `baf07a27` | Codex usage 计费大改（558 / 347 行）；fork 的 usage 实现差异大，此前已延期过 |
+| `668bbda9` | backup 性能改造 1121 行，纯性能收益、风险高 |
+| `9f19d8fd` | 搜索列表 + 批量应用开关，5284 行新功能 |
+| `0cb6e014`, `968794e3`, `492245dc` | UI 改动；`AppSwitcher` 已按三应用改过，冲突面大而收益低 |
+| `f38722a4` | Qwen3.8 Max 定价 1 行；自用不关心成本统计 |
+| `13ea497a` | GitHub Copilot 兼容现代 Claude Code。**已核实 fork 完全没有 Copilot**（Rust / 前端 0 引用，`copilot_auth.rs`、`copilot_model_map.rs` 均不存在） |
+| `3c1154be` | 删除废弃死代码。**已核实 9 个待删文件里 8 个 fork 早已不存在**，唯一残留 `useCustomEndpoints.ts` 已是 0 引用孤儿，不需要靠上游提交来删 |
+| `a354f08a` | 补 9 个翻译 key。前 2 个是 GrokBuild 表单专用（已裁）；后 6 个只是把硬编码中文 `defaultValue` 换成正式条目，fork 的 `defaultValue` 兜底已能显示，且改 4 语言文件（fork 无 ja / zh-TW） |
+| `0345fad6`, `92ca95ff` | OpenCode / OMO，已裁 |
+| `83830767` | Hermes，已裁 |
+| `290b65c0`, `5b697abc`, `0e604b75`, `4d3e2c35`, `996d512f`, `ebbf141f` | 赞助商预设 / 推荐链接 / README |
+| `43eaf073`, `425e932b`, `fbf52cff`, `a4bba43f` | `v3.19.2` 版本号、发行说明、指南文档；会误报已裁剪功能 |
 
 ## 未完成 / 待验证
 
