@@ -2169,6 +2169,14 @@ impl Database {
             ("codex-mini", "Codex Mini", "0.75", "3", "0.025", "0"),
             ("gpt-5-mini", "GPT-5 Mini", "0.25", "2", "0.025", "0"),
             ("gpt-5-nano", "GPT-5 Nano", "0.05", "0.40", "0.005", "0"),
+            // 补缺：实际在用但历史无定价的型号（2026-08-10 按 usage 库核查补齐）
+            // Claude Opus 5 官方价 $5/$25，cache 按 Opus 档惯例 0.1×/1.25×
+            ("claude-opus-5", "Claude Opus 5", "5", "25", "0.50", "6.25"),
+            // Grok 4.5 Build Free：按 Grok 4.5 官方输入/输出价计费（镜像本表 grok-4.5 行；
+            // 注：fork grok-4.5 cache_read 为 0.50，xAI 官方文档为 0.30，两行暂保一致）
+            ("grok-4.5-build-free", "Grok 4.5 Build Free", "2", "6", "0.50", "0"),
+            // 用户中转别名 xopglm52 = GLM 5.2（镜像 live 库已学到的 glm-5.2 定价）
+            ("xopglm52", "GLM 5.2", "1.4", "4.4", "0.26", "0"),
         ];
 
         let mut stmt = conn
