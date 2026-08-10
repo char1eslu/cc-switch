@@ -2,26 +2,27 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-08-08
+最后更新：2026-08-10
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `413c09e0`（`v3.19.2` 之后的上游 head） |
+| 已完整评估到的上游基线 | `c39c9032`（`v3.19.2` 之后；含已评估并跳过的 Windows WSL 提交） |
+| 2026-08-10 上游增量审计 | `413c09e0..c39c9032`；1 个提交（`c39c9032` Windows WSL 原子替换回退），跳过 |
 | 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
 | 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
-| 当前已验证代码 head | `6394ebed`（`dev`；CI 全绿、macOS 构建通过） |
+| 当前已验证代码 head | `52719096`（`dev`；CI 全绿、macOS Ad Hoc 构建通过） |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 413c09e0..upstream/main
+git log --oneline c39c9032..upstream/main
 ```
 
 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-用 `413c09e0..upstream/main` 才是真实增量。
+用 `c39c9032..upstream/main` 才是真实增量。
 
 **搬运前先核实 fork 是否已有该实现**。这轮 27 个提交里有 2 个（`9db9c56f`
 Chat tool call 报错、`eb356e15` SKILL.md 锚点）我先判断为"值得搬"，cherry-pick
@@ -239,6 +240,48 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 | `83830767` | Hermes，已裁 |
 | `290b65c0`, `5b697abc`, `0e604b75`, `4d3e2c35`, `996d512f`, `ebbf141f` | 赞助商预设 / 推荐链接 / README |
 | `43eaf073`, `425e932b`, `fbf52cff`, `a4bba43f` | `v3.19.2` 版本号、发行说明、指南文档；会误报已裁剪功能 |
+
+## 2026-08-10 同步审计（`413c09e0..c39c9032`，1 个）+ 定价补缺
+
+### 上游增量
+
+| 上游提交 | 跳过原因 |
+| --- | --- |
+| `c39c9032` | fix(windows): WSL 拒绝原子替换时的回退。不用 Windows + 裁剪边界外 |
+
+无搬运。
+
+### 定价补缺（fork 侧，非上游提交）
+
+按实时 usage 库（`~/.cc-switch/cc-switch.db`）核查 `proxy_request_logs`，找出
+"有请求、无定价"的型号补进 `seed_model_pricing`：
+
+| model_id | 定价（in/out/cr/cc） | 依据 |
+| --- | --- | --- |
+| `claude-opus-5` | 5/25/0.50/6.25 | 官方 $5/$25 + Opus 档惯例；历史 1.8 亿 token 此前全 $0 |
+| `grok-4.5-build-free` | 2/6/0.30/0 | 对齐上游 `grok-4.5-build` 的 costUsdTicks 实测（build 档 $0.30，非 API 挂牌 $0.50） |
+| `xopglm52` | 1.4/4.4/0.26/0 | 用户中转别名 = GLM 5.2，镜像 live 库已学到的 glm-5.2 |
+
+提交：`e9272739`（补 3 价）、`11e74cd1`（rustfmt 修超宽行）、`52719096`
+（grok-4.5-build-free 改上游实测 $0.30，撤回误改主档 grok-4.5）。
+CI 全绿 + arm64 Ad Hoc 构建通过（runs 31370842112 / 31371115760 / 31373331309 / 31373612158）。
+
+### 核查中确认的非 bug（避免重复踩）
+
+- **Claude 短名（`claude-haiku-4-5` / `claude-sonnet-4-6`）"无定价"不是规范化问题**：
+  `find_model_pricing_row` 的前缀匹配（`should_try_pricing_prefix_match` 对
+  `claude-` 且 dash≥3 启用）本就能命中带日期条目。那些 0 成本行全是失败请求
+  （503/429/502，无 token），`pricing_model` 为空是 token 未采集的连带症状。
+- **上游 grok 定价是实测反推、非纯官方文档**：上游读 Grok CLI OAuth 上报的
+  `costUsdTicks`（1 tick = 1e-10 USD）反算，build 档实测 cache_read $0.30
+  （API 挂牌 $0.50），主档 `grok-4.5` 保留挂牌 $0.50（未实测主档）。fork 对齐
+  此分档，不要把主档也改成 $0.30（无实测依据的分叉）。
+
+### 未做（已与用户确认）
+
+- 历史 Opus 5 约 1.8 亿 token（≈ $395）**不回填**：dashboard 成本是写入时
+  存死的（`SUM(total_cost_usd)`，不重算），补价只对未来流量生效。回填需一次性
+  重算 `proxy_request_logs` + `usage_daily_rollups` 的 cost 列，用户选择不做。
 
 ## 未完成 / 待验证
 
