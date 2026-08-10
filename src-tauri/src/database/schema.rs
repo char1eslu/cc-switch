@@ -2174,7 +2174,14 @@ impl Database {
             ("claude-opus-5", "Claude Opus 5", "5", "25", "0.50", "6.25"),
             // Grok 4.5 Build Free：按 Grok 4.5 官方输入/输出价计费（镜像本表 grok-4.5 行；
             // 注：fork grok-4.5 cache_read 为 0.50，xAI 官方文档为 0.30，两行暂保一致）
-            ("grok-4.5-build-free", "Grok 4.5 Build Free", "2", "6", "0.50", "0"),
+            (
+                "grok-4.5-build-free",
+                "Grok 4.5 Build Free",
+                "2",
+                "6",
+                "0.50",
+                "0",
+            ),
             // 用户中转别名 xopglm52 = GLM 5.2（镜像 live 库已学到的 glm-5.2 定价）
             ("xopglm52", "GLM 5.2", "1.4", "4.4", "0.26", "0"),
         ];
