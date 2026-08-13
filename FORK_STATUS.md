@@ -2,13 +2,14 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-08-10
+最后更新：2026-08-13
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `c39c9032`（`v3.19.2` 之后；含已评估并跳过的 Windows WSL 提交） |
+| 已完整评估到的上游基线 | `1f38c838`（`v3.19.2` 之后） |
+| 2026-08-13 上游增量审计 | `c39c9032..1f38c838`；24 个提交，搬 1 个、跳过 23 个（其中 1 个已核实上游 bug 在 fork 中不存在；明细见下方审计表） |
 | 2026-08-10 上游增量审计 | `413c09e0..c39c9032`；1 个提交（`c39c9032` Windows WSL 原子替换回退），跳过 |
 | 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
 | 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
@@ -18,16 +19,19 @@
 
 ```bash
 git fetch upstream
-git log --oneline c39c9032..upstream/main
+git log --oneline 1f38c838..upstream/main
 ```
 
 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-用 `c39c9032..upstream/main` 才是真实增量。
+用 `1f38c838..upstream/main` 才是真实增量。
 
-**搬运前先核实 fork 是否已有该实现**。这轮 27 个提交里有 2 个（`9db9c56f`
-Chat tool call 报错、`eb356e15` SKILL.md 锚点）我先判断为"值得搬"，cherry-pick
-时才发现 fork 早已有完整实现（连 7 个测试都在），白做了两次冲突解决。
-判断依据不能只看 commit message，要 grep 核心符号和测试函数名。
+**搬运前先核实 fork 是否已有该实现，以及上游那个 bug 在 fork 里是否真的存在。**
+2026-08-08 那轮 27 个提交里有 2 个（`9db9c56f` Chat tool call 报错、`eb356e15`
+SKILL.md 锚点）先判断为"值得搬"，cherry-pick 时才发现 fork 早已有完整实现
+（连 7 个测试都在），白做了两次冲突解决。2026-08-13 的 `967daa1a` 则相反：
+上游 bug 的前提（信任 DB 缓存哈希）在 fork 里不成立，搬过来是无效改动。
+判断依据不能只看 commit message，要 grep 核心符号和测试函数名，并读 fork
+对应函数确认缺陷前提成立。
 
 ## 裁剪边界（决定哪些上游提交天然不用看）
 
@@ -282,6 +286,74 @@ CI 全绿 + arm64 Ad Hoc 构建通过（runs 31370842112 / 31371115760 / 3137333
 - 历史 Opus 5 约 1.8 亿 token（≈ $395）**不回填**：dashboard 成本是写入时
   存死的（`SUM(total_cost_usd)`，不重算），补价只对未来流量生效。回填需一次性
   重算 `proxy_request_logs` + `usage_daily_rollups` 的 cost 列，用户选择不做。
+
+## 2026-08-13 同步审计（`c39c9032..1f38c838`，24 个）
+
+### 已搬运
+
+| 上游提交 | 处理 |
+| --- | --- |
+| `1f38c838` | 智谱把国内端点的配额条目类型从 `TOKENS_LIMIT` 改名为 `CREDIT_LIMIT`，原判断只认前者 → 所有档位被 `continue` 跳过、用量面板整体空白（上游 issue #6153）。改为两个名字都认（仍大小写不敏感）。用户实际在用智谱网关，属于会真实触发的线上故障。上游未加测试，fork 补 `zhipu_accepts_credit_limit_type`（两种类型名混用 + `unit` 显式分窗） |
+
+### 已核实上游 bug 在 fork 中不存在
+
+| 上游提交 | 核实结论 |
+| --- | --- |
+| `967daa1a` | 上游 `check_updates` 先信任 DB 缓存的 `content_hash` 再看磁盘，换机恢复库备份后 SSOT 目录已丢而缓存仍在 → 误报「无更新」，缺失被永久掩盖。**fork 无此路径**：`compute_local_git_tree_hash`（`skill.rs:2251`）每次实地重算、从不读 `content_hash`，目录不存在直接返回 `None`，天然进入更新列表。上游同时引入的 `require_valid_directory` 亦非 fork 所需——fork 在 `install` 阶段就把 `directory` 经 `sanitize_skill_source_path` + `sanitize_install_name` 规范成单段名后才写库（`skill.rs:594`、`604`），入库值已不可能含 `..` 或分隔符 |
+
+### 明确跳过
+
+| 上游提交 | 跳过原因 |
+| --- | --- |
+| `580a4d7b` | Hermes 表单层级，已裁 |
+| `ec842156`, `076c2744` | OpenCode / Hermes / OpenClaw 表单；`ProfileSwitcher.tsx` 在 fork 中不存在 |
+| `5b77da2b`, `95b95da6` | OpenClaw User-Agent 与模型编辑器，已裁 |
+| `7de63227`, `bef46cd5` | GrokBuild，已裁 |
+| `16cc0d7f`, `390102a2` | OpenCode Go 预设路由与 DeepSeek contextWindow；OpenCode 已裁 |
+| `58d92e56`, `3711e1a0` | JieKou AI / PPIO 供应商预设，赞助商内容 |
+| `7e5007d5` | Claude Desktop 模型配置模式文案澄清：675 行表单重排 + 4 语言文案（fork 无 ja / zh-TW），纯 UI 措辞，冲突面大收益低 |
+| `619a592c`, `8673e9d8` | Claude / Claude Desktop 表单边框与高级选项对齐，纯样式；fork 表单已按三应用改过 |
+| `ccc86298` | 代理路由激活动画，新增 `RoutingActivationBrand.tsx` 164 行装饰性组件 |
+| `c0050623` | checkbox 样式统一，纯视觉 |
+| `bc7f5f41` | 供应商编辑器留白收紧，涉及 Gemini / GrokBuild 表单（已裁） |
+| `7e152d75` | 模型映射下拉模糊搜索，改 4 语言文案，非当前需求 |
+| `3c592d93` | Windows WiX 注册表键转义；不用 Windows |
+| `ceef0a52` | Windows 后端测试跑在 WSL2 文件系统上（CI + nightly workflow）；不用 Windows，此前同类提交已跳过 |
+| `c98cc3a9`, `36ed280d` | 上游 CI 分区跳过与 i18n labeler glob；`.github/labeler.yml` 在 fork 中不存在 |
+
+### Skill 备份保留策略改造（fork 侧，非上游提交）
+
+**动机**：更新 Skill 前会自动备份（`create_uninstall_backup`，`update_skill`
+里也调），旧策略是全局「最多 20 个目录」，与体积无关。实测
+`~/.cc-switch/skill-backups/` 已 105 MB / 20 个，正好卡在上限——即已在持续
+删除，但两个问题：
+
+1. **不分 Skill**：高频更新的小 Skill（`academic-*` 系列各 ~1 MB）挤占额度，
+   把低频更新的大 Skill 备份推出去。实测 `nature-figure`（34 MB）
+   与 `academic-research-suite`（30 MB）各只剩 1–2 代。
+2. **无体积约束**：20 个大备份合计可轻松到数百 MB。`Bizard`（56 MB）
+   若进入更新循环，仅它 3 代就 168 MB。
+
+**改法**（`SKILL_BACKUP_RETAIN_PER_SKILL = 3` +
+`SKILL_BACKUP_TOTAL_SIZE_LIMIT_BYTES = 1 GiB`）：
+
+- 按 `meta.json` 的 `skill.directory` 分组，每个 Skill 各留最新 3 代；
+- 分组裁剪后若总体积仍超 1 GiB，全局按最旧优先删，但**至少留 1 个**
+  （单个备份自身超限也不删，否则「更新前已备份」静默失效）；
+- 排序键用 `meta.json` 的 `backup_created_at`，不用目录 mtime——
+  `copy_dir_recursive` 之后才写 `meta.json`，且恢复/拷贝会重置 mtime，
+  按 mtime 判定会删错代；
+- `meta.json` 不可读的目录归入同一孤儿组（`SKILL_BACKUP_ORPHAN_GROUP`）。
+  这类目录 `list_backups` 会跳过、界面不可见也无法恢复，若按目录名各自成组
+  则每组只有 1 个、永远够不到 3 代上限 → 永不回收。
+
+体积统计用 `symlink_metadata` 不解引用符号链接；单项失败只跳过该项，
+不让整轮裁剪失败（清理是旁路操作，失败不应阻止后续增长被控制）。
+实测全量 stat 4376 个文件耗时 0.07s，每次备份后跑一次可接受。
+
+5 个单测覆盖：分组独立留 3 代、按 `backup_created_at` 而非 mtime 排序、
+孤儿组归并、体积上限最旧优先、绝不删最后一个。体积相关两例通过
+`cleanup_old_skill_backups_with_limit` 注入小上限，避免造 1 GiB 载荷。
 
 ## 未完成 / 待验证
 
