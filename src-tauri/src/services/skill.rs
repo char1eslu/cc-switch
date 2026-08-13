@@ -265,7 +265,35 @@ struct SkillBackupMetadata {
     source_path: String,
 }
 
-const SKILL_BACKUP_RETAIN_COUNT: usize = 20;
+/// 一个待裁剪的备份目录。
+struct BackupCandidate {
+    path: PathBuf,
+    /// 分组键：`meta.json` 里的 `skill.directory`，不可读时为
+    /// [`SKILL_BACKUP_ORPHAN_GROUP`]。
+    group: String,
+    /// 排序键：优先用 `meta.json` 记录的创建时间。目录 mtime 只是兜底——
+    /// `copy_dir_recursive` 之后再写 `meta.json`，mtime 未必等于创建顺序。
+    created_at: i64,
+    size: u64,
+}
+
+/// 每个 Skill 保留的备份代数。
+///
+/// 早先是全局「最多 20 个」，与体积无关且不分 Skill：高频更新的小 Skill 会把
+/// 低频更新的大 Skill 挤出额度，单个 Skill 实际留不住几代；同时 20 个大备份
+/// （实测单个技能仓库可达数十 MB）合计可轻松突破数百 MB。改为按 Skill 分组各留
+/// 3 代，再叠加总体积上限兜底。
+const SKILL_BACKUP_RETAIN_PER_SKILL: usize = 3;
+
+/// 备份目录总体积上限。分组保留已能防止代数无限增长，此项只兜住「少数超大
+/// Skill 把磁盘吃满」的情形，按最旧优先删除。
+const SKILL_BACKUP_TOTAL_SIZE_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// `meta.json` 不可读时的分组键。
+///
+/// 这类目录在界面上不可见也无法恢复（`list_backups` 会跳过），若各自独立成组
+/// 就永远不会被裁剪。归入同一组，使分组保留规则同样能收走它们。
+const SKILL_BACKUP_ORPHAN_GROUP: &str = "\0orphan";
 const REPO_DOWNLOAD_TIMEOUT_SECONDS: u64 = 300;
 const REPO_DOWNLOAD_TIMEOUT_LABEL: &str = "300";
 const REPO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(REPO_DOWNLOAD_TIMEOUT_SECONDS);
@@ -2906,30 +2934,155 @@ impl SkillService {
         }
     }
 
-    fn cleanup_old_skill_backups(dir: &Path) -> Result<()> {
-        let mut entries = fs::read_dir(dir)?
-            .filter_map(|entry| entry.ok())
-            .filter_map(|entry| {
-                let metadata = entry.metadata().ok()?;
-                if !metadata.is_dir() {
-                    return None;
-                }
-                Some((entry.path(), metadata.modified().ok()))
-            })
-            .collect::<Vec<_>>();
+    /// 收集备份目录下所有候选项，附带分组键、创建时间与体积。
+    fn collect_backup_candidates(dir: &Path) -> Result<Vec<BackupCandidate>> {
+        let mut candidates = Vec::new();
 
-        if entries.len() <= SKILL_BACKUP_RETAIN_COUNT {
+        for entry in fs::read_dir(dir)? {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    log::warn!("读取 Skill 备份目录项失败: {err}");
+                    continue;
+                }
+            };
+            let path = entry.path();
+            // symlink_metadata：不跟随符号链接，避免把链接目标算进体积。
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    log::warn!("读取 {} 元数据失败: {err}", path.display());
+                    continue;
+                }
+            };
+            if !metadata.is_dir() {
+                continue;
+            }
+
+            let (group, created_at) = match Self::read_backup_metadata(&path) {
+                Ok(meta) => (meta.skill.directory, meta.backup_created_at),
+                Err(err) => {
+                    log::warn!(
+                        "备份 {} 的 meta.json 不可读，按孤儿备份裁剪: {err:#}",
+                        path.display()
+                    );
+                    let fallback = metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                        .map(|elapsed| elapsed.as_secs() as i64)
+                        .unwrap_or(0);
+                    (SKILL_BACKUP_ORPHAN_GROUP.to_string(), fallback)
+                }
+            };
+
+            let size = Self::dir_size_bytes(&path);
+            candidates.push(BackupCandidate {
+                path,
+                group,
+                created_at,
+                size,
+            });
+        }
+
+        Ok(candidates)
+    }
+
+    /// 递归累加目录体积。
+    ///
+    /// 单项失败只跳过该项：清理是尽力而为的旁路操作，不能因一个坏文件让整轮
+    /// 裁剪失败、任由备份目录继续增长。
+    fn dir_size_bytes(dir: &Path) -> u64 {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                log::warn!("统计体积时读取 {} 失败: {err}", dir.display());
+                return 0;
+            }
+        };
+
+        let mut total = 0u64;
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let path = entry.path();
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => {
+                    total = total.saturating_add(Self::dir_size_bytes(&path));
+                }
+                // 符号链接按自身大小计，不解引用（与 collect 侧一致）。
+                Ok(metadata) => total = total.saturating_add(metadata.len()),
+                Err(err) => log::warn!("统计体积时跳过 {}: {err}", path.display()),
+            }
+        }
+        total
+    }
+
+    /// 裁剪旧备份：每个 Skill 各留 [`SKILL_BACKUP_RETAIN_PER_SKILL`] 代，
+    /// 若总体积仍超 [`SKILL_BACKUP_TOTAL_SIZE_LIMIT_BYTES`]，再全局按最旧优先删。
+    fn cleanup_old_skill_backups(dir: &Path) -> Result<()> {
+        Self::cleanup_old_skill_backups_with_limit(dir, SKILL_BACKUP_TOTAL_SIZE_LIMIT_BYTES)
+    }
+
+    /// [`Self::cleanup_old_skill_backups`] 的实现，体积上限作为参数注入。
+    ///
+    /// 单独提参数只为测试：按真实的 1 GiB 上限造用例需要实际写入 1 GiB 载荷。
+    ///
+    /// 体积回收始终至少留下 1 个备份：刚创建的备份是最新的、排在最后，
+    /// 单个备份即便自身超限也不会被立刻删掉——否则「更新前已备份」的承诺会静默失效。
+    fn cleanup_old_skill_backups_with_limit(dir: &Path, size_limit: u64) -> Result<()> {
+        let candidates = Self::collect_backup_candidates(dir)?;
+
+        let mut by_group: HashMap<String, Vec<BackupCandidate>> = HashMap::new();
+        for candidate in candidates {
+            by_group
+                .entry(candidate.group.clone())
+                .or_default()
+                .push(candidate);
+        }
+
+        let mut survivors: Vec<BackupCandidate> = Vec::new();
+        for mut group in by_group.into_values() {
+            // 新的在前，取前 N 代留存，其余立即删除。
+            group.sort_by_key(|candidate| std::cmp::Reverse(candidate.created_at));
+            let overflow = group.split_off(group.len().min(SKILL_BACKUP_RETAIN_PER_SKILL));
+            for candidate in overflow {
+                Self::remove_backup_dir(&candidate.path);
+            }
+            survivors.extend(group);
+        }
+
+        let mut total: u64 = survivors
+            .iter()
+            .fold(0u64, |acc, candidate| acc.saturating_add(candidate.size));
+        if total <= size_limit {
             return Ok(());
         }
 
-        entries.sort_by_key(|(_, modified)| *modified);
-        let remove_count = entries.len().saturating_sub(SKILL_BACKUP_RETAIN_COUNT);
+        // 最旧优先回收，但至少留 1 个：故上界是 len()-1，最新的那个永不参与。
+        survivors.sort_by_key(|candidate| candidate.created_at);
+        let reclaimable = survivors.len().saturating_sub(1);
+        for candidate in survivors.iter().take(reclaimable) {
+            if total <= size_limit {
+                return Ok(());
+            }
+            log::info!(
+                "Skill 备份超总体积上限，删除最旧备份 {}",
+                candidate.path.display()
+            );
+            Self::remove_backup_dir(&candidate.path);
+            total = total.saturating_sub(candidate.size);
+        }
 
-        for (path, _) in entries.into_iter().take(remove_count) {
-            fs::remove_dir_all(&path)?;
+        if total > size_limit {
+            log::warn!("Skill 备份总体积 {total} 字节仍超上限，但仅剩 1 个备份，保留不删");
         }
 
         Ok(())
+    }
+
+    fn remove_backup_dir(path: &Path) {
+        if let Err(err) = fs::remove_dir_all(path) {
+            log::warn!("删除旧 Skill 备份 {} 失败: {err}", path.display());
+        }
     }
 
     fn backup_path_for_id(backup_id: &str) -> Result<PathBuf> {
@@ -3918,5 +4071,131 @@ mod tests {
             SkillService::doc_path_for_source(temp.path(), std::path::Path::new("/elsewhere")),
             None
         );
+    }
+
+    /// 造一个备份目录：`skill/` 放指定字节数的载荷，`meta.json` 记录分组与时间。
+    fn write_backup(root: &Path, id: &str, directory: &str, created_at: i64, payload_bytes: usize) {
+        let backup_path = root.join(id);
+        let skill_dir = backup_path.join("skill");
+        fs::create_dir_all(&skill_dir).expect("create backup skill dir");
+        fs::write(skill_dir.join("payload.bin"), vec![0u8; payload_bytes])
+            .expect("write backup payload");
+
+        let skill = InstalledSkill {
+            id: format!("owner/repo:{directory}"),
+            name: directory.to_string(),
+            description: None,
+            directory: directory.to_string(),
+            repo_owner: Some("owner".to_string()),
+            repo_name: Some("repo".to_string()),
+            repo_branch: Some("main".to_string()),
+            readme_url: None,
+            apps: SkillApps::default(),
+            installed_at: created_at,
+            content_hash: None,
+            updated_at: 0,
+        };
+        let metadata = SkillBackupMetadata {
+            skill,
+            backup_created_at: created_at,
+            source_path: format!("/tmp/{directory}"),
+        };
+        fs::write(
+            backup_path.join("meta.json"),
+            serde_json::to_string_pretty(&metadata).expect("serialize meta"),
+        )
+        .expect("write meta.json");
+    }
+
+    fn backup_ids(root: &Path) -> Vec<String> {
+        let mut ids = fs::read_dir(root)
+            .expect("read backup root")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn cleanup_keeps_three_generations_per_skill_independently() {
+        // 关键回归：旧实现是全局「最多 20 个」，高频更新的 Skill 会把另一个
+        // Skill 的备份挤掉。分组后两个 Skill 各自留满 3 代，互不影响。
+        let root = tempdir().expect("tempdir");
+        for i in 1..=5 {
+            write_backup(root.path(), &format!("a{i}"), "skill-a", 1_000 + i, 16);
+        }
+        write_backup(root.path(), "b1", "skill-b", 1_001, 16);
+        write_backup(root.path(), "b2", "skill-b", 1_002, 16);
+
+        SkillService::cleanup_old_skill_backups(root.path()).expect("cleanup");
+
+        // skill-a 只留最新 3 代（a3/a4/a5），skill-b 未超额度全留。
+        assert_eq!(backup_ids(root.path()), vec!["a3", "a4", "a5", "b1", "b2"]);
+    }
+
+    #[test]
+    fn cleanup_uses_metadata_timestamp_not_directory_mtime() {
+        // 目录 mtime 不可靠：copy_dir_recursive 之后才写 meta.json，且恢复/拷贝
+        // 都会重置 mtime。必须按 meta.json 的 backup_created_at 判定新旧，
+        // 否则会删错代——把真正最新的备份当成最旧的删掉。
+        let root = tempdir().expect("tempdir");
+        // 写入顺序（即 mtime 顺序）与 created_at 顺序刻意相反。
+        write_backup(root.path(), "newest", "skill-a", 9_000, 16);
+        write_backup(root.path(), "middle", "skill-a", 5_000, 16);
+        write_backup(root.path(), "older", "skill-a", 3_000, 16);
+        write_backup(root.path(), "oldest", "skill-a", 1_000, 16);
+
+        SkillService::cleanup_old_skill_backups(root.path()).expect("cleanup");
+
+        assert_eq!(backup_ids(root.path()), vec!["middle", "newest", "older"]);
+    }
+
+    #[test]
+    fn cleanup_groups_unreadable_metadata_backups_together() {
+        // meta.json 缺失的目录在界面上既不可见也无法恢复。若按目录名各自成组，
+        // 每组都只有 1 个、永远达不到 3 代上限 → 永不回收。归入同一孤儿组后
+        // 同样受 3 代限制约束。
+        let root = tempdir().expect("tempdir");
+        for i in 1..=5 {
+            let orphan = root.path().join(format!("orphan{i}"));
+            fs::create_dir_all(orphan.join("skill")).expect("create orphan dir");
+        }
+
+        SkillService::cleanup_old_skill_backups(root.path()).expect("cleanup");
+
+        assert_eq!(backup_ids(root.path()).len(), SKILL_BACKUP_RETAIN_PER_SKILL);
+    }
+
+    #[test]
+    fn cleanup_enforces_total_size_limit_oldest_first() {
+        // 3 个 Skill 各 1 代都在额度内，分组规则一个都不删；只有总体积上限
+        // 会介入，且必须从最旧开始删。
+        // 载荷取 100 KiB、上限 150 KiB：meta.json 的几百字节相对余量可忽略，
+        // 断言不受其体积波动影响。
+        let root = tempdir().expect("tempdir");
+        let payload = 100 * 1024;
+        let limit = 150 * 1024;
+        write_backup(root.path(), "oldest", "skill-a", 1_000, payload);
+        write_backup(root.path(), "middle", "skill-b", 2_000, payload);
+        write_backup(root.path(), "newest", "skill-c", 3_000, 1_024);
+
+        SkillService::cleanup_old_skill_backups_with_limit(root.path(), limit).expect("cleanup");
+
+        // 删掉最旧的一个即回到上限内，middle 不该被连带删除。
+        assert_eq!(backup_ids(root.path()), vec!["middle", "newest"]);
+    }
+
+    #[test]
+    fn cleanup_never_deletes_the_last_remaining_backup() {
+        // 单个备份自身超上限时也必须保留：刚更新完就把唯一备份删了，
+        // 「更新前已备份」的承诺会静默失效，用户无从回退。
+        let root = tempdir().expect("tempdir");
+        write_backup(root.path(), "only", "skill-a", 1_000, 100 * 1024);
+
+        SkillService::cleanup_old_skill_backups_with_limit(root.path(), 4_096).expect("cleanup");
+
+        assert_eq!(backup_ids(root.path()), vec!["only"]);
     }
 }
