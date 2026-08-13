@@ -1,4 +1,5 @@
 use indexmap::IndexMap;
+use std::path::Path;
 
 use crate::app_config::AppType;
 use crate::config::write_text_file;
@@ -16,6 +17,37 @@ fn get_unix_timestamp() -> Result<i64, AppError> {
 }
 
 pub struct PromptService;
+
+fn project_prompt_set_to_path(
+    prompts: &IndexMap<String, Prompt>,
+    target_path: &Path,
+) -> Result<Option<String>, AppError> {
+    let enabled: Vec<(&String, &Prompt)> = prompts
+        .iter()
+        .filter(|(_, prompt)| prompt.enabled)
+        .collect();
+
+    if let Some((_, prompt)) = enabled.first() {
+        write_text_file(target_path, &prompt.content)?;
+    } else if target_path.exists() {
+        // Match the existing "disable the last prompt" behavior without
+        // creating an otherwise unused application config directory.
+        write_text_file(target_path, "")?;
+    }
+
+    if enabled.len() <= 1 {
+        return Ok(None);
+    }
+
+    let ids = enabled
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(Some(format!(
+        "多个 Prompt 同时启用，已按稳定顺序投影第一个；enabled IDs: {ids}"
+    )))
+}
 
 impl PromptService {
     pub fn get_prompts(
@@ -299,6 +331,46 @@ impl PromptService {
         let content =
             std::fs::read_to_string(&file_path).map_err(|e| AppError::io(&file_path, e))?;
         Ok(Some(content))
+    }
+
+    /// Project the database SSOT to one application's managed prompt file.
+    ///
+    /// This deliberately does not call `enable_prompt`: restore paths must not
+    /// read stale live content and write it back into the freshly imported DB.
+    pub fn sync_to_live(state: &AppState, app: AppType) -> Result<(), AppError> {
+        if matches!(app, AppType::ClaudeDesktop) {
+            return Ok(());
+        }
+
+        let prompts = state.db.get_prompts(app.as_str())?;
+        let target_path = prompt_file_path(&app)?;
+        if let Some(warning) = project_prompt_set_to_path(&prompts, &target_path)? {
+            return Err(AppError::Message(warning));
+        }
+        Ok(())
+    }
+
+    /// Best-effort projection for every Prompt-capable application.
+    pub fn sync_all_to_live(state: &AppState) -> Result<(), AppError> {
+        let mut failures = Vec::new();
+        for app in AppType::all() {
+            if matches!(app, AppType::ClaudeDesktop) {
+                continue;
+            }
+            if let Err(error) = Self::sync_to_live(state, app.clone()) {
+                log::warn!("同步 Prompt 到 {app:?} 失败: {error}");
+                failures.push(format!("{}: {error}", app.as_str()));
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Message(format!(
+                "部分应用 Prompt 同步失败: {}",
+                failures.join("; ")
+            )))
+        }
     }
 
     /// 首次启动时从现有提示词文件自动导入（如果存在）
