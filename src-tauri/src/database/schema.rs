@@ -1866,6 +1866,17 @@ impl Database {
                 "0.0028",
                 "0",
             ),
+            // Some gateways return a four-digit MMDD suffix that the generic
+            // date-suffix normalizer does not strip. Keep an explicit alias so
+            // those requests are not silently priced at zero.
+            (
+                "deepseek-v4-flash-0731",
+                "DeepSeek V4 Flash",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+            ),
             (
                 "deepseek-v4-pro",
                 "DeepSeek V4 Pro",
@@ -2028,7 +2039,10 @@ impl Database {
             ("qwq-32b", "QwQ 32B", "0.20", "0.60", "0", "0"),
             ("qwen3-32b", "Qwen3 32B", "0.16", "0.64", "0", "0"),
             // Grok 系列 (xAI)
-            ("grok-4.5", "Grok 4.5", "2", "6", "0.50", "0"),
+            // 4.5/4.6 both use tiered pricing above 200K prompt tokens. The
+            // pricing table stores the base tier, consistent with other models.
+            ("grok-4.6", "Grok 4.6", "2", "6", "0.50", "0"),
+            ("grok-4.5", "Grok 4.5", "2", "6", "0.30", "0"),
             ("grok-4.3", "Grok 4.3", "1.25", "2.50", "0.20", "0"),
             (
                 "grok-4.20-0309-reasoning",
@@ -2212,6 +2226,11 @@ impl Database {
 
     fn repair_current_model_pricing(conn: &Connection) -> Result<(), AppError> {
         let pricing_fixes = [
+            // Correct the previously seeded Grok 4.5 cached-input price while
+            // leaving user-edited rows untouched through the old-value guard.
+            (
+                "grok-4.5", "Grok 4.5", "2", "6", "0.30", "0", "2", "6", "0.50", "0",
+            ),
             // 2026-06-10 全量核价（厂商官方 list 价；CNY 按 ~7.14 折算）
             // GLM 4.6/4.7：旧值是中转/OpenRouter 折扣价，统一到 Z.ai 官方（与 glm-5/5.1 一致）
             (
