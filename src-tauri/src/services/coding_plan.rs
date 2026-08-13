@@ -236,8 +236,12 @@ fn parse_zhipu_token_tiers(data: &serde_json::Value) -> Vec<QuotaTier> {
                 .get("type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            // 大小写不敏感比较：上游若把 "TOKENS_LIMIT" 改成小写或驼峰，依然能识别
-            if !limit_type.eq_ignore_ascii_case("TOKENS_LIMIT") {
+            // 大小写不敏感比较：上游若把类型名改成小写或驼峰，依然能识别。
+            // 智谱在国内端点把 TOKENS_LIMIT 改名为 CREDIT_LIMIT，两者都要认，
+            // 否则所有档位被跳过、用量面板整体空白（上游 issue #6153）。
+            if !(limit_type.eq_ignore_ascii_case("TOKENS_LIMIT")
+                || limit_type.eq_ignore_ascii_case("CREDIT_LIMIT"))
+            {
                 continue;
             }
             let percentage = limit_item
@@ -790,6 +794,24 @@ mod tests {
         assert_eq!(tiers[0].utilization, 12.0);
         assert_eq!(tiers[1].name, TIER_WEEKLY_LIMIT);
         assert_eq!(tiers[1].utilization, 34.0);
+    }
+
+    #[test]
+    fn zhipu_accepts_credit_limit_type() {
+        // 智谱国内端点把 TOKENS_LIMIT 改名为 CREDIT_LIMIT；两种名字混用时
+        // 都必须计入，否则档位被跳过、面板空白（上游 issue #6153）。
+        let data = json!({
+            "limits": [
+                { "type": "CREDIT_LIMIT", "unit": 3, "number": 5, "percentage": 42.0, "nextResetTime": 1_000_000_000_000_i64 },
+                { "type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 17.0, "nextResetTime": 2_000_000_000_000_i64 }
+            ]
+        });
+        let tiers = parse_zhipu_token_tiers(&data);
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0].name, TIER_FIVE_HOUR);
+        assert_eq!(tiers[0].utilization, 42.0);
+        assert_eq!(tiers[1].name, TIER_WEEKLY_LIMIT);
+        assert_eq!(tiers[1].utilization, 17.0);
     }
 
     #[test]
