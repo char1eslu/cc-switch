@@ -13,7 +13,7 @@
 | 2026-08-10 上游增量审计 | `413c09e0..c39c9032`；1 个提交（`c39c9032` Windows WSL 原子替换回退），跳过 |
 | 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
 | 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
-| 当前已验证代码 head | `52719096`（`dev`；CI 全绿、macOS Ad Hoc 构建通过） |
+| 当前已验证代码 head | `43b6d1e1`（`dev`；CI [31676368981](https://github.com/char1eslu/cc-switch/actions/runs/31676368981) 全绿、macOS Ad Hoc [31676515977](https://github.com/char1eslu/cc-switch/actions/runs/31676515977) 构建通过） |
 
 **下次同步从这里开始**：
 
@@ -354,6 +354,11 @@ CI 全绿 + arm64 Ad Hoc 构建通过（runs 31370842112 / 31371115760 / 3137333
 5 个单测覆盖：分组独立留 3 代、按 `backup_created_at` 而非 mtime 排序、
 孤儿组归并、体积上限最旧优先、绝不删最后一个。体积相关两例通过
 `cleanup_old_skill_backups_with_limit` 注入小上限，避免造 1 GiB 载荷。
+
+**新策略只经单测验证，未在真实备份目录上跑过。** 清理只在
+`create_uninstall_backup` 末尾触发（卸载或更新 Skill 时），装新构建后不会立即
+生效。改造时本机现状：20 个目录 / 105 MB，正卡在旧的 20 个上限上。首次更新
+任一 Skill 后应观察 `academic-*` 系列是否收敛到各 3 代。
 
 ## 未完成 / 待验证
 
