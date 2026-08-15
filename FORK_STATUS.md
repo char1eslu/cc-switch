@@ -2,7 +2,7 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-08-13
+最后更新：2026-08-15
 
 ## 同步基线
 
@@ -13,7 +13,7 @@
 | 2026-08-10 上游增量审计 | `413c09e0..c39c9032`；1 个提交（`c39c9032` Windows WSL 原子替换回退），跳过 |
 | 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
 | 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
-| 当前已验证代码 head | `43b6d1e1`（`dev`；CI [31676368981](https://github.com/char1eslu/cc-switch/actions/runs/31676368981) 全绿、macOS Ad Hoc [31676515977](https://github.com/char1eslu/cc-switch/actions/runs/31676515977) 构建通过） |
+| 当前已验证代码 head | `981652fc`（`dev`；CI [31893969336](https://github.com/char1eslu/cc-switch/actions/runs/31893969336) 全绿、macOS Ad Hoc [31894246576](https://github.com/char1eslu/cc-switch/actions/runs/31894246576) 构建通过） |
 
 **下次同步从这里开始**：
 
@@ -24,6 +24,14 @@ git log --oneline 1f38c838..upstream/main
 
 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
 用 `1f38c838..upstream/main` 才是真实增量。
+
+## 2026-08-15 Codex 模型与恢复保护
+
+- 修正 Grok 4.5 缓存定价，并补 Grok 4.6 与 DeepSeek 别名。
+- `ultra` 推理档位按 Codex 网关模式保留或降级，避免发出上游不支持的 effort。
+- proxy takeover 恢复时保留官方 ChatGPT 登录，不再被第三方 Codex 配置覆盖。
+- Codex 自定义模型支持逐模型 `reasoningLevels` 与 `defaultReasoningLevel`，并写入生成的 model catalog；前端可编辑且兼容 camelCase / snake_case。
+- 验证 head `981652fc`：CI `31893969336`（Rust fmt、Clippy、后端测试、TypeScript、前端格式与单测全绿）；macOS arm64 Ad Hoc `31894246576`（bundle、签名、artifact 上传通过）。
 
 **搬运前先核实 fork 是否已有该实现，以及上游那个 bug 在 fork 里是否真的存在。**
 2026-08-08 那轮 27 个提交里有 2 个（`9db9c56f` Chat tool call 报错、`eb356e15`

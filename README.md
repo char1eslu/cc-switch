@@ -28,6 +28,7 @@
 | 路径操作 | 会话详情支持 Reveal / Copy Path，Move dialog 对长路径和候选目录做了可用性处理 |
 | 技能更新 | 修正本地哈希与 GitHub tree 的排序口径，消除反复提示更新；大型仓库下载超时放宽，结构化错误显示可读文案 |
 | Codex 上游协议 | 支持只提供原生 Anthropic Messages（`/v1/messages`）的网关，由本地代理做 Responses ⇄ Anthropic 双向转换 |
+| Codex 模型与登录保护 | 自定义模型可配置逐模型推理档位和默认档位；`ultra` 按网关模式安全降级；接管恢复不会覆盖官方 ChatGPT 登录 |
 | MCP 覆盖 | Claude Code 与 Codex 两端；Claude Desktop 因 gateway 接管无法支持，与上游一致 |
 | 数据库 | 与上游 v3.19.1 共用 `user_version=16`；仅保留已裁剪应用的空兼容字段，fork 私有迁移独立记账 |
 | 应用自更新 | 屏蔽 Tauri updater、自更新 endpoint 和 updater artifact，避免应用内检查上游更新 |
@@ -124,8 +125,8 @@ Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
 - 目标架构：`aarch64-apple-darwin`
 - 产物名：`CC-Switch-macOS-arm64-ad-hoc`
 - 产物内容：ad-hoc signed `CC Switch.app` zip
-- 当前已验证代码 head：[`ba9e37c2`](https://github.com/char1eslu/cc-switch/commit/ba9e37c243b4b844ef74e0673b7b631a251e72aa)
-- 最终验证：[CI 30911059851](https://github.com/char1eslu/cc-switch/actions/runs/30911059851) / [Build 30911416458](https://github.com/char1eslu/cc-switch/actions/runs/30911416458)
+- 当前已验证代码 head：[`981652fc`](https://github.com/char1eslu/cc-switch/commit/981652fc)
+- 最终验证：[CI 31893969336](https://github.com/char1eslu/cc-switch/actions/runs/31893969336) / [Build 31894246576](https://github.com/char1eslu/cc-switch/actions/runs/31894246576)
 
 如果 macOS 拦截，可以右键打开，或清理 quarantine：
 
