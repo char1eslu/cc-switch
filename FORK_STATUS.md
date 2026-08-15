@@ -27,11 +27,20 @@ git log --oneline 1f38c838..upstream/main
 
 ## 2026-08-15 Codex 模型与恢复保护
 
-- 修正 Grok 4.5 缓存定价，并补 Grok 4.6 与 DeepSeek 别名。
-- `ultra` 推理档位按 Codex 网关模式保留或降级，避免发出上游不支持的 effort。
-- proxy takeover 恢复时保留官方 ChatGPT 登录，不再被第三方 Codex 配置覆盖。
-- Codex 自定义模型支持逐模型 `reasoningLevels` 与 `defaultReasoningLevel`，并写入生成的 model catalog；前端可编辑且兼容 camelCase / snake_case。
-- 验证 head `981652fc`：CI `31893969336`（Rust fmt、Clippy、后端测试、TypeScript、前端格式与单测全绿）；macOS arm64 Ad Hoc `31894246576`（bundle、签名、artifact 上传通过）。
+| 提交 | 内容 |
+| --- | --- |
+| `81d1a596` | 修正 Grok 4.5 缓存定价，并补 Grok 4.6 与 DeepSeek 别名 |
+| `3e3d4ef5` | `ultra` 按直连、DeepSeek、low/high 与 OpenRouter 模式分别保留或降级 |
+| `02a6bda4` | proxy takeover 恢复时保留官方 ChatGPT 登录，不再被第三方 Codex 配置覆盖 |
+| `9029c0ab` | Codex 自定义模型支持逐模型 `reasoningLevels` 与 `defaultReasoningLevel`；model catalog、前端编辑与 camelCase / snake_case 读取形成闭环 |
+| `981652fc` | 应用 CI 给出的 3 处 rustfmt 结果；这是本轮经过完整 CI 与 macOS 构建的代码 head |
+
+验证：
+
+- CI [`31893969336`](https://github.com/char1eslu/cc-switch/actions/runs/31893969336)：Rust fmt、Clippy、后端测试、TypeScript、前端格式与 306 个前端测试全部通过。
+- macOS arm64 Ad Hoc [`31894246576`](https://github.com/char1eslu/cc-switch/actions/runs/31894246576)：bundle、ad-hoc 签名与 artifact 上传通过。
+- Artifact：`CC-Switch-macOS-arm64-ad-hoc`，11,382,379 bytes；核对时未过期。
+- `f2165eec` 及后续提交仅更新文档，因此仍以 `981652fc` 作为已验证代码 head。
 
 **搬运前先核实 fork 是否已有该实现，以及上游那个 bug 在 fork 里是否真的存在。**
 2026-08-08 那轮 27 个提交里有 2 个（`9db9c56f` Chat tool call 报错、`eb356e15`

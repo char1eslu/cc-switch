@@ -34,6 +34,13 @@
 | 应用自更新 | 屏蔽 Tauri updater、自更新 endpoint 和 updater artifact，避免应用内检查上游更新 |
 | 构建方式 | 保留 macOS Apple Silicon ad-hoc GitHub Actions 构建，当前不做 DMG、公证或自动更新包 |
 
+### 2026-08-15 Codex 更新
+
+- 自定义模型可分别声明可用推理档位和默认档位；生成 model catalog 时保留这些设置。
+- `ultra` 会按直连、DeepSeek、low/high 与 OpenRouter 模式分别保留或降级。
+- proxy takeover 恢复不会再用第三方配置覆盖官方 ChatGPT 登录。
+- 修正 Grok 4.5 缓存价格，并补齐 Grok 4.6 与一个 DeepSeek 定价别名。
+
 ## Codex 会话相关改动
 
 - 读取 `~/.codex/sqlite/state_5.sqlite`、`session_index.jsonl` 和 `sessions` / `archived_sessions` JSONL。
@@ -127,6 +134,7 @@ Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
 - 产物内容：ad-hoc signed `CC Switch.app` zip
 - 当前已验证代码 head：[`981652fc`](https://github.com/char1eslu/cc-switch/commit/981652fc)
 - 最终验证：[CI 31893969336](https://github.com/char1eslu/cc-switch/actions/runs/31893969336) / [Build 31894246576](https://github.com/char1eslu/cc-switch/actions/runs/31894246576)
+- 构建产物：`CC-Switch-macOS-arm64-ad-hoc`（11,382,379 bytes，Actions artifact）
 
 如果 macOS 拦截，可以右键打开，或清理 quarantine：
 
