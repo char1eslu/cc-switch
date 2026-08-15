@@ -38,7 +38,7 @@ pub(crate) fn effort_to_thinking_budget(effort: &str) -> Option<u64> {
         "minimal" | "low" => Some(2048),
         "medium" => Some(8192),
         "high" => Some(16384),
-        "xhigh" | "max" => Some(24576),
+        "xhigh" | "max" | "ultra" => Some(24576),
         _ => None,
     }
 }
@@ -48,7 +48,7 @@ fn codex_effort_to_anthropic(effort: &str) -> Option<&'static str> {
         "minimal" | "low" => Some("low"),
         "medium" => Some("medium"),
         "high" => Some("high"),
-        "xhigh" | "max" => Some("max"),
+        "xhigh" | "max" | "ultra" => Some("max"),
         _ => None,
     }
 }
@@ -2090,6 +2090,19 @@ mod tests {
         assert_eq!(result["thinking"]["budget_tokens"], 16384);
         assert!(result.get("temperature").is_none());
         assert!(result.get("top_p").is_none());
+    }
+
+    #[test]
+    fn test_request_ultra_effort_clamps_to_max_budget() {
+        let input = json!({
+            "model": "c",
+            "max_output_tokens": 60000,
+            "reasoning": { "effort": "ultra" },
+            "input": [{ "role": "user", "content": "hi" }]
+        });
+        let result = responses_request_to_anthropic(input, 4096).unwrap();
+        assert_eq!(result["thinking"]["type"], "enabled");
+        assert_eq!(result["thinking"]["budget_tokens"], 24576);
     }
 
     #[test]
