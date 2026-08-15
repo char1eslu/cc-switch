@@ -113,11 +113,27 @@ const normalizeCodexCatalogModelsForSave = (
     const contextWindow = rawContextWindow
       ? Number.parseInt(rawContextWindow, 10)
       : undefined;
+    const reasoningLevels = Array.from(
+      new Set(
+        item.reasoningLevels?.map((level) => level.trim()).filter(Boolean) ??
+          [],
+      ),
+    );
+    const defaultReasoningLevel = item.defaultReasoningLevel?.trim();
+    const validDefaultReasoningLevel = reasoningLevels.includes(
+      defaultReasoningLevel ?? "",
+    )
+      ? defaultReasoningLevel
+      : undefined;
 
     normalized.push({
       model,
       ...(displayName ? { displayName } : {}),
       ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
+      ...(reasoningLevels.length > 0 ? { reasoningLevels } : {}),
+      ...(validDefaultReasoningLevel
+        ? { defaultReasoningLevel: validDefaultReasoningLevel }
+        : {}),
     });
   }
 

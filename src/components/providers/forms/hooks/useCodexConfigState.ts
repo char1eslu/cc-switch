@@ -82,6 +82,17 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
                     typeof item?.context_window === "number"
                   ? item.context_window
                   : "",
+            reasoningLevels: Array.isArray(item?.reasoningLevels)
+              ? item.reasoningLevels
+              : Array.isArray(item?.reasoning_levels)
+                ? item.reasoning_levels
+                : undefined,
+            defaultReasoningLevel:
+              typeof item?.defaultReasoningLevel === "string"
+                ? item.defaultReasoningLevel
+                : typeof item?.default_reasoning_level === "string"
+                  ? item.default_reasoning_level
+                  : undefined,
           }))
           .filter((item: CodexCatalogModel) => item.model.trim()),
       );

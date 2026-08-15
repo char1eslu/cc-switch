@@ -485,11 +485,64 @@ fn extract_codex_top_level_u64(config_text: &str, field: &str) -> Option<u64> {
         .filter(|value| *value > 0)
 }
 
+const CODEX_REASONING_LEVELS: &[&str] = &[
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+fn parse_codex_reasoning_levels(value: Option<&Value>) -> Option<Vec<String>> {
+    let levels = value
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|level| CODEX_REASONING_LEVELS.contains(level))
+        .fold(Vec::new(), |mut levels, level| {
+            if !levels.iter().any(|existing| existing == level) {
+                levels.push(level.to_string());
+            }
+            levels
+        });
+    (!levels.is_empty()).then_some(levels)
+}
+
+fn apply_codex_reasoning_levels(
+    entry: &mut serde_json::Map<String, Value>,
+    spec: &CodexCatalogModelSpec,
+) {
+    let Some(levels) = spec.reasoning_levels.as_ref() else {
+        return;
+    };
+    let template_default = entry
+        .get("default_reasoning_level")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let default_level = spec
+        .default_reasoning_level
+        .as_deref()
+        .filter(|level| levels.iter().any(|candidate| candidate == level))
+        .or_else(|| {
+            template_default
+                .as_deref()
+                .filter(|level| levels.iter().any(|candidate| candidate == level))
+        })
+        .unwrap_or_else(|| levels.last().expect("reasoning levels are non-empty"))
+        .to_string();
+
+    entry.insert(
+        "supported_reasoning_levels".to_string(),
+        Value::Array(
+            levels
+                .iter()
+                .map(|effort| json!({ "effort": effort, "description": effort }))
+                .collect(),
+        ),
+    );
+    entry.insert("default_reasoning_level".to_string(), json!(default_level));
+}
+
 fn codex_catalog_model_entry(
     template: &Value,
-    model: &str,
-    display_name: &str,
-    context_window: u64,
+    spec: &CodexCatalogModelSpec,
     priority: usize,
 ) -> Value {
     let mut entry = template.clone();
@@ -497,16 +550,17 @@ fn codex_catalog_model_entry(
         return json!({});
     };
 
-    entry_obj.insert("slug".to_string(), json!(model));
-    entry_obj.insert("display_name".to_string(), json!(display_name));
-    entry_obj.insert("description".to_string(), json!(display_name));
-    entry_obj.insert("context_window".to_string(), json!(context_window));
-    entry_obj.insert("max_context_window".to_string(), json!(context_window));
+    entry_obj.insert("slug".to_string(), json!(&spec.model));
+    entry_obj.insert("display_name".to_string(), json!(&spec.display_name));
+    entry_obj.insert("description".to_string(), json!(&spec.display_name));
+    entry_obj.insert("context_window".to_string(), json!(spec.context_window));
+    entry_obj.insert("max_context_window".to_string(), json!(spec.context_window));
     entry_obj.insert("priority".to_string(), json!(1000 + priority));
     entry_obj.insert("additional_speed_tiers".to_string(), json!([]));
     entry_obj.insert("service_tiers".to_string(), json!([]));
     entry_obj.insert("availability_nux".to_string(), Value::Null);
     entry_obj.insert("upgrade".to_string(), Value::Null);
+    apply_codex_reasoning_levels(entry_obj, spec);
 
     entry
 }
@@ -516,6 +570,8 @@ struct CodexCatalogModelSpec {
     model: String,
     display_name: String,
     context_window: u64,
+    reasoning_levels: Option<Vec<String>>,
+    default_reasoning_level: Option<String>,
 }
 
 fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCatalogModelSpec> {
@@ -559,11 +615,25 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
                 .or_else(|| model_config.get("context_window")),
         )
         .unwrap_or(default_context_window);
+        let reasoning_levels = parse_codex_reasoning_levels(
+            model_config
+                .get("reasoningLevels")
+                .or_else(|| model_config.get("reasoning_levels")),
+        );
+        let default_reasoning_level = model_config
+            .get("defaultReasoningLevel")
+            .or_else(|| model_config.get("default_reasoning_level"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|level| !level.is_empty())
+            .map(str::to_string);
 
         specs.push(CodexCatalogModelSpec {
             model: model.to_string(),
             display_name: display_name.to_string(),
             context_window,
+            reasoning_levels,
+            default_reasoning_level,
         });
     }
 
@@ -894,13 +964,7 @@ fn codex_model_catalog_from_specs(specs: &[CodexCatalogModelSpec], template: &Va
         .iter()
         .enumerate()
         .map(|(index, spec)| {
-            codex_catalog_model_entry(
-                template,
-                &spec.model,
-                &spec.display_name,
-                spec.context_window,
-                index,
-            )
+            codex_catalog_model_entry(template, spec, index)
         })
         .collect();
 
@@ -1217,6 +1281,27 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
             .filter(|v| *v > 0 && *v != default_context_window)
         {
             obj.insert("contextWindow".to_string(), json!(context_window));
+        }
+
+        if let Some(levels) = entry
+            .get("supported_reasoning_levels")
+            .and_then(Value::as_array)
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(|level| level.get("effort").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|levels| !levels.is_empty())
+        {
+            obj.insert("reasoningLevels".to_string(), json!(levels));
+            if let Some(default_level) = entry
+                .get("default_reasoning_level")
+                .and_then(Value::as_str)
+            {
+                obj.insert("defaultReasoningLevel".to_string(), json!(default_level));
+            }
         }
 
         entries.push(Value::Object(obj));
@@ -3246,6 +3331,8 @@ model_catalog_json = "cc-switch-model-catalog.json"
             model: "k3".to_string(),
             display_name: "Kimi K3".to_string(),
             context_window: 262_144,
+            reasoning_levels: None,
+            default_reasoning_level: None,
         }];
         let catalog = codex_model_catalog_from_specs(&specs, &template);
         assert_eq!(
@@ -3254,6 +3341,34 @@ model_catalog_json = "cc-switch-model-catalog.json"
                 .and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn catalog_honors_per_model_reasoning_levels() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [{
+                    "model": "deepseek-v4-flash",
+                    "reasoningLevels": ["none", "bogus", "high", "high", "max"],
+                    "defaultReasoningLevel": "high"
+                }]
+            }
+        });
+        let specs = codex_catalog_model_specs(&settings, "");
+        let template = json!({
+            "default_reasoning_level": "none",
+            "supported_reasoning_levels": [{ "effort": "none", "description": "none" }]
+        });
+        let catalog = codex_model_catalog_from_specs(&specs, &template);
+        let model = &catalog["models"][0];
+        let efforts = model["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|level| level["effort"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(efforts, vec!["none", "high", "max"]);
+        assert_eq!(model["default_reasoning_level"], "high");
     }
 
     #[test]

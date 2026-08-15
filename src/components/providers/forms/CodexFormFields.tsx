@@ -104,13 +104,15 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
     model: seed?.model ?? "",
     displayName: seed?.displayName ?? "",
     contextWindow: seed?.contextWindow ?? "",
+    reasoningLevels: seed?.reasoningLevels,
+    defaultReasoningLevel: seed?.defaultReasoningLevel,
   };
 }
 
 // Compares rows (with rowId) to incoming models (without) by data fields only,
 // so both sync effects can use the same equality definition.
 function catalogRowsMatchModels(
-  rows: Array<Pick<CodexCatalogRow, "model" | "displayName" | "contextWindow">>,
+  rows: CodexCatalogRow[],
   models: CodexCatalogModel[],
 ): boolean {
   if (rows.length !== models.length) return false;
@@ -119,7 +121,12 @@ function catalogRowsMatchModels(
     return (
       row.model === (incoming.model ?? "") &&
       (row.displayName ?? "") === (incoming.displayName ?? "") &&
-      String(row.contextWindow ?? "") === String(incoming.contextWindow ?? "")
+      String(row.contextWindow ?? "") ===
+        String(incoming.contextWindow ?? "") &&
+      JSON.stringify(row.reasoningLevels ?? []) ===
+        JSON.stringify(incoming.reasoningLevels ?? []) &&
+      (row.defaultReasoningLevel ?? "") ===
+        (incoming.defaultReasoningLevel ?? "")
     );
   });
 }
@@ -748,6 +755,51 @@ export function CodexFormFields({
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
+                        <Input
+                          value={(row.reasoningLevels ?? []).join(", ")}
+                          onChange={(event) => {
+                            const levels = event.target.value
+                              .split(",")
+                              .map((level) => level.trim())
+                              .filter(Boolean);
+                            handleUpdateCatalogRow(index, {
+                              reasoningLevels: levels,
+                              defaultReasoningLevel: levels.includes(
+                                row.defaultReasoningLevel ?? "",
+                              )
+                                ? row.defaultReasoningLevel
+                                : undefined,
+                            });
+                          }}
+                          placeholder={t(
+                            "codexConfig.reasoningLevelsPlaceholder",
+                          )}
+                          aria-label={t("codexConfig.reasoningLevelsLabel")}
+                          className="md:col-span-2"
+                        />
+                        <Select
+                          value={row.defaultReasoningLevel ?? "__auto__"}
+                          onValueChange={(value) =>
+                            handleUpdateCatalogRow(index, {
+                              defaultReasoningLevel:
+                                value === "__auto__" ? undefined : value,
+                            })
+                          }
+                        >
+                          <SelectTrigger className="md:col-span-2">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__auto__">
+                              {t("codexConfig.defaultReasoningLevelAuto")}
+                            </SelectItem>
+                            {(row.reasoningLevels ?? []).map((level) => (
+                              <SelectItem key={level} value={level}>
+                                {level}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                     ))}
                   </div>

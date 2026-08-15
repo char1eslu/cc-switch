@@ -243,6 +243,8 @@ export interface CodexCatalogModel {
   model: string;
   displayName?: string;
   contextWindow?: string | number;
+  reasoningLevels?: string[];
+  defaultReasoningLevel?: string;
 }
 
 // Claude 认证字段类型
