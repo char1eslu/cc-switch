@@ -2572,7 +2572,10 @@ mod tests {
     fn map_reasoning_effort_handles_ultra_per_mode() {
         assert_eq!(map_reasoning_effort("ultra", None), Some("ultra"));
         assert_eq!(map_reasoning_effort("ultra", Some("deepseek")), Some("max"));
-        assert_eq!(map_reasoning_effort("ultra", Some("low_high")), Some("high"));
+        assert_eq!(
+            map_reasoning_effort("ultra", Some("low_high")),
+            Some("high")
+        );
         assert_eq!(
             map_reasoning_effort("ultra", Some("openrouter")),
             Some("xhigh")

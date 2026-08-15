@@ -963,9 +963,7 @@ fn codex_model_catalog_from_specs(specs: &[CodexCatalogModelSpec], template: &Va
     let entries: Vec<Value> = specs
         .iter()
         .enumerate()
-        .map(|(index, spec)| {
-            codex_catalog_model_entry(template, spec, index)
-        })
+        .map(|(index, spec)| codex_catalog_model_entry(template, spec, index))
         .collect();
 
     json!({ "models": entries })
@@ -1296,9 +1294,8 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
             .filter(|levels| !levels.is_empty())
         {
             obj.insert("reasoningLevels".to_string(), json!(levels));
-            if let Some(default_level) = entry
-                .get("default_reasoning_level")
-                .and_then(Value::as_str)
+            if let Some(default_level) =
+                entry.get("default_reasoning_level").and_then(Value::as_str)
             {
                 obj.insert("defaultReasoningLevel".to_string(), json!(default_level));
             }
