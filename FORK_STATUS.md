@@ -13,7 +13,7 @@
 | 2026-08-10 上游增量审计 | `413c09e0..c39c9032`；1 个提交（`c39c9032` Windows WSL 原子替换回退），跳过 |
 | 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
 | 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
-| 当前已验证代码 head | `0c1b4327`（`dev`；CI [32041716595](https://github.com/char1eslu/cc-switch/actions/runs/32041716595) 全绿、macOS Ad Hoc [32041958536](https://github.com/char1eslu/cc-switch/actions/runs/32041958536) 构建通过） |
+| 当前已验证代码 head | `ef713e45`（`dev`；本轮本机 Rust/前端验证通过，待 CI 与 macOS Ad Hoc 构建） |
 
 **下次同步从这里开始**：
 
@@ -443,6 +443,41 @@ CI 全绿 + arm64 Ad Hoc 构建通过（runs 31370842112 / 31371115760 / 3137333
 `create_uninstall_backup` 末尾触发（卸载或更新 Skill 时），装新构建后不会立即
 生效。改造时本机现状：20 个目录 / 105 MB，正卡在旧的 20 个上限上。首次更新
 任一 Skill 后应观察 `academic-*` 系列是否收敛到各 3 代。
+
+## 2026-08-17 同步审计（`1f38c838..a98829ba`，35 个）
+
+本轮按三应用 fork 边界（Claude、Claude Desktop、Codex）逐提交核对，不直接整提交覆盖 fork。已搬运 8 个，已有对应 fork 实现 3 个，跳过 22 个，延期 2 个。
+
+### 已搬运或按 fork 结构适配
+
+| 上游提交 | fork 提交 | 处理 |
+| --- | --- | --- |
+| `dfb2e523` | `26aee87a` | SQL fidelity 与恢复安全：暂存库 schema/事务校验、原子备份发布、序列/REAL/TEXT 保真、备份目录锁与恢复保护 |
+| `c9fe340b` | `ef713e45` | 同步一致性：live/Prompt/Skill 后置同步错误汇总、保留表从 live DB 读取、恢复时序与会话游标保护 |
+| `d9d4a660` | `2194e2f0` | 新增 IME-safe input；裁掉的 Hermes/OpenClaw/OpenCode 表单不回引 |
+| `a98829ba` | `f411001c` | 将 IME-safe input 接入 fork 仍保留的 Basic provider fields，并补 blur/composition 回归测试 |
+| `46f19a15` | `4eb61771` | DeepSeek chat usage 的 `prompt_cache_hit_tokens` 兜底 |
+| `c8262476` | `02a627eb` | Kimi/Moonshot 不再注入 thinking/reasoning_content；保留 fork 的转换结构 |
+| `3d126f45` | `4340e032` | 多年 usage trend tooltip 与点位对齐，并补组件测试 |
+| `f62c854a` | `07eb86d5` | Codex Device Code login epoch，`clear_auth` 后拒绝过期流程重新登记 |
+
+### 已有对应实现，无需再次搬运
+
+| 上游提交 | fork 现状 |
+| --- | --- |
+| `d2b070c9` | 已由 `02a6bda4` 完成 ChatGPT 官方 OAuth takeover restore 保护 |
+| `7dc0a725` | 已由 `81d1a596` 按 fork 定价边界完成；`grok-4.5` 主档保持 `$0.50` |
+| `40cac1a6` | 已由 `9029c0ab` 完成逐模型 reasoning levels/catalog/form 闭环 |
+
+### 跳过或延期
+
+| 范围 | 提交 | 原因 |
+| --- | --- | --- |
+| 数据/供应商专属或无前提 | `5602324b`, `5f6072ce`, `c99550e0`, `a7f073e9`, `5b8bf1fe`, `eb69e492`, `6a7da87c`, `f748f3ac`, `84e75ad2`, `40d747c0`, `e163a671`, `c6247d13`, `1435223b`, `3f75bbdf`, `e12fc623`, `9dcd3486`, `af06356d`, `4080a8e9`, `d01eab97`, `de9af49a`, `d4fefefc`, `b109dcd3` | 供应商/预设/赞助商或已裁应用；共享代码分支对用户不用的 vendor 门控，无需引入冲突面 |
+| 大型新功能 | `a2e22f33` | managed OAuth 含 Copilot，约 11.6K 行，超出当前 fork 边界，延期 |
+| 大型新功能 | `bdeaac75` | Alpha Search / hosted WebSearch，约 10K 行，streaming_responses 已裁剪，延期 |
+
+验证：前端 `pnpm test:unit`（52 files / 322 tests）与 `pnpm typecheck` 通过；Rust `cargo fmt --check`、`cargo check` 通过；备份/恢复 13、Prompt 4、Skill 22、post-import sync 4 项定向测试通过。临时 Rustup/Cargo 环境位于 `/private/tmp/cc-switch-rust-check`，收尾时删除。
 
 ## 未完成 / 待验证
 
