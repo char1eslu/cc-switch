@@ -41,15 +41,26 @@
 - proxy takeover 恢复不会再用第三方配置覆盖官方 ChatGPT 登录。
 - 修正 Grok 4.5 缓存价格，并补齐 Grok 4.6 与一个 DeepSeek 定价别名。
 
+### 2026-08-17 Codex 26.810 会话兼容
+
+- 子代理线程折叠进父会话：不再作为独立会话列出，也不能被单独移动、删除或移入回收区。
+- 待修复判定增加「有用户事件」前提，新版里只有内部事件的线程不再被误报。
+- Move 同步 Codex 原生项目状态（`.codex-global-state.json` 的项目归属与侧栏排序），
+  目标目录必须已在 Codex 注册，任一步失败整体回滚。
+- Trash / Restore 升级为 v2 manifest：完整快照 SQLite 行（含任意列值类型）、
+  `codex-dev.db` 会话目录与 `codex-history-snapshots-dev.db` 历史快照，恢复时还原原生项目位置。
+- SQLite 备份改用 online Backup API，不再裸拷 WAL/SHM 文件。
+
 ## Codex 会话相关改动
 
-- 读取 `~/.codex/sqlite/state_5.sqlite`、`session_index.jsonl` 和 `sessions` / `archived_sessions` JSONL。
+- 读取 `~/.codex/sqlite/state_5.sqlite`、`codex-dev.db`、`codex-history-snapshots-dev.db`、`.codex-global-state.json`、`session_index.jsonl` 和 `sessions` / `archived_sessions` JSONL。
+- 子代理线程通过 spawn edges、`thread_source`、`source` JSON 与 rollout 元数据识别，折叠进父会话而不独立展示。
 - 区分 indexed、not indexed、missing file、archived、needs repair 等状态。
 - Repair Index 会修复 Codex index 缺失或状态不一致，操作前备份 state、session_index 和 JSONL。
-- Move Session 会移动会话到新项目目录，并更新 SQLite `threads.cwd` 和 JSONL `session_meta.payload.cwd`。
+- Move Session 会同步 SQLite `threads.cwd`、JSONL `session_meta.payload.cwd` 和 Codex 原生项目归属（项目分配 + 侧栏排序），失败自动回滚。
 - Trim from here 会从指定用户轮次后截断 JSONL，并保留 `.codex-rescue-backup-*` 备份。
 - Branch from here 会从指定轮次派生新会话，生成新 UUID、新 JSONL，并写入 SQLite / session_index。
-- Trash / Restore / Permanent delete 支持把会话移入回收区、恢复或永久删除。
+- Trash / Restore 使用 v2 manifest：快照完整 SQLite 行、外部 catalog 与历史快照库，并保留 / 还原原生项目位置；Permanent delete 同步清理所有引用。
 - Backup Manager 支持列出、恢复、移入 Trash、清空维护备份。
 - 项目过滤按 Codex 项目目录聚合会话，显示项目会话数和待修复数。
 - Deep Search 可以扫描 Codex JSONL 原文，找隐藏在长对话里的内容。
@@ -132,9 +143,9 @@ Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
 - 目标架构：`aarch64-apple-darwin`
 - 产物名：`CC-Switch-macOS-arm64-ad-hoc`
 - 产物内容：ad-hoc signed `CC Switch.app` zip
-- 当前已验证代码 head：[`981652fc`](https://github.com/char1eslu/cc-switch/commit/981652fc)
-- 最终验证：[CI 31893969336](https://github.com/char1eslu/cc-switch/actions/runs/31893969336) / [Build 31894246576](https://github.com/char1eslu/cc-switch/actions/runs/31894246576)
-- 构建产物：`CC-Switch-macOS-arm64-ad-hoc`（11,382,379 bytes，Actions artifact）
+- 当前已验证代码 head：[`0c1b4327`](https://github.com/char1eslu/cc-switch/commit/0c1b4327)
+- 最终验证：[CI 32041716595](https://github.com/char1eslu/cc-switch/actions/runs/32041716595) / [Build 32041958536](https://github.com/char1eslu/cc-switch/actions/runs/32041958536)
+- 构建产物：`CC-Switch-macOS-arm64-ad-hoc`（11,463,215 bytes，Actions artifact）
 
 如果 macOS 拦截，可以右键打开，或清理 quarantine：
 
@@ -162,8 +173,9 @@ Rust/Tauri 完整打包需要本机有 Rust toolchain 和 Tauri 依赖。
   GrokBuild、OpenCode 或 Hermes 的 UI/业务功能。
 - 不要只手工修改 `PRAGMA user_version`。数据库兼容还依赖 MCP、Skills、profiles
   和 proxy_config 的结构；直接改版本号可能令官方版或 fork 在启动时拒绝数据库。
-- Codex 会话维护会修改 `~/.codex/sqlite/state_5.sqlite`、`session_index.jsonl` 和 `sessions/**/*.jsonl`。
-- Move、Repair、Branch、Trash、Restore 等写操作会尽量先创建 `.codex-rescue-backup-*` 备份。
+- Codex 会话维护会修改 `~/.codex/sqlite/state_5.sqlite`、`codex-dev.db`、`codex-history-snapshots-dev.db`、`~/.codex/.codex-global-state.json`、`session_index.jsonl` 和 `sessions/**/*.jsonl`。
+- 删除、移动和移入回收区依赖 `.codex-global-state.json` 存在；文件缺失时会拒绝执行而不是盲改（更老的 Codex 版本没有该文件）。
+- Move、Repair、Branch、Trash、Restore 等写操作会尽量先创建 `.codex-rescue-backup-*` 备份；SQLite 备份为 online Backup API 生成的一致快照。
 - 操作同一个会话前建议关闭正在运行的 Codex 进程，避免 SQLite/WAL 或 JSONL 同时写入。
 - 这个 fork 是自用分支；需要稳定跨平台发布包时，优先看上游 [farion1231/cc-switch](https://github.com/farion1231/cc-switch)。
 

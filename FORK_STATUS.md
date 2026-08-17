@@ -2,7 +2,7 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-08-15
+最后更新：2026-08-17
 
 ## 同步基线
 
@@ -13,7 +13,7 @@
 | 2026-08-10 上游增量审计 | `413c09e0..c39c9032`；1 个提交（`c39c9032` Windows WSL 原子替换回退），跳过 |
 | 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
 | 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
-| 当前已验证代码 head | `981652fc`（`dev`；CI [31893969336](https://github.com/char1eslu/cc-switch/actions/runs/31893969336) 全绿、macOS Ad Hoc [31894246576](https://github.com/char1eslu/cc-switch/actions/runs/31894246576) 构建通过） |
+| 当前已验证代码 head | `0c1b4327`（`dev`；CI [32041716595](https://github.com/char1eslu/cc-switch/actions/runs/32041716595) 全绿、macOS Ad Hoc [32041958536](https://github.com/char1eslu/cc-switch/actions/runs/32041958536) 构建通过） |
 
 **下次同步从这里开始**：
 
@@ -24,6 +24,73 @@ git log --oneline 1f38c838..upstream/main
 
 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
 用 `1f38c838..upstream/main` 才是真实增量。
+
+## 2026-08-17 Codex 26.810 会话兼容（fork 侧，非上游提交）
+
+**起因**：Codex Desktop 26.810 改了会话存储——子代理线程在 `threads` 表有独立行
+但只靠 `thread_spawn_edges` / `thread_source` / `source` JSON 标记归属；项目归属迁到
+`~/.codex/.codex-global-state.json`（原生 assignments + 侧栏排序）；会话列表还出现
+只有内部事件、无用户事件的行。fork 的会话管理随之出现：子代理被当独立会话列出、
+Move 不生效（只改 DB/JSONL，原生项目状态不动，Codex 桌面端刷新后被弹回）、
+删除/恢复遗漏新库与新列。
+
+**来源**：修复先在 Codex Keeper（codex-wake 自 fork，Swift）完成并验证
+（`696b59f`，含隔离兼容测试套件），本次按同一契约移植到 cc-switch 的 Rust
+会话管理。核心提交：`0c1b4327`（`dev`）。
+
+改动要点（全部在 `src-tauri/src/session_manager/providers/codex.rs`）：
+
+1. **子代理识别四路信号**：`thread_spawn_edges.child_thread_id`、
+   `threads.thread_source = 'subagent'`、`threads.source` JSON 里的
+   `subagent.thread_spawn`、以及 rollout 文件内容兜底。命中即折叠，
+   不独立列出，也拒绝被单独 move/delete/trash（"follow their parent"）。
+2. **`needs_repair` 增加 `has_user_event != 0` 前提**：新版给内部线程也建
+   `threads` 行，无用户事件的行不再被误报为待修复/待索引。
+3. **Move 三端同步**：state DB `threads.cwd` + rollout
+   `session_meta.payload.cwd` / `turn_context` + `.codex-global-state.json`
+   （写 `thread-project-assignments`、迁 `sidebar-project-thread-orders`、清
+   projectless/workspace-hint/output-dir）。目标项目必须已在 Codex 注册
+   （预检报错而非半移动），任一步失败整体回滚。
+4. **Trash/Restore manifest v2**：`relatedRows` / `externalDatabases` 逐行保存
+   **列名 + 任意类型值**（Null/Integer/Real/Text/Blob），Codex 以后加列不用改代码。
+   覆盖 `codex-dev.db`（`local_thread_catalog` 行 + `catalog_revision` 递增）和
+   `codex-history-snapshots-dev.db`（`app_server_history_snapshots`）。
+   恢复时还原原生项目状态（assignment、侧栏原位置、projectless 标记、
+   workspace hint、output dir）。
+5. **引用行清理/恢复泛化**：运行时探测每张表的
+   `thread_id` / `parent_thread_id` / `child_thread_id` / `assigned_thread_id`
+   列（`assigned_thread_id` 置 NULL 而非删行），不再写死表名清单。
+6. **SQLite 备份改用 rusqlite online Backup API**：单文件一致快照，
+   不再裸拷 `state_5.sqlite-wal` / `-shm`（旧法在 WAL 活跃时可能拷出不一致状态）。
+
+新增读写的文件：`~/.codex/.codex-global-state.json`、
+`~/.codex/sqlite/codex-dev.db`、`~/.codex/sqlite/codex-history-snapshots-dev.db`。
+
+本轮踩到 / 值得记下的约束：
+
+- **`.codex-global-state.json` 现在是 delete/move/trash 的硬依赖**：文件缺失
+  直接拒绝操作（与 Codex Keeper 行为一致）。比这更老的 Codex 版本没有该文件时，
+  这些写操作会报错——属于有意为之，避免在状态不同步的情况下盲改。
+- **v1 废纸篓 manifest 仍可恢复**：新字段（relatedRows/externalDatabases/
+  projectState）缺省按空处理，只是不带新快照能力。
+- **测试卫生（已踩）**：delete/move 的测试必须把会话放在
+  `<tmp>/sessions/`（或 `archived_sessions/`）下并把**该目录**作为 root 传入；
+  否则 `codex_home_for_session_root` 判不出 codex home，回落到真实 `~/.codex`
+  （或被设置覆盖的目录），测试会读写真实数据。旧的
+  `delete_session_removes_jsonl_file` 就是这样静默读到真实库的
+  "Codex state row not found"。
+- `local_thread_catalog_metadata.catalog_revision` 的递增逻辑：删除和恢复各 +1
+  （触发 Codex 桌面端刷新会话目录）。兼容测试断言 4→5→6。
+
+验证：
+
+- Rust 全量 **1606 测试通过**（含 3 个移植自 Codex Keeper 兼容套件的新测试：
+  子代理折叠、移动三端同步含原生侧栏、trash/restore 全链路含 catalog revision）。
+  Clippy 零警告，rustfmt 已应用。前端无改动。
+- CI [`32041716595`](https://github.com/char1eslu/cc-switch/actions/runs/32041716595) 全绿；
+  arm64 Ad Hoc [`32041958536`](https://github.com/char1eslu/cc-switch/actions/runs/32041958536)
+  构建通过，artifact `CC-Switch-macOS-arm64-ad-hoc` 11,463,215 bytes。
+- 本机验证用 `/private/tmp` 一次性 Rustup 工具链完成，结束后已删除（不污染长期环境）。
 
 ## 2026-08-15 Codex 模型与恢复保护
 
