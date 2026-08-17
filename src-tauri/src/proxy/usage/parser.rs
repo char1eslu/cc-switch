@@ -429,7 +429,18 @@ impl TokenUsage {
             if let Some(usage) = event.get("usage") {
                 if !usage.is_null() {
                     log::debug!("[Codex] 找到 usage: {usage:?}");
-                    return Self::from_openai_response(event);
+                    let mut parsed = Self::from_openai_response(event)?;
+                    // Chat Completions 通常只在首个 chunk 提供 id/model，
+                    // 而 usage 位于末尾 chunk；跨整条事件流补齐元数据以便去重。
+                    if parsed.model.is_none() {
+                        parsed.model = events.iter().find_map(|chunk| {
+                            chunk.get("model").and_then(Value::as_str).map(str::to_owned)
+                        });
+                    }
+                    parsed.message_id = events.iter().find_map(|chunk| {
+                        chunk.get("id").and_then(Value::as_str).map(str::to_owned)
+                    });
+                    return Some(parsed);
                 }
             }
         }
