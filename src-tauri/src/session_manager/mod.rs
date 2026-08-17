@@ -375,6 +375,24 @@ mod tests {
         let codex_home = tempdir().expect("tempdir");
         let root = codex_home.path().join("sessions");
         std::fs::create_dir_all(&root).expect("sessions dir");
+        std::fs::write(
+            codex_home.path().join(".codex-global-state.json"),
+            serde_json::json!({
+                "local-projects": {
+                    "local-destination": {
+                        "id": "local-destination",
+                        "name": "Destination",
+                        "rootPaths": ["/tmp/new-project"],
+                    },
+                },
+                "thread-project-assignments": {},
+                "sidebar-project-thread-orders": {
+                    "local-destination": {"threadIds": []},
+                },
+            })
+            .to_string(),
+        )
+        .expect("write global state");
         let source = root.join("session.jsonl");
         write_codex_session(&source, "move-session");
 
@@ -434,19 +452,29 @@ mod tests {
 
     #[test]
     fn accepts_source_path_under_any_allowed_provider_root() {
-        let active_root = tempdir().expect("active root");
-        let archived_root = tempdir().expect("archived root");
-        let source = archived_root.path().join("session.jsonl");
+        let codex_home = tempdir().expect("codex home");
+        let active_root = codex_home.path().join("sessions");
+        let archived_root = codex_home.path().join("archived_sessions");
+        std::fs::create_dir_all(&active_root).expect("active dir");
+        std::fs::create_dir_all(&archived_root).expect("archived dir");
+        std::fs::write(
+            codex_home.path().join(".codex-global-state.json"),
+            serde_json::json!({
+                "local-projects": {},
+                "thread-project-assignments": {},
+                "sidebar-project-thread-orders": {},
+            })
+            .to_string(),
+        )
+        .expect("write global state");
+        let source = archived_root.join("session.jsonl");
         write_codex_session(&source, "archived-session");
 
         let deleted = delete_session_with_roots(
             "codex",
             "archived-session",
             &source,
-            &[
-                active_root.path().to_path_buf(),
-                archived_root.path().to_path_buf(),
-            ],
+            &[active_root.clone(), archived_root.clone()],
         )
         .expect("delete archived session");
 

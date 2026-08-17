@@ -1,14 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use regex::Regex;
 use rusqlite::types::{Value as SqlValue, ValueRef};
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
-use serde::Serialize;
+use rusqlite::{backup::Backup, params, params_from_iter, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -69,6 +70,42 @@ pub struct CodexTrashedThread {
     pub original_exists: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "camelCase")]
+enum SqliteSnapshotValue {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SqliteRowSnapshot {
+    table: String,
+    columns: Vec<String>,
+    values: Vec<SqliteSnapshotValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SqliteDatabaseSnapshot {
+    relative_path: String,
+    rows: Vec<SqliteRowSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadProjectState {
+    assignment: Option<Value>,
+    sidebar_project_id: Option<String>,
+    sidebar_position: Option<usize>,
+    was_projectless: bool,
+    workspace_root_hint: Option<Value>,
+    output_directory: Option<Value>,
+}
+
 static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
         .unwrap()
@@ -119,6 +156,10 @@ fn thread_trash_path(codex_home: &Path) -> PathBuf {
     backup_trash_path(codex_home).join("threads")
 }
 
+fn global_state_path(codex_home: &Path) -> PathBuf {
+    codex_home.join(".codex-global-state.json")
+}
+
 fn scan_sessions_from_sqlite(
     codex_home: &Path,
     state_db: &Path,
@@ -130,9 +171,10 @@ fn scan_sessions_from_sqlite(
             state_db.display()
         )
     })?;
+    let subagent_ids = load_subagent_ids(&conn)?;
     let mut stmt = conn
         .prepare(
-            "select id, rollout_path, created_at, updated_at, cwd, title, first_user_message, preview, archived \
+            "select id, rollout_path, created_at, updated_at, cwd, title, first_user_message, preview, archived, source, thread_source, has_user_event \
              from threads order by updated_at desc",
         )
         .map_err(|e| format!("Failed to prepare Codex session query: {e}"))?;
@@ -148,6 +190,9 @@ fn scan_sessions_from_sqlite(
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<i64>>(11)?,
             ))
         })
         .map_err(|e| format!("Failed to query Codex sessions: {e}"))?;
@@ -164,15 +209,27 @@ fn scan_sessions_from_sqlite(
             first_user_message,
             preview,
             archived,
+            source,
+            thread_source,
+            has_user_event,
         ) = row;
         let path = PathBuf::from(&source_path);
-        if path.exists() && is_subagent_session_file(&path) {
+        if subagent_ids.contains(&session_id)
+            || thread_source
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case("subagent"))
+            || source.as_deref().is_some_and(is_subagent_source_text)
+            || (path.exists() && is_subagent_session_file(&path))
+        {
             continue;
         }
         let is_in_session_index = index.contains_key(&session_id);
         let file_exists = path.exists();
         let archived_flag = archived.unwrap_or(0) != 0;
-        let needs_repair = !archived_flag && file_exists && !is_in_session_index;
+        let needs_repair = !archived_flag
+            && file_exists
+            && has_user_event.unwrap_or(0) != 0
+            && !is_in_session_index;
         let title = index
             .get(&session_id)
             .and_then(|entry| entry.get("thread_name").and_then(Value::as_str))
@@ -213,6 +270,34 @@ fn scan_sessions_from_sqlite(
     }
 
     Ok(sessions)
+}
+
+fn load_subagent_ids(conn: &Connection) -> Result<HashSet<String>, String> {
+    let has_edges = conn
+        .query_row(
+            "select exists(select 1 from sqlite_master where type = 'table' and name = 'thread_spawn_edges')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| format!("Failed to inspect Codex spawn edges: {e}"))?
+        != 0;
+    if !has_edges {
+        return Ok(HashSet::new());
+    }
+    let mut stmt = conn
+        .prepare("select child_thread_id from thread_spawn_edges")
+        .map_err(|e| format!("Failed to prepare Codex spawn edge query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("Failed to read Codex spawn edges: {e}"))?;
+    Ok(rows.flatten().collect())
+}
+
+fn is_subagent_source_text(source: &str) -> bool {
+    serde_json::from_str::<Value>(source)
+        .ok()
+        .as_ref()
+        .is_some_and(|value| is_subagent_source(Some(value)))
 }
 
 fn seconds_to_ms(value: i64) -> i64 {
@@ -358,7 +443,7 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
     Ok(messages)
 }
 
-pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
+pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool, String> {
     let meta = parse_session(path)
         .ok_or_else(|| format!("Failed to parse Codex session metadata: {}", path.display()))?;
 
@@ -369,12 +454,101 @@ pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<boo
         ));
     }
 
-    std::fs::remove_file(path).map_err(|e| {
+    let codex_home = codex_home_for_session_root(root);
+    let state_db = state_db_path(&codex_home);
+    let (sqlite_record, related_rows) = if state_db.exists() {
+        let conn = Connection::open(&state_db).map_err(|e| {
+            format!(
+                "Failed to open Codex state database {}: {e}",
+                state_db.display()
+            )
+        })?;
+        let record = load_sqlite_record(&conn, session_id)?;
+        if sqlite_record_is_subagent(&record) {
+            return Err(
+                "Subagent sessions follow their parent and cannot be deleted independently"
+                    .to_string(),
+            );
+        }
+        (record, snapshot_reference_rows(&conn, session_id, true)?)
+    } else {
+        (Value::Null, Vec::new())
+    };
+    let external_databases = snapshot_external_databases(&codex_home, session_id)?;
+    let global_state = global_state_path(&codex_home);
+    let original_global_state = fs::read(&global_state).map_err(|e| {
         format!(
-            "Failed to delete Codex session file {}: {e}",
-            path.display()
+            "Failed to read Codex global project metadata {}: {e}",
+            global_state.display()
         )
     })?;
+    let (removed_global_state, _) =
+        global_state_removing_thread(&original_global_state, session_id)?;
+    let session_index = session_index_path(&codex_home);
+    let original_session_index = if session_index.exists() {
+        Some(fs::read(&session_index).map_err(|e| {
+            format!(
+                "Failed to read Codex session index {}: {e}",
+                session_index.display()
+            )
+        })?)
+    } else {
+        None
+    };
+
+    let stamp = format!("{}-delete", Utc::now().format("%Y%m%d-%H%M%S"));
+    backup_state_files(&codex_home, &stamp)?;
+    backup_file(&global_state, &stamp)?;
+    backup_file(path, &stamp)?;
+    if session_index.exists() {
+        backup_file(&session_index, &stamp)?;
+    }
+    for snapshot in &external_databases {
+        if !snapshot.rows.is_empty() {
+            backup_sqlite_database(
+                &external_database_path(&codex_home, &snapshot.relative_path)?,
+                &stamp,
+            )?;
+        }
+    }
+
+    let result = (|| {
+        crate::config::atomic_write(&global_state, &removed_global_state)
+            .map_err(|e| e.to_string())?;
+        if state_db.exists() {
+            let mut conn = Connection::open(&state_db).map_err(|e| {
+                format!(
+                    "Failed to open Codex state database {}: {e}",
+                    state_db.display()
+                )
+            })?;
+            delete_reference_rows(&mut conn, session_id, true)?;
+        }
+        delete_external_database_rows(&codex_home, &external_databases, session_id)?;
+        remove_session_index_entry(&session_index, session_id)?;
+        fs::remove_file(path).map_err(|e| {
+            format!(
+                "Failed to delete Codex session file {}: {e}",
+                path.display()
+            )
+        })
+    })();
+    if let Err(error) = result {
+        if state_db.exists() {
+            if let Ok(mut conn) = Connection::open(&state_db) {
+                if let Some(record) = sqlite_record.as_object() {
+                    let _ = insert_sqlite_record(&conn, record);
+                }
+                let _ = restore_snapshot_rows(&mut conn, &related_rows);
+            }
+        }
+        let _ = restore_external_database_rows(&codex_home, &external_databases);
+        let _ = crate::config::atomic_write(&global_state, &original_global_state);
+        if let Some(index) = original_session_index {
+            let _ = crate::config::atomic_write(&session_index, &index);
+        }
+        return Err(error);
+    }
 
     Ok(true)
 }
@@ -410,16 +584,48 @@ fn move_session_with_home(
         return Err("Target project directory is required".to_string());
     }
 
+    let state_db = codex_home.join("sqlite").join("state_5.sqlite");
+    let global_state = global_state_path(codex_home);
+    if !global_state.exists() {
+        return Err(format!(
+            "Codex global project metadata is missing: {}",
+            global_state.display()
+        ));
+    }
+    let original_global_state = fs::read(&global_state).map_err(|e| {
+        format!(
+            "Failed to read Codex global project metadata {}: {e}",
+            global_state.display()
+        )
+    })?;
+    let moved_global_state =
+        global_state_moving(&original_global_state, session_id, target_project_dir)?;
+    let original_session = fs::read(path)
+        .map_err(|e| format!("Failed to read Codex session file {}: {e}", path.display()))?;
+
     let stamp = format!("{}-move", Utc::now().format("%Y%m%d-%H%M%S"));
     backup_state_files(codex_home, &stamp)?;
+    backup_file(&global_state, &stamp)?;
     backup_file(path, &stamp)?;
 
-    let state_db = codex_home.join("sqlite").join("state_5.sqlite");
-    if state_db.exists() {
-        update_sqlite_project(&state_db, session_id, target_project_dir)?;
+    let result = (|| {
+        crate::config::atomic_write(&global_state, &moved_global_state)
+            .map_err(|e| e.to_string())?;
+        update_session_project(path, target_project_dir)?;
+        if state_db.exists() {
+            update_sqlite_project(&state_db, session_id, target_project_dir)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = crate::config::atomic_write(&global_state, &original_global_state);
+        let _ = crate::config::atomic_write(path, &original_session);
+        if state_db.exists() {
+            let original_cwd = meta.project_dir.as_deref().unwrap_or_default();
+            let _ = update_sqlite_project(&state_db, session_id, original_cwd);
+        }
+        return Err(error);
     }
-
-    update_session_project(path, target_project_dir)?;
 
     Ok(true)
 }
@@ -635,6 +841,14 @@ pub fn branch_session(
 
 pub fn trash_session(path: &Path, session_id: &str) -> Result<CodexOperationReport, String> {
     let codex_home = get_codex_config_dir();
+    trash_session_with_home(&codex_home, path, session_id)
+}
+
+fn trash_session_with_home(
+    codex_home: &Path,
+    path: &Path,
+    session_id: &str,
+) -> Result<CodexOperationReport, String> {
     let sessions_root = codex_home.join("sessions");
     let file_exists = path.exists();
     if file_exists {
@@ -656,26 +870,62 @@ pub fn trash_session(path: &Path, session_id: &str) -> Result<CodexOperationRepo
         );
     }
 
-    let stamp = format!("{}-trash-thread", Utc::now().format("%Y%m%d-%H%M%S"));
-    let mut backups = backup_state_files(&codex_home, &stamp)?;
-    let session_index = session_index_path(&codex_home);
-    if session_index.exists() {
-        backups.push(backup_file(&session_index, &stamp)?);
-    }
-
-    let state_db = state_db_path(&codex_home);
-    let sqlite_record = if state_db.exists() {
+    let state_db = state_db_path(codex_home);
+    let (sqlite_record, related_rows) = if state_db.exists() {
         let conn = Connection::open(&state_db).map_err(|e| {
             format!(
                 "Failed to open Codex state database {}: {e}",
                 state_db.display()
             )
         })?;
-        load_sqlite_record(&conn, session_id)?
+        let record = load_sqlite_record(&conn, session_id)?;
+        if sqlite_record_is_subagent(&record) {
+            return Err(
+                "Subagent sessions follow their parent and cannot be trashed independently"
+                    .to_string(),
+            );
+        }
+        (record, snapshot_reference_rows(&conn, session_id, true)?)
     } else {
-        Value::Null
+        (Value::Null, Vec::new())
     };
-    let session_index_entry = load_session_index(&codex_home)
+    let external_databases = snapshot_external_databases(codex_home, session_id)?;
+    let global_state = global_state_path(codex_home);
+    let original_global_state = fs::read(&global_state).map_err(|e| {
+        format!(
+            "Failed to read Codex global project metadata {}: {e}",
+            global_state.display()
+        )
+    })?;
+    let (removed_global_state, project_state) =
+        global_state_removing_thread(&original_global_state, session_id)?;
+
+    let stamp = format!("{}-trash-thread", Utc::now().format("%Y%m%d-%H%M%S"));
+    let mut backups = backup_state_files(codex_home, &stamp)?;
+    backups.push(backup_file(&global_state, &stamp)?);
+    for snapshot in &external_databases {
+        if !snapshot.rows.is_empty() {
+            backups.push(backup_sqlite_database(
+                &external_database_path(codex_home, &snapshot.relative_path)?,
+                &stamp,
+            )?);
+        }
+    }
+    let session_index = session_index_path(codex_home);
+    let original_session_index = if session_index.exists() {
+        Some(fs::read(&session_index).map_err(|e| {
+            format!(
+                "Failed to read Codex session index {}: {e}",
+                session_index.display()
+            )
+        })?)
+    } else {
+        None
+    };
+    if session_index.exists() {
+        backups.push(backup_file(&session_index, &stamp)?);
+    }
+    let session_index_entry = load_session_index(codex_home)
         .unwrap_or_default()
         .get(session_id)
         .cloned();
@@ -693,7 +943,7 @@ pub fn trash_session(path: &Path, session_id: &str) -> Result<CodexOperationRepo
         session_meta_from_sqlite_record(session_id, path, &sqlite_record)?
     };
 
-    let trash_dir = thread_trash_path(&codex_home).join(session_id);
+    let trash_dir = thread_trash_path(codex_home).join(session_id);
     fs::create_dir_all(&trash_dir).map_err(|e| {
         format!(
             "Failed to create trash directory {}: {e}",
@@ -720,7 +970,7 @@ pub fn trash_session(path: &Path, session_id: &str) -> Result<CodexOperationRepo
     let manifest_title = meta.title.clone().unwrap_or_else(|| session_id.to_string());
     let manifest_cwd = meta.project_dir.clone().unwrap_or_default();
     let manifest = serde_json::json!({
-        "version": 1,
+        "version": 2,
         "threadID": session_id,
         "title": manifest_title,
         "originalPath": path.to_string_lossy(),
@@ -729,26 +979,54 @@ pub fn trash_session(path: &Path, session_id: &str) -> Result<CodexOperationRepo
         "trashedAt": iso_jsonl(Utc::now()),
         "sqliteRecord": sqlite_record,
         "sessionIndexEntry": session_index_entry,
+        "relatedRows": related_rows,
+        "externalDatabases": external_databases,
+        "projectState": project_state,
     });
-    crate::config::atomic_write(
-        &trash_dir.join("manifest.json"),
-        serde_json::to_string_pretty(&manifest)
-            .map_err(|e| format!("Failed to encode trash manifest: {e}"))?
-            .as_bytes(),
-    )
-    .map_err(|e| e.to_string())?;
-
-    if state_db.exists() {
-        let conn = Connection::open(&state_db).map_err(|e| {
-            format!(
-                "Failed to open Codex state database {}: {e}",
-                state_db.display()
-            )
-        })?;
-        conn.execute("delete from threads where id = ?1", params![session_id])
-            .map_err(|e| format!("Failed to remove Codex state row: {e}"))?;
+    let result = (|| {
+        crate::config::atomic_write(
+            &trash_dir.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest)
+                .map_err(|e| format!("Failed to encode trash manifest: {e}"))?
+                .as_bytes(),
+        )
+        .map_err(|e| e.to_string())?;
+        crate::config::atomic_write(&global_state, &removed_global_state)
+            .map_err(|e| e.to_string())?;
+        if state_db.exists() {
+            let mut conn = Connection::open(&state_db).map_err(|e| {
+                format!(
+                    "Failed to open Codex state database {}: {e}",
+                    state_db.display()
+                )
+            })?;
+            delete_reference_rows(&mut conn, session_id, true)?;
+        }
+        delete_external_database_rows(codex_home, &external_databases, session_id)?;
+        remove_session_index_entry(&session_index, session_id)
+    })();
+    if let Err(error) = result {
+        if state_db.exists() {
+            if let Ok(mut conn) = Connection::open(&state_db) {
+                if let Some(record) = sqlite_record.as_object() {
+                    let _ = insert_sqlite_record(&conn, record);
+                }
+                let _ = restore_snapshot_rows(&mut conn, &related_rows);
+            }
+        }
+        let _ = restore_external_database_rows(codex_home, &external_databases);
+        let _ = crate::config::atomic_write(&global_state, &original_global_state);
+        if let Some(index) = original_session_index {
+            let _ = crate::config::atomic_write(&session_index, &index);
+        }
+        if let Some(trash_path) = &trash_path {
+            if !path.exists() {
+                let _ = fs::rename(trash_path, path);
+            }
+        }
+        let _ = fs::remove_dir_all(&trash_dir);
+        return Err(error);
     }
-    remove_session_index_entry(&session_index, session_id)?;
 
     Ok(CodexOperationReport {
         success: true,
@@ -759,6 +1037,7 @@ pub fn trash_session(path: &Path, session_id: &str) -> Result<CodexOperationRepo
             path.to_string_lossy().to_string(),
             state_db.to_string_lossy().to_string(),
             session_index.to_string_lossy().to_string(),
+            global_state.to_string_lossy().to_string(),
         ],
         new_session_id: None,
         new_source_path: trash_path.map(|path| path.to_string_lossy().to_string()),
@@ -913,13 +1192,20 @@ pub fn list_trashed_threads() -> Result<Vec<CodexTrashedThread>, String> {
 
 pub fn restore_trashed_thread(manifest_path: &Path) -> Result<bool, String> {
     let codex_home = get_codex_config_dir();
+    restore_trashed_thread_with_home(&codex_home, manifest_path)
+}
+
+fn restore_trashed_thread_with_home(
+    codex_home: &Path,
+    manifest_path: &Path,
+) -> Result<bool, String> {
     let manifest_path = manifest_path.canonicalize().map_err(|e| {
         format!(
             "Failed to resolve trash manifest {}: {e}",
             manifest_path.display()
         )
     })?;
-    let thread_trash = thread_trash_path(&codex_home)
+    let thread_trash = thread_trash_path(codex_home)
         .canonicalize()
         .map_err(|e| format!("Failed to resolve thread trash: {e}"))?;
     if !manifest_path.starts_with(&thread_trash) {
@@ -950,8 +1236,52 @@ pub fn restore_trashed_thread(manifest_path: &Path) -> Result<bool, String> {
         "{}-before-trash-restore",
         Utc::now().format("%Y%m%d-%H%M%S")
     );
-    backup_state_files(&codex_home, &backup_suffix)?;
-    let session_index = session_index_path(&codex_home);
+    backup_state_files(codex_home, &backup_suffix)?;
+    let related_rows = manifest
+        .get("relatedRows")
+        .cloned()
+        .map(serde_json::from_value::<Vec<SqliteRowSnapshot>>)
+        .transpose()
+        .map_err(|e| format!("Failed to decode Codex related metadata: {e}"))?
+        .unwrap_or_default();
+    let external_databases = manifest
+        .get("externalDatabases")
+        .cloned()
+        .map(serde_json::from_value::<Vec<SqliteDatabaseSnapshot>>)
+        .transpose()
+        .map_err(|e| format!("Failed to decode Codex database snapshots: {e}"))?
+        .unwrap_or_default();
+    for snapshot in &external_databases {
+        let path = external_database_path(codex_home, &snapshot.relative_path)?;
+        if path.exists() && !snapshot.rows.is_empty() {
+            backup_sqlite_database(&path, &backup_suffix)?;
+        }
+    }
+    let global_state = global_state_path(codex_home);
+    let current_global_state = fs::read(&global_state).map_err(|e| {
+        format!(
+            "Failed to read Codex global project metadata {}: {e}",
+            global_state.display()
+        )
+    })?;
+    backup_file(&global_state, &backup_suffix)?;
+    let project_state = manifest
+        .get("projectState")
+        .cloned()
+        .map(serde_json::from_value::<ThreadProjectState>)
+        .transpose()
+        .map_err(|e| format!("Failed to decode Codex project metadata: {e}"))?;
+    let restored_global_state = project_state
+        .as_ref()
+        .map(|state| {
+            global_state_restoring_thread(
+                &current_global_state,
+                manifest["threadID"].as_str().unwrap_or_default(),
+                state,
+            )
+        })
+        .transpose()?;
+    let session_index = session_index_path(codex_home);
     if session_index.exists() {
         backup_file(&session_index, &backup_suffix)?;
     }
@@ -979,25 +1309,50 @@ pub fn restore_trashed_thread(manifest_path: &Path) -> Result<bool, String> {
         })?;
     }
 
-    let state_db = state_db_path(&codex_home);
-    if state_db.exists() {
-        let conn = Connection::open(&state_db).map_err(|e| {
-            format!(
-                "Failed to open Codex state database {}: {e}",
-                state_db.display()
-            )
-        })?;
-        if let Some(record) = manifest.get("sqliteRecord").and_then(Value::as_object) {
-            insert_sqlite_record(&conn, record)?;
+    let session_id = manifest
+        .get("threadID")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Trash manifest is missing threadID".to_string())?;
+    let state_db = state_db_path(codex_home);
+    let result = (|| {
+        if state_db.exists() {
+            let mut conn = Connection::open(&state_db).map_err(|e| {
+                format!(
+                    "Failed to open Codex state database {}: {e}",
+                    state_db.display()
+                )
+            })?;
+            if let Some(record) = manifest.get("sqliteRecord").and_then(Value::as_object) {
+                insert_sqlite_record(&conn, record)?;
+            }
+            restore_snapshot_rows(&mut conn, &related_rows)?;
         }
+        restore_external_database_rows(codex_home, &external_databases)?;
+        if let Some(entry) = manifest
+            .get("sessionIndexEntry")
+            .filter(|value| !value.is_null())
+        {
+            append_raw_session_index_entry(&session_index, entry)?;
+        }
+        if let Some(global_state_data) = &restored_global_state {
+            crate::config::atomic_write(&global_state, global_state_data)
+                .map_err(|e| e.to_string())?;
+        }
+        delete_trash_directory(&manifest_path)
+    })();
+    if let Err(error) = result {
+        if state_db.exists() {
+            if let Ok(mut conn) = Connection::open(&state_db) {
+                let _ = delete_reference_rows(&mut conn, session_id, true);
+            }
+        }
+        let _ = delete_external_database_rows(codex_home, &external_databases, session_id);
+        let _ = crate::config::atomic_write(&global_state, &current_global_state);
+        if original_path.exists() {
+            let _ = fs::remove_file(&original_path);
+        }
+        return Err(error);
     }
-    if let Some(entry) = manifest
-        .get("sessionIndexEntry")
-        .filter(|value| !value.is_null())
-    {
-        append_raw_session_index_entry(&session_index_path(&codex_home), entry)?;
-    }
-    delete_trash_directory(&manifest_path)?;
     Ok(true)
 }
 
@@ -1366,19 +1721,10 @@ fn codex_home_for_session_root(root: &Path) -> PathBuf {
 
 fn backup_state_files(codex_home: &Path, suffix: &str) -> Result<Vec<PathBuf>, String> {
     let state_db = codex_home.join("sqlite").join("state_5.sqlite");
-    [state_db.clone(), wal_path(&state_db), shm_path(&state_db)]
-        .into_iter()
-        .filter(|path| path.exists())
-        .map(|path| backup_file(&path, suffix))
-        .collect()
-}
-
-fn wal_path(path: &Path) -> PathBuf {
-    PathBuf::from(format!("{}-wal", path.display()))
-}
-
-fn shm_path(path: &Path) -> PathBuf {
-    PathBuf::from(format!("{}-shm", path.display()))
+    if !state_db.exists() {
+        return Ok(Vec::new());
+    }
+    Ok(vec![backup_sqlite_database(&state_db, suffix)?])
 }
 
 fn backup_file(path: &Path, suffix: &str) -> Result<PathBuf, String> {
@@ -1403,6 +1749,556 @@ fn backup_file(path: &Path, suffix: &str) -> Result<PathBuf, String> {
         )
     })?;
     Ok(destination)
+}
+
+fn global_state_moving(
+    data: &[u8],
+    session_id: &str,
+    target_project_dir: &str,
+) -> Result<Vec<u8>, String> {
+    let mut state: Value = serde_json::from_slice(data)
+        .map_err(|e| format!("Failed to decode Codex global project metadata: {e}"))?;
+    let state_object = state
+        .as_object_mut()
+        .ok_or_else(|| "Codex global project metadata is not an object".to_string())?;
+    let project_id = state_object
+        .get("local-projects")
+        .and_then(Value::as_object)
+        .and_then(|projects| {
+            projects.iter().find_map(|(project_id, project)| {
+                project
+                    .get("rootPaths")
+                    .and_then(Value::as_array)
+                    .filter(|roots| {
+                        roots
+                            .iter()
+                            .any(|root| root.as_str() == Some(target_project_dir))
+                    })
+                    .map(|_| project_id.clone())
+            })
+        })
+        .ok_or_else(|| {
+            format!("Target project is not registered in Codex: {target_project_dir}")
+        })?;
+
+    let assignments = state_object
+        .entry("thread-project-assignments")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| "Codex thread project assignments are invalid".to_string())?;
+    assignments.insert(
+        session_id.to_string(),
+        serde_json::json!({"projectKind": "local", "projectId": project_id.clone()}),
+    );
+
+    let orders = state_object
+        .entry("sidebar-project-thread-orders")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| "Codex sidebar project ordering is invalid".to_string())?;
+    for order in orders.values_mut() {
+        if let Some(ids) = order.get_mut("threadIds").and_then(Value::as_array_mut) {
+            ids.retain(|value| value.as_str() != Some(session_id));
+        }
+    }
+    let destination = orders
+        .entry(project_id)
+        .or_insert_with(|| serde_json::json!({"threadIds": []}));
+    let ids = destination
+        .get_mut("threadIds")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "Codex destination sidebar ordering is invalid".to_string())?;
+    ids.insert(0, Value::String(session_id.to_string()));
+
+    remove_projectless_thread_state(state_object, session_id);
+    serde_json::to_vec_pretty(&state)
+        .map_err(|e| format!("Failed to encode Codex global project metadata: {e}"))
+}
+
+fn remove_projectless_thread_state(state: &mut serde_json::Map<String, Value>, session_id: &str) {
+    if let Some(ids) = state
+        .get_mut("projectless-thread-ids")
+        .and_then(Value::as_array_mut)
+    {
+        ids.retain(|value| value.as_str() != Some(session_id));
+    }
+    for key in [
+        "thread-workspace-root-hints",
+        "thread-projectless-output-directories",
+    ] {
+        if let Some(values) = state.get_mut(key).and_then(Value::as_object_mut) {
+            values.remove(session_id);
+        }
+    }
+}
+
+fn thread_project_state(state: &Value, session_id: &str) -> ThreadProjectState {
+    let assignment = state
+        .get("thread-project-assignments")
+        .and_then(Value::as_object)
+        .and_then(|assignments| assignments.get(session_id))
+        .cloned();
+    let mut sidebar_project_id = None;
+    let mut sidebar_position = None;
+    if let Some(orders) = state
+        .get("sidebar-project-thread-orders")
+        .and_then(Value::as_object)
+    {
+        for (project_id, order) in orders {
+            if let Some(position) =
+                order
+                    .get("threadIds")
+                    .and_then(Value::as_array)
+                    .and_then(|ids| {
+                        ids.iter()
+                            .position(|value| value.as_str() == Some(session_id))
+                    })
+            {
+                sidebar_project_id = Some(project_id.clone());
+                sidebar_position = Some(position);
+                break;
+            }
+        }
+    }
+    ThreadProjectState {
+        assignment,
+        sidebar_project_id,
+        sidebar_position,
+        was_projectless: state
+            .get("projectless-thread-ids")
+            .and_then(Value::as_array)
+            .is_some_and(|ids| ids.iter().any(|value| value.as_str() == Some(session_id))),
+        workspace_root_hint: state
+            .get("thread-workspace-root-hints")
+            .and_then(Value::as_object)
+            .and_then(|values| values.get(session_id))
+            .cloned(),
+        output_directory: state
+            .get("thread-projectless-output-directories")
+            .and_then(Value::as_object)
+            .and_then(|values| values.get(session_id))
+            .cloned(),
+    }
+}
+
+fn global_state_removing_thread(
+    data: &[u8],
+    session_id: &str,
+) -> Result<(Vec<u8>, ThreadProjectState), String> {
+    let state: Value = serde_json::from_slice(data)
+        .map_err(|e| format!("Failed to decode Codex global project metadata: {e}"))?;
+    let project_state = thread_project_state(&state, session_id);
+    let cleaned = remove_thread_references(&state, session_id).unwrap_or(Value::Null);
+    let data = serde_json::to_vec_pretty(&cleaned)
+        .map_err(|e| format!("Failed to encode Codex global project metadata: {e}"))?;
+    Ok((data, project_state))
+}
+
+fn remove_thread_references(value: &Value, session_id: &str) -> Option<Value> {
+    match value {
+        Value::String(text) if text == session_id => None,
+        Value::Array(values) => Some(Value::Array(
+            values
+                .iter()
+                .filter_map(|value| remove_thread_references(value, session_id))
+                .collect(),
+        )),
+        Value::Object(values) => {
+            let mut cleaned = serde_json::Map::new();
+            for (key, value) in values {
+                if key == session_id || value.as_str().is_some_and(|text| text == session_id) {
+                    continue;
+                }
+                if let Some(value) = remove_thread_references(value, session_id) {
+                    cleaned.insert(key.clone(), value);
+                }
+            }
+            Some(Value::Object(cleaned))
+        }
+        _ => Some(value.clone()),
+    }
+}
+
+fn global_state_restoring_thread(
+    data: &[u8],
+    session_id: &str,
+    project_state: &ThreadProjectState,
+) -> Result<Vec<u8>, String> {
+    let mut state: Value = serde_json::from_slice(data)
+        .map_err(|e| format!("Failed to decode Codex global project metadata: {e}"))?;
+    let state = state
+        .as_object_mut()
+        .ok_or_else(|| "Codex global project metadata is not an object".to_string())?;
+    if let Some(assignment) = &project_state.assignment {
+        state
+            .entry("thread-project-assignments")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+            .ok_or_else(|| "Codex thread project assignments are invalid".to_string())?
+            .insert(session_id.to_string(), assignment.clone());
+    }
+    if let Some(project_id) = &project_state.sidebar_project_id {
+        let orders = state
+            .entry("sidebar-project-thread-orders")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+            .ok_or_else(|| "Codex sidebar project ordering is invalid".to_string())?;
+        for order in orders.values_mut() {
+            if let Some(ids) = order.get_mut("threadIds").and_then(Value::as_array_mut) {
+                ids.retain(|value| value.as_str() != Some(session_id));
+            }
+        }
+        let destination = orders
+            .entry(project_id.clone())
+            .or_insert_with(|| serde_json::json!({"threadIds": []}));
+        let ids = destination
+            .get_mut("threadIds")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| "Codex destination sidebar ordering is invalid".to_string())?;
+        let position = project_state.sidebar_position.unwrap_or(0).min(ids.len());
+        ids.insert(position, Value::String(session_id.to_string()));
+    }
+    if project_state.was_projectless {
+        let ids = state
+            .entry("projectless-thread-ids")
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .ok_or_else(|| "Codex projectless thread list is invalid".to_string())?;
+        if !ids.iter().any(|value| value.as_str() == Some(session_id)) {
+            ids.push(Value::String(session_id.to_string()));
+        }
+    }
+    for (key, saved) in [
+        (
+            "thread-workspace-root-hints",
+            &project_state.workspace_root_hint,
+        ),
+        (
+            "thread-projectless-output-directories",
+            &project_state.output_directory,
+        ),
+    ] {
+        if let Some(saved) = saved {
+            state
+                .entry(key)
+                .or_insert_with(|| Value::Object(serde_json::Map::new()))
+                .as_object_mut()
+                .ok_or_else(|| format!("Codex {key} metadata is invalid"))?
+                .insert(session_id.to_string(), saved.clone());
+        }
+    }
+    serde_json::to_vec_pretty(&state)
+        .map_err(|e| format!("Failed to encode Codex global project metadata: {e}"))
+}
+
+fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn sqlite_tables(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("select name from sqlite_master where type = 'table' and name not like 'sqlite_%'")
+        .map_err(|e| format!("Failed to inspect Codex database tables: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("Failed to read Codex database tables: {e}"))?;
+    Ok(rows.flatten().collect())
+}
+
+fn sqlite_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(&format!("pragma table_info({})", quote_identifier(table)))
+        .map_err(|e| format!("Failed to inspect Codex table {table}: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("Failed to read Codex table {table}: {e}"))?;
+    Ok(rows.flatten().collect())
+}
+
+fn snapshot_reference_rows(
+    conn: &Connection,
+    session_id: &str,
+    skip_threads: bool,
+) -> Result<Vec<SqliteRowSnapshot>, String> {
+    let mut snapshots = Vec::new();
+    for table in sqlite_tables(conn)? {
+        if skip_threads && table == "threads" {
+            continue;
+        }
+        let columns = sqlite_columns(conn, &table)?;
+        let reference_columns = ["thread_id", "parent_thread_id", "child_thread_id"]
+            .into_iter()
+            .filter(|column| columns.iter().any(|candidate| candidate == column))
+            .collect::<Vec<_>>();
+        if reference_columns.is_empty() {
+            continue;
+        }
+        let where_clause = reference_columns
+            .iter()
+            .map(|column| format!("{} = ?1", quote_identifier(column)))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let sql = format!(
+            "select * from {} where {where_clause}",
+            quote_identifier(&table)
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare Codex {table} snapshot: {e}"))?;
+        let selected_columns: Vec<String> = stmt
+            .column_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let column_count = stmt.column_count();
+        let mut rows = stmt
+            .query(params![session_id])
+            .map_err(|e| format!("Failed to query Codex {table} snapshot: {e}"))?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| format!("Failed to read Codex {table} snapshot: {e}"))?
+        {
+            let values = (0..column_count)
+                .map(|index| {
+                    row.get_ref(index)
+                        .map(sql_value_ref_to_snapshot)
+                        .map_err(|e| format!("Failed to read Codex {table} row: {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            snapshots.push(SqliteRowSnapshot {
+                table: table.clone(),
+                columns: selected_columns.clone(),
+                values,
+            });
+        }
+    }
+    Ok(snapshots)
+}
+
+fn snapshot_external_databases(
+    codex_home: &Path,
+    session_id: &str,
+) -> Result<Vec<SqliteDatabaseSnapshot>, String> {
+    let mut snapshots = Vec::new();
+    for relative_path in [
+        "sqlite/codex-dev.db",
+        "sqlite/codex-history-snapshots-dev.db",
+    ] {
+        let path = codex_home.join(relative_path);
+        if !path.exists() {
+            continue;
+        }
+        let conn = Connection::open(&path)
+            .map_err(|e| format!("Failed to open Codex database {}: {e}", path.display()))?;
+        snapshots.push(SqliteDatabaseSnapshot {
+            relative_path: relative_path.to_string(),
+            rows: snapshot_reference_rows(&conn, session_id, false)?,
+        });
+    }
+    Ok(snapshots)
+}
+
+fn delete_reference_rows(
+    conn: &mut Connection,
+    session_id: &str,
+    delete_thread: bool,
+) -> Result<(), String> {
+    let tables = sqlite_tables(conn)?;
+    let schemas = tables
+        .iter()
+        .map(|table| Ok((table.clone(), sqlite_columns(conn, table)?)))
+        .collect::<Result<Vec<_>, String>>()?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to start Codex metadata deletion: {e}"))?;
+    for (table, columns) in schemas {
+        if table == "threads" {
+            continue;
+        }
+        for column in ["thread_id", "parent_thread_id", "child_thread_id"] {
+            if columns.iter().any(|candidate| candidate == column) {
+                tx.execute(
+                    &format!(
+                        "delete from {} where {} = ?1",
+                        quote_identifier(&table),
+                        quote_identifier(column)
+                    ),
+                    params![session_id],
+                )
+                .map_err(|e| format!("Failed to clean Codex {table}.{column}: {e}"))?;
+            }
+        }
+        if columns.iter().any(|column| column == "assigned_thread_id") {
+            tx.execute(
+                &format!(
+                    "update {} set assigned_thread_id = null where assigned_thread_id = ?1",
+                    quote_identifier(&table)
+                ),
+                params![session_id],
+            )
+            .map_err(|e| format!("Failed to clear Codex {table}.assigned_thread_id: {e}"))?;
+        }
+    }
+    if delete_thread && tables.iter().any(|table| table == "threads") {
+        let changed = tx
+            .execute("delete from threads where id = ?1", params![session_id])
+            .map_err(|e| format!("Failed to remove Codex state row: {e}"))?;
+        if changed != 1 {
+            return Err("Codex state row was not deleted".to_string());
+        }
+    }
+    if tables
+        .iter()
+        .any(|table| table == "local_thread_catalog_metadata")
+    {
+        tx.execute(
+            "update local_thread_catalog_metadata set catalog_revision = catalog_revision + 1 where id = 1",
+            [],
+        )
+        .map_err(|e| format!("Failed to refresh the Codex chat catalog: {e}"))?;
+    }
+    tx.commit()
+        .map_err(|e| format!("Failed to commit Codex metadata deletion: {e}"))
+}
+
+fn restore_snapshot_rows(
+    conn: &mut Connection,
+    snapshots: &[SqliteRowSnapshot],
+) -> Result<(), String> {
+    let has_catalog_rows = snapshots
+        .iter()
+        .any(|snapshot| snapshot.table == "local_thread_catalog");
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to start Codex metadata restore: {e}"))?;
+    for snapshot in snapshots {
+        let columns = snapshot
+            .columns
+            .iter()
+            .map(|column| quote_identifier(column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let placeholders = (1..=snapshot.values.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "insert or replace into {} ({columns}) values ({placeholders})",
+            quote_identifier(&snapshot.table)
+        );
+        let values = snapshot
+            .values
+            .iter()
+            .map(snapshot_value_to_sql)
+            .collect::<Vec<_>>();
+        tx.execute(&sql, params_from_iter(values))
+            .map_err(|e| format!("Failed to restore Codex {} row: {e}", snapshot.table))?;
+    }
+    if has_catalog_rows {
+        tx.execute(
+            "update local_thread_catalog_metadata set catalog_revision = catalog_revision + 1 where id = 1",
+            [],
+        )
+        .map_err(|e| format!("Failed to refresh the Codex chat catalog: {e}"))?;
+    }
+    tx.commit()
+        .map_err(|e| format!("Failed to commit Codex metadata restore: {e}"))
+}
+
+fn external_database_path(codex_home: &Path, relative_path: &str) -> Result<PathBuf, String> {
+    match relative_path {
+        "sqlite/codex-dev.db" | "sqlite/codex-history-snapshots-dev.db" => {
+            Ok(codex_home.join(relative_path))
+        }
+        _ => Err(format!(
+            "Unsupported Codex database snapshot: {relative_path}"
+        )),
+    }
+}
+
+fn delete_external_database_rows(
+    codex_home: &Path,
+    snapshots: &[SqliteDatabaseSnapshot],
+    session_id: &str,
+) -> Result<(), String> {
+    for snapshot in snapshots {
+        let path = external_database_path(codex_home, &snapshot.relative_path)?;
+        if !path.exists() {
+            continue;
+        }
+        let mut conn = Connection::open(&path)
+            .map_err(|e| format!("Failed to open Codex database {}: {e}", path.display()))?;
+        delete_reference_rows(&mut conn, session_id, false)?;
+    }
+    Ok(())
+}
+
+fn restore_external_database_rows(
+    codex_home: &Path,
+    snapshots: &[SqliteDatabaseSnapshot],
+) -> Result<(), String> {
+    for snapshot in snapshots {
+        let path = external_database_path(codex_home, &snapshot.relative_path)?;
+        if !path.exists() || snapshot.rows.is_empty() {
+            continue;
+        }
+        let mut conn = Connection::open(&path)
+            .map_err(|e| format!("Failed to open Codex database {}: {e}", path.display()))?;
+        restore_snapshot_rows(&mut conn, &snapshot.rows)?;
+    }
+    Ok(())
+}
+
+fn backup_sqlite_database(path: &Path, suffix: &str) -> Result<PathBuf, String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid Codex database path: {}", path.display()))?;
+    let destination = path.with_file_name(format!("{file_name}.codex-rescue-backup-{suffix}"));
+    if destination.exists() {
+        fs::remove_file(&destination).map_err(|e| {
+            format!(
+                "Failed to replace Codex database backup {}: {e}",
+                destination.display()
+            )
+        })?;
+    }
+    let source = Connection::open(path)
+        .map_err(|e| format!("Failed to open Codex database {}: {e}", path.display()))?;
+    let mut target = Connection::open(&destination).map_err(|e| {
+        format!(
+            "Failed to create Codex database backup {}: {e}",
+            destination.display()
+        )
+    })?;
+    let backup = Backup::new(&source, &mut target)
+        .map_err(|e| format!("Failed to initialize Codex database backup: {e}"))?;
+    backup
+        .run_to_completion(5, Duration::from_millis(25), None)
+        .map_err(|e| format!("Failed to write Codex database backup: {e}"))?;
+    Ok(destination)
+}
+
+fn sql_value_ref_to_snapshot(value: ValueRef<'_>) -> SqliteSnapshotValue {
+    match value {
+        ValueRef::Null => SqliteSnapshotValue::Null,
+        ValueRef::Integer(value) => SqliteSnapshotValue::Integer(value),
+        ValueRef::Real(value) => SqliteSnapshotValue::Real(value),
+        ValueRef::Text(value) => {
+            SqliteSnapshotValue::Text(String::from_utf8_lossy(value).to_string())
+        }
+        ValueRef::Blob(value) => SqliteSnapshotValue::Blob(value.to_vec()),
+    }
+}
+
+fn snapshot_value_to_sql(value: &SqliteSnapshotValue) -> SqlValue {
+    match value {
+        SqliteSnapshotValue::Null => SqlValue::Null,
+        SqliteSnapshotValue::Integer(value) => SqlValue::Integer(*value),
+        SqliteSnapshotValue::Real(value) => SqlValue::Real(*value),
+        SqliteSnapshotValue::Text(value) => SqlValue::Text(value.clone()),
+        SqliteSnapshotValue::Blob(value) => SqlValue::Blob(value.clone()),
+    }
 }
 
 fn update_sqlite_project(
@@ -1793,6 +2689,17 @@ fn load_sqlite_record(conn: &Connection, session_id: &str) -> Result<Value, Stri
     .ok_or_else(|| "Codex state row not found".to_string())
 }
 
+fn sqlite_record_is_subagent(record: &Value) -> bool {
+    record
+        .get("thread_source")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("subagent"))
+        || record
+            .get("source")
+            .and_then(Value::as_str)
+            .is_some_and(is_subagent_source_text)
+}
+
 fn session_meta_from_sqlite_record(
     session_id: &str,
     path: &Path,
@@ -2055,7 +2962,7 @@ fn insert_sqlite_record(
         .map(|index| format!("?{index}"))
         .collect::<Vec<_>>();
     let sql = format!(
-        "insert into threads ({}) values ({})",
+        "insert or replace into threads ({}) values ({})",
         columns.join(", "),
         placeholders.join(", ")
     );
@@ -2174,8 +3081,19 @@ mod tests {
     #[test]
     fn delete_session_removes_jsonl_file() {
         let temp = tempdir().expect("tempdir");
-        let path = temp
-            .path()
+        let sessions_dir = temp.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
+        std::fs::write(
+            temp.path().join(".codex-global-state.json"),
+            serde_json::json!({
+                "local-projects": {},
+                "thread-project-assignments": {},
+                "sidebar-project-thread-orders": {},
+            })
+            .to_string(),
+        )
+        .expect("write global state");
+        let path = sessions_dir
             .join("rollout-2026-03-06T21-50-12-019cc369-bd7c-7891-b371-7b20b4fe0b18.jsonl");
         std::fs::write(
             &path,
@@ -2186,7 +3104,7 @@ mod tests {
         )
         .expect("write session");
 
-        delete_session(temp.path(), &path, "019cc369-bd7c-7891-b371-7b20b4fe0b18")
+        delete_session(&sessions_dir, &path, "019cc369-bd7c-7891-b371-7b20b4fe0b18")
             .expect("delete session");
 
         assert!(!path.exists());
@@ -2211,6 +3129,25 @@ mod tests {
 
         let sessions_dir = temp.path().join("sessions");
         std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
+        std::fs::write(
+            temp.path().join(".codex-global-state.json"),
+            serde_json::json!({
+                "local-projects": {
+                    "local-destination": {
+                        "id": "local-destination",
+                        "name": "Destination",
+                        "rootPaths": ["/new/project"],
+                    },
+                },
+                "thread-project-assignments": {},
+                "sidebar-project-thread-orders": {
+                    "local-destination": {"threadIds": []},
+                },
+                "projectless-thread-ids": ["move-id"],
+            })
+            .to_string(),
+        )
+        .expect("write global state");
         let session_path = sessions_dir.join("session.jsonl");
         std::fs::write(
             &session_path,
@@ -2555,5 +3492,509 @@ mod tests {
 
         assert_eq!(msgs[3].role, "assistant");
         assert_eq!(msgs[3].content, "Done.");
+    }
+
+    // Compatibility fixtures mirroring the Codex Keeper (codex-wake) suite for
+    // the current Codex Desktop storage schema.
+    struct CodexCompatFixture {
+        _temp: tempfile::TempDir,
+        home: PathBuf,
+        root_id: &'static str,
+        child_id: &'static str,
+        source_project_id: &'static str,
+        destination_project_id: &'static str,
+        source_path: String,
+        destination_path: String,
+        root_rollout: PathBuf,
+        child_rollout: PathBuf,
+        state_db: PathBuf,
+    }
+
+    impl CodexCompatFixture {
+        fn new() -> Self {
+            let temp = tempdir().expect("tempdir");
+            let home = temp.path().to_path_buf();
+            let root_id = "00000000-0000-7000-8000-000000000001";
+            let child_id = "00000000-0000-7000-8000-000000000002";
+            let source_project_id = "local-source";
+            let destination_project_id = "local-destination";
+            let source_path = home.join("projects/source").to_string_lossy().to_string();
+            let destination_path = home
+                .join("projects/destination")
+                .to_string_lossy()
+                .to_string();
+            let root_rollout = home.join("sessions/2026/08/17/root.jsonl");
+            let child_rollout = home.join("sessions/2026/08/17/child.jsonl");
+            let state_db = home.join("sqlite/state_5.sqlite");
+
+            for dir in [
+                home.join("sqlite"),
+                home.join("sessions/2026/08/17"),
+                home.join("projects/source"),
+                home.join("projects/destination"),
+            ] {
+                std::fs::create_dir_all(&dir).expect("create fixture dir");
+            }
+
+            let fixture = Self {
+                _temp: temp,
+                home,
+                root_id,
+                child_id,
+                source_project_id,
+                destination_project_id,
+                source_path,
+                destination_path,
+                root_rollout,
+                child_rollout,
+                state_db,
+            };
+            fixture.create_databases();
+            fixture.create_rollouts();
+            fixture.create_metadata();
+            fixture
+        }
+
+        fn create_databases(&self) {
+            let conn = Connection::open(&self.state_db).expect("open state db");
+            conn.execute_batch(
+                "create table threads (
+                    id text primary key, rollout_path text not null, created_at integer not null,
+                    updated_at integer not null, source text not null, model_provider text not null,
+                    cwd text not null, title text not null, sandbox_policy text not null,
+                    approval_mode text not null, tokens_used integer not null default 0,
+                    has_user_event integer not null default 0, archived integer not null default 0,
+                    archived_at integer, git_sha text, git_branch text, git_origin_url text,
+                    cli_version text not null default '', first_user_message text not null default '',
+                    agent_nickname text, agent_role text, memory_mode text not null default 'enabled',
+                    model text, reasoning_effort text, agent_path text, created_at_ms integer,
+                    updated_at_ms integer, thread_source text, preview text not null default '',
+                    recency_at integer not null default 0, recency_at_ms integer not null default 0,
+                    history_mode text not null default 'legacy', name text, is_pinned integer not null default 0,
+                    thread_section_id text, section_position integer, section_entered_at_ms integer
+                );
+                create table thread_spawn_edges (
+                    parent_thread_id text not null, child_thread_id text not null primary key, status text not null
+                );
+                create table thread_dynamic_tools (
+                    thread_id text not null, position integer not null, name text not null,
+                    description text not null, input_schema text not null,
+                    defer_loading integer not null default 0, namespace text,
+                    primary key(thread_id, position)
+                );",
+            )
+            .expect("create state schema");
+            conn.execute(
+                "insert into threads values (?1, ?2, 100, 200, 'vscode', 'openai', ?3, 'Root', '{}', 'never', 10, 1, 0, null, null, null, null, '1.0', 'Root message', null, null, 'enabled', 'gpt-test', 'high', null, 100000, 200000, 'user', 'Root preview', 150, 150000, 'legacy', 'Pinned root', 1, 'section-1', 2, 160000)",
+                params![
+                    self.root_id,
+                    self.root_rollout.to_string_lossy(),
+                    self.source_path,
+                ],
+            )
+            .expect("insert root thread");
+            let child_source = serde_json::json!({
+                "subagent": {"thread_spawn": {"parent_thread_id": self.root_id, "depth": 1}}
+            })
+            .to_string();
+            conn.execute(
+                "insert into threads values (?1, ?2, 110, 190, ?3, 'openai', ?4, 'Child', '{}', 'never', 5, 0, 0, null, null, null, null, '1.0', '', 'Scout', 'research-worker', 'enabled', 'gpt-test', 'low', '/root/scout', 110000, 190000, 'subagent', '', 140, 140000, 'legacy', null, 0, null, null, null)",
+                params![
+                    self.child_id,
+                    self.child_rollout.to_string_lossy(),
+                    child_source,
+                    self.source_path,
+                ],
+            )
+            .expect("insert child thread");
+            conn.execute(
+                "insert into thread_spawn_edges values (?1, ?2, 'open')",
+                params![self.root_id, self.child_id],
+            )
+            .expect("insert spawn edge");
+            conn.execute(
+                "insert into thread_dynamic_tools values (?1, 0, 'fixture', 'Fixture tool', '{}', 0, 'tests')",
+                params![self.root_id],
+            )
+            .expect("insert dynamic tool");
+
+            let catalog =
+                Connection::open(self.home.join("sqlite/codex-dev.db")).expect("open catalog db");
+            catalog
+                .execute_batch(
+                    "create table local_thread_catalog (thread_id text primary key, display_title text);
+                     create table local_thread_catalog_metadata (id integer primary key, catalog_revision integer);
+                     insert into local_thread_catalog_metadata values (1, 4);",
+                )
+                .expect("create catalog schema");
+            catalog
+                .execute(
+                    "insert into local_thread_catalog values (?1, 'Catalog root')",
+                    params![self.root_id],
+                )
+                .expect("insert catalog row");
+
+            let history = Connection::open(self.home.join("sqlite/codex-history-snapshots-dev.db"))
+                .expect("open history db");
+            history
+                .execute_batch(
+                    "create table app_server_history_snapshots (thread_id text primary key, payload_json text);",
+                )
+                .expect("create history schema");
+            history
+                .execute(
+                    "insert into app_server_history_snapshots values (?1, '{\"fixture\":true}')",
+                    params![self.root_id],
+                )
+                .expect("insert history snapshot");
+        }
+
+        fn create_rollouts(&self) {
+            let root_meta = serde_json::json!({
+                "type": "session_meta",
+                "timestamp": "2026-08-17T00:00:00Z",
+                "payload": {"id": self.root_id, "cwd": self.source_path, "thread_source": "user"},
+            });
+            let child_source = serde_json::json!({
+                "subagent": {"thread_spawn": {"parent_thread_id": self.root_id, "depth": 1}}
+            });
+            let child_meta = serde_json::json!({
+                "type": "session_meta",
+                "timestamp": "2026-08-17T00:00:00Z",
+                "payload": {
+                    "id": self.child_id,
+                    "cwd": self.source_path,
+                    "thread_source": "subagent",
+                    "source": child_source,
+                },
+            });
+            std::fs::write(
+                &self.root_rollout,
+                format!("{}\n", serde_json::to_string(&root_meta).unwrap()),
+            )
+            .expect("write root rollout");
+            std::fs::write(
+                &self.child_rollout,
+                format!("{}\n", serde_json::to_string(&child_meta).unwrap()),
+            )
+            .expect("write child rollout");
+        }
+
+        fn create_metadata(&self) {
+            let index_entry = serde_json::json!({
+                "id": self.root_id,
+                "thread_name": "Root",
+                "updated_at": "2026-08-17T00:00:00Z",
+            });
+            std::fs::write(
+                self.home.join("session_index.jsonl"),
+                format!("{}\n", serde_json::to_string(&index_entry).unwrap()),
+            )
+            .expect("write session index");
+            let state = serde_json::json!({
+                "local-projects": {
+                    self.source_project_id: {
+                        "id": self.source_project_id,
+                        "name": "Source",
+                        "rootPaths": [self.source_path],
+                    },
+                    self.destination_project_id: {
+                        "id": self.destination_project_id,
+                        "name": "Destination",
+                        "rootPaths": [self.destination_path],
+                    },
+                },
+                "thread-project-assignments": {
+                    self.root_id: {"projectKind": "local", "projectId": self.source_project_id},
+                },
+                "sidebar-project-thread-orders": {
+                    self.source_project_id: {"threadIds": [self.root_id]},
+                    self.destination_project_id: {"threadIds": []},
+                },
+                "projectless-thread-ids": [],
+                "thread-workspace-root-hints": {},
+                "thread-projectless-output-directories": {},
+            });
+            std::fs::write(
+                self.home.join(".codex-global-state.json"),
+                serde_json::to_string_pretty(&state).unwrap(),
+            )
+            .expect("write global state");
+        }
+
+        fn query_text(&self, sql: &str) -> String {
+            let conn = Connection::open(&self.state_db).expect("open state db");
+            conn.query_row(sql, [], |row| {
+                row.get::<_, Option<String>>(0)
+                    .map(|value| value.unwrap_or_default())
+            })
+            .expect("query state db")
+        }
+
+        fn query_count(&self, sql: &str) -> i64 {
+            let conn = Connection::open(&self.state_db).expect("open state db");
+            conn.query_row(sql, [], |row| row.get::<_, i64>(0))
+                .expect("query state db count")
+        }
+
+        fn query_external_on(&self, db_name: &str, sql: &str) -> String {
+            let conn =
+                Connection::open(self.home.join("sqlite").join(db_name)).expect("open external db");
+            conn.query_row(sql, [], |row| match row.get_ref(0)? {
+                ValueRef::Null => Ok(String::new()),
+                ValueRef::Integer(value) => Ok(value.to_string()),
+                ValueRef::Real(value) => Ok(value.to_string()),
+                ValueRef::Text(value) => Ok(String::from_utf8_lossy(value).to_string()),
+                ValueRef::Blob(value) => Ok(String::from_utf8_lossy(value).to_string()),
+            })
+            .expect("query external db")
+        }
+
+        fn read_global_state(&self) -> Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(self.home.join(".codex-global-state.json"))
+                    .expect("read global state"),
+            )
+            .expect("parse global state")
+        }
+    }
+
+    #[test]
+    fn scan_folds_subagents_into_parent() {
+        let fixture = CodexCompatFixture::new();
+        let sessions =
+            scan_sessions_from_sqlite(&fixture.home, &fixture.state_db).expect("scan sessions");
+
+        let ids: Vec<&str> = sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![fixture.root_id],
+            "Only the parent should be listed"
+        );
+        assert_eq!(
+            sessions[0].is_in_session_index,
+            Some(true),
+            "Indexed parent must be indexed"
+        );
+        assert_eq!(
+            sessions[0].needs_repair,
+            Some(false),
+            "Indexed parent must not need repair"
+        );
+    }
+
+    #[test]
+    fn move_updates_sqlite_rollout_and_native_project_metadata() {
+        let fixture = CodexCompatFixture::new();
+        move_session_with_home(
+            &fixture.home,
+            &fixture.root_rollout,
+            fixture.root_id,
+            &fixture.destination_path,
+        )
+        .expect("move session");
+
+        let cwd = {
+            let conn = Connection::open(&fixture.state_db).expect("open state db");
+            conn.query_row(
+                "select cwd from threads where id = ?1",
+                params![fixture.root_id],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("select cwd")
+        };
+        assert_eq!(cwd, fixture.destination_path, "SQLite cwd was not moved");
+
+        let rollout: Value = serde_json::from_str(
+            std::fs::read_to_string(&fixture.root_rollout)
+                .expect("read rollout")
+                .lines()
+                .next()
+                .expect("rollout line"),
+        )
+        .expect("parse rollout");
+        assert_eq!(
+            rollout["payload"]["cwd"].as_str(),
+            Some(fixture.destination_path.as_str()),
+            "Rollout cwd was not moved"
+        );
+
+        let state = fixture.read_global_state();
+        let assignment = &state["thread-project-assignments"][fixture.root_id];
+        assert_eq!(
+            assignment["projectId"].as_str(),
+            Some(fixture.destination_project_id),
+            "Native project assignment was not moved"
+        );
+        let orders = &state["sidebar-project-thread-orders"];
+        let source_ids = orders[fixture.source_project_id]["threadIds"]
+            .as_array()
+            .expect("source order");
+        assert!(
+            !source_ids
+                .iter()
+                .any(|value| value.as_str() == Some(fixture.root_id)),
+            "Source sidebar still contains the moved thread"
+        );
+        let destination_ids = orders[fixture.destination_project_id]["threadIds"]
+            .as_array()
+            .expect("destination order");
+        assert_eq!(
+            destination_ids.first().and_then(Value::as_str),
+            Some(fixture.root_id),
+            "Destination sidebar does not contain the moved thread"
+        );
+    }
+
+    #[test]
+    fn trash_and_restore_preserve_current_metadata_and_relations() {
+        let fixture = CodexCompatFixture::new();
+        trash_session_with_home(&fixture.home, &fixture.root_rollout, fixture.root_id)
+            .expect("trash session");
+
+        assert_eq!(
+            fixture.query_count(&format!(
+                "select count(*) from threads where id = '{}'",
+                fixture.root_id
+            )),
+            0,
+            "Thread row remains after trash"
+        );
+        assert_eq!(
+            fixture.query_count(&format!(
+                "select count(*) from thread_dynamic_tools where thread_id = '{}'",
+                fixture.root_id
+            )),
+            0,
+            "Dynamic tools remain after trash"
+        );
+        assert_eq!(
+            fixture.query_count(&format!(
+                "select count(*) from thread_spawn_edges where parent_thread_id = '{}'",
+                fixture.root_id
+            )),
+            0,
+            "Spawn edges remain after trash"
+        );
+        assert_eq!(
+            fixture.query_external_on(
+                "codex-dev.db",
+                &format!(
+                    "select count(*) from local_thread_catalog where thread_id = '{}'",
+                    fixture.root_id
+                )
+            ),
+            "0",
+            "Catalog row remains after trash"
+        );
+        assert_eq!(
+            fixture.query_external_on(
+                "codex-dev.db",
+                "select catalog_revision from local_thread_catalog_metadata where id = 1"
+            ),
+            "5",
+            "Catalog revision was not advanced after trash"
+        );
+        assert_eq!(
+            fixture.query_external_on(
+                "codex-history-snapshots-dev.db",
+                &format!(
+                    "select count(*) from app_server_history_snapshots where thread_id = '{}'",
+                    fixture.root_id
+                )
+            ),
+            "0",
+            "History snapshot remains after trash"
+        );
+        assert!(
+            !fixture.root_rollout.exists(),
+            "Rollout remains after trash"
+        );
+        assert!(
+            fixture.read_global_state()["thread-project-assignments"][fixture.root_id].is_null(),
+            "Global assignment remains after trash"
+        );
+
+        let manifest = thread_trash_path(&fixture.home)
+            .join(fixture.root_id)
+            .join("manifest.json");
+        restore_trashed_thread_with_home(&fixture.home, &manifest).expect("restore session");
+
+        assert!(fixture.root_rollout.exists(), "Rollout was not restored");
+        assert_eq!(
+            fixture.query_text(&format!(
+                "select name || '|' || is_pinned || '|' || history_mode from threads where id = '{}'",
+                fixture.root_id
+            )),
+            "Pinned root|1|legacy",
+            "Current thread metadata was not restored"
+        );
+        assert_eq!(
+            fixture.query_count(&format!(
+                "select count(*) from thread_dynamic_tools where thread_id = '{}'",
+                fixture.root_id
+            )),
+            1,
+            "Dynamic tools were not restored"
+        );
+        assert_eq!(
+            fixture.query_text(&format!(
+                "select status from thread_spawn_edges where parent_thread_id = '{}'",
+                fixture.root_id
+            )),
+            "open",
+            "Spawn edge was not restored"
+        );
+        assert_eq!(
+            fixture.query_external_on(
+                "codex-dev.db",
+                &format!(
+                    "select display_title from local_thread_catalog where thread_id = '{}'",
+                    fixture.root_id
+                )
+            ),
+            "Catalog root",
+            "Catalog row was not restored"
+        );
+        assert_eq!(
+            fixture.query_external_on(
+                "codex-dev.db",
+                "select catalog_revision from local_thread_catalog_metadata where id = 1"
+            ),
+            "6",
+            "Catalog revision was not advanced after restore"
+        );
+        assert_eq!(
+            fixture.query_external_on(
+                "codex-history-snapshots-dev.db",
+                &format!(
+                    "select payload_json from app_server_history_snapshots where thread_id = '{}'",
+                    fixture.root_id
+                )
+            ),
+            "{\"fixture\":true}",
+            "History snapshot was not restored"
+        );
+        let state = fixture.read_global_state();
+        assert_eq!(
+            state["thread-project-assignments"][fixture.root_id]["projectId"].as_str(),
+            Some(fixture.source_project_id),
+            "Native project assignment was not restored"
+        );
+
+        let sessions = scan_sessions_from_sqlite(&fixture.home, &fixture.state_db)
+            .expect("scan after restore");
+        let ids: Vec<&str> = sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![fixture.root_id],
+            "Restored parent must stay without independent subagent entries"
+        );
     }
 }
