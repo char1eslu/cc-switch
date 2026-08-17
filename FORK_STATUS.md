@@ -13,7 +13,7 @@
 | 2026-08-10 上游增量审计 | `413c09e0..c39c9032`；1 个提交（`c39c9032` Windows WSL 原子替换回退），跳过 |
 | 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
 | 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
-| 当前已验证代码 head | `ef713e45`（`dev`；本轮本机 Rust/前端验证通过，待 CI 与 macOS Ad Hoc 构建） |
+| 当前已验证代码 head | `aa3beab3`（`dev`；本轮本机验证、CI 与 macOS Ad Hoc 构建均通过） |
 
 **下次同步从这里开始**：
 
@@ -477,7 +477,7 @@ CI 全绿 + arm64 Ad Hoc 构建通过（runs 31370842112 / 31371115760 / 3137333
 | 大型新功能 | `a2e22f33` | managed OAuth 含 Copilot，约 11.6K 行，超出当前 fork 边界，延期 |
 | 大型新功能 | `bdeaac75` | Alpha Search / hosted WebSearch，约 10K 行，streaming_responses 已裁剪，延期 |
 
-验证：前端 `pnpm test:unit`（52 files / 322 tests）与 `pnpm typecheck` 通过；Rust `cargo fmt --check`、`cargo check` 通过；备份/恢复 13、Prompt 4、Skill 22、post-import sync 4 项定向测试通过。临时 Rustup/Cargo 环境位于 `/private/tmp/cc-switch-rust-check`，收尾时删除。
+验证：前端 `pnpm test:unit`（52 files / 322 tests）、`pnpm typecheck`、`pnpm format:check` 与 renderer build 通过；Rust `cargo fmt --check`、`cargo check`、全库 1542 测试（1542 passed，2 ignored）通过；备份/恢复 13、Prompt 4、Skill 22、post-import sync 4 项定向测试通过。CI [`32049925321`](https://github.com/char1eslu/cc-switch/actions/runs/32049925321) 全绿；macOS arm64 Ad Hoc [`32050196805`](https://github.com/char1eslu/cc-switch/actions/runs/32050196805) bundle、签名与 artifact 上传通过。
 
 ## 未完成 / 待验证
 
