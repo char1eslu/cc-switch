@@ -1193,7 +1193,6 @@ mod tests {
                 temp_dir,
             }
         }
-
     }
 
     impl Drop for TestHomeGuard {

@@ -434,7 +434,10 @@ impl TokenUsage {
                     // 而 usage 位于末尾 chunk；跨整条事件流补齐元数据以便去重。
                     if parsed.model.is_none() {
                         parsed.model = events.iter().find_map(|chunk| {
-                            chunk.get("model").and_then(Value::as_str).map(str::to_owned)
+                            chunk
+                                .get("model")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
                         });
                     }
                     parsed.message_id = events.iter().find_map(|chunk| {
