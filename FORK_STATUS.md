@@ -15,7 +15,7 @@
 | 2026-08-10 上游增量审计 | `413c09e0..c39c9032`；1 个提交（`c39c9032` Windows WSL 原子替换回退），跳过 |
 | 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
 | 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
-| 当前已验证代码 head | `aa3beab3`（`dev`；本轮本机验证、CI 与 macOS Ad Hoc 构建均通过） |
+| 当前已验证代码 head | `e90fe008`（`dev`；本轮本机验证、CI 与 macOS Ad Hoc 构建均通过） |
 
 **下次同步从这里开始**：
 
@@ -529,17 +529,21 @@ CI 全绿 + arm64 Ad Hoc 构建通过（runs 31370842112 / 31371115760 / 3137333
   prettier）。不要用 `npx prettier`——会拉最新版，与 CI 的 `format:check` 结果不一致。
   另注意 `format:check` 只覆盖 `src/**`，改了 `tests/**` 要单独跑一次 prettier。
 
-验证：前端 typecheck 通过；`vitest run` 52 files / **318 tests 全通过**
+验证：本机前端 typecheck 通过；`vitest run` 52 files / **318 tests 全通过**
 （较上轮 322 少 4 个，正是 `d1c550ba` 删掉的 Goal mode 用例）；prettier
 `src/**` 与本轮改动的 `tests/**` 均合规；renderer build 通过（3532 modules）。
-Rust 侧改动集中在 `database/schema.rs` 与 `database/tests.rs`（定价表 + 两跳
-断言），本机无 toolchain，**待 CI 验证**。
+
+CI [`32158109397`](https://github.com/char1eslu/cc-switch/actions/runs/32158109397)
+全绿：前端 typecheck / format / 52 files·318 tests，后端 `cargo fmt --check`、
+Clippy、全库 **1542 passed / 2 ignored**（含改后的定价两跳断言）。
+macOS arm64 Ad Hoc [`32158596850`](https://github.com/char1eslu/cc-switch/actions/runs/32158596850)
+构建通过（7m44s），artifact `CC-Switch-macOS-arm64-ad-hoc` 11,460,173 bytes，
+核对时未过期。
+
+本轮代码 head：`e90fe008`（`dev`）。
 
 ## 未完成 / 待验证
 
-- **本轮 Rust 定价改动尚未经 CI 验证**（`schema.rs` / `tests.rs`）。
-  重点看 `model_pricing_seed_repairs_known_outdated_builtin_prices`：
-  它现在断言 `1.68/3.36/0.14` 经两跳到 `1.32/3.96/0.044`，同时锁住修复项顺序。
 - **Codex ↔ Anthropic 协议桥：转换 payload 已验证，应用内链路仍未跑过。**
 
   2026-07-27 对真实网关（智谱 `open.bigmodel.cn/api/anthropic`，模型 `glm-5.2`）
