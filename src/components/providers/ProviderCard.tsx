@@ -381,6 +381,9 @@ function ProviderCardComponent({
                   meta={provider.meta}
                   inline={true}
                   isCurrent={isCurrent}
+                  autoQueryInterval={
+                    provider.meta?.usage_script?.autoQueryInterval ?? 5
+                  }
                 />
               ) : isOfficial ? (
                 officialSubscriptionEnabled ? (

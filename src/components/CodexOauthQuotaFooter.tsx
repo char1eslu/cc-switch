@@ -8,6 +8,8 @@ interface CodexOauthQuotaFooterProps {
   inline?: boolean;
   /** 是否为当前激活的供应商 */
   isCurrent?: boolean;
+  /** 自动查询间隔（分钟），0 表示禁用 */
+  autoQueryInterval?: number;
 }
 
 /**
@@ -20,12 +22,17 @@ const CodexOauthQuotaFooter: React.FC<CodexOauthQuotaFooterProps> = ({
   meta,
   inline = false,
   isCurrent = false,
+  autoQueryInterval = 5,
 }) => {
   const {
     data: quota,
     isFetching: loading,
     refetch,
-  } = useCodexOauthQuota(meta, { enabled: true, autoQuery: isCurrent });
+  } = useCodexOauthQuota(meta, {
+    enabled: true,
+    autoQuery: isCurrent && autoQueryInterval > 0,
+    autoQueryIntervalMinutes: autoQueryInterval,
+  });
 
   return (
     <SubscriptionQuotaView
