@@ -2,13 +2,15 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-08-17
+最后更新：2026-08-18
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `1f38c838`（`v3.19.2` 之后） |
+| 已完整评估到的上游基线 | `0b5da510`（`v3.20.0`） |
+| 2026-08-18 上游增量审计 | `a98829ba..0b5da510`；11 个提交，搬 3 个、跳过 8 个（其中 1 个已核实上游回归在 fork 中不存在；明细见下方审计表） |
+| 2026-08-17 上游增量审计 | `1f38c838..a98829ba`；35 个提交，搬 8 个、已有实现 3 个、跳过 22 个、延期 2 个 |
 | 2026-08-13 上游增量审计 | `c39c9032..1f38c838`；24 个提交，搬 1 个、跳过 23 个（其中 1 个已核实上游 bug 在 fork 中不存在；明细见下方审计表） |
 | 2026-08-10 上游增量审计 | `413c09e0..c39c9032`；1 个提交（`c39c9032` Windows WSL 原子替换回退），跳过 |
 | 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
@@ -19,11 +21,15 @@
 
 ```bash
 git fetch upstream
-git log --oneline 1f38c838..upstream/main
+git log --oneline 0b5da510..upstream/main
 ```
 
 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-用 `1f38c838..upstream/main` 才是真实增量。
+用 `0b5da510..upstream/main` 才是真实增量。
+
+⚠️ 上面这行基线值和本节表格第一行必须同步更新。2026-08-18 那轮发现表格还写着
+`1f38c838`，而下方审计小节已经记到 `a98829ba`——按表格起算会把 35 个已审提交
+重算一遍。改基线时两处一起改。
 
 ## 2026-08-17 Codex 26.810 会话兼容（fork 侧，非上游提交）
 
@@ -479,8 +485,61 @@ CI 全绿 + arm64 Ad Hoc 构建通过（runs 31370842112 / 31371115760 / 3137333
 
 验证：前端 `pnpm test:unit`（52 files / 322 tests）、`pnpm typecheck`、`pnpm format:check` 与 renderer build 通过；Rust `cargo fmt --check`、`cargo check`、全库 1542 测试（1542 passed，2 ignored）通过；备份/恢复 13、Prompt 4、Skill 22、post-import sync 4 项定向测试通过。CI [`32049925321`](https://github.com/char1eslu/cc-switch/actions/runs/32049925321) 全绿；macOS arm64 Ad Hoc [`32050196805`](https://github.com/char1eslu/cc-switch/actions/runs/32050196805) bundle、签名与 artifact 上传通过。
 
+## 2026-08-18 同步审计（`a98829ba..0b5da510`，11 个）
+
+上游 `v3.20.0` 发布轮。11 个提交里 5 个按既有裁剪边界天然跳过（release/changelog/
+赞助商/OpenCode），余下 6 个逐个核对：搬 3 个、部分搬 1 个、不适用 2 个。
+
+### 已搬运或按 fork 结构适配
+
+| 上游提交 | 处理 |
+| --- | --- |
+| `bad9c151`（DeepSeek 部分） | V4 全系峰谷双档调价：种子表 5 个模型 + `pricing_fixes` 末尾追加 5 条修复项。**Gemini 3.7 Flash 部分不适用**——fork 定价表无 gemini 行（已随 Gemini 裁剪） |
+| `897ca892`（前端部分） | `useCodexOauthQuotaByAccountId` 接入 `autoQueryIntervalMinutes`，`CodexOauthQuotaFooter` 透传 `autoQueryInterval`，`ProviderCard` 接上用户设置。**tray.rs 部分不适用**——fork 无 `CODEX_OFFICIAL_PROVIDER_ID`，`provider_uses_official_subscription` 不涉 managed 账号 |
+| `6e424fd3` | 恢复 1M 上下文开关：删掉 fork 里三处 `/* */` 隐藏（文件头 import、状态/回调块、JSX）。逻辑代码本就完整保留，纯解注释 |
+| `d1c550ba` | 删除 Goal mode：2 个 helper、2 个 TOML 正则、`hasTomlSectionBodyContent`、勾选框、en/zh 两处文案、4 个测试用例。**用户确认在用最新版 Codex**（goals 已默认开启，取消勾选反而误导：删行回落到 on 而非 off） |
+
+### 不适用（上游前提在 fork 中不成立）
+
+| 上游提交 | 核实结论 |
+| --- | --- |
+| `fd14f9c4` | 修的是上游 #5522 重构引入的 preflight 挂死回归。fork 的 `resolve_path_default` 仍是重构前形态（无 deadline 参数、裸 `output()`），`wait_child_output` / `CommandDeadline` / `isolate_child_process_group` / `terminate_child_tree` 全仓零命中——fork 从不隔离进程组，没有 SIGTTIN 自停路径。**搬过来是无效改动** |
+| `0455a92c` | 依赖 `src/utils/providerCapabilities.ts`（fork 无此文件）与已延期的 `a2e22f33` managed OAuth |
+
+### 本轮踩到 / 值得记下的约束
+
+- **`pricing_fixes` 的守卫值必须按 fork 自己的历史值写，不能照抄上游。**
+  上游 chat/reasoner 的守卫是 `0.14/0.28/0.0028`（他们 2026-07 先搬过一次
+  「chat/reasoner 降为 V4 Flash 别名」的收敛条目），而 fork 从未搬那一跳，
+  种子值仍是远古的 `0.27/1.10/0.07` 与 `0.55/2.19/0.14`。照抄上游守卫值
+  **永不命中**，老库价格永远不更新。fork 这两个模型是单跳到位，v4-flash /
+  v4-pro 才是两跳。
+- **五条新增修复项必须留在 `pricing_fixes` 数组末尾。** 前面的 v4-flash
+  （cache_read `0.028→0.0028`）与 v4-pro（`1.68/3.36→0.435/0.87`）条目先把
+  历史形态收敛到同一旧值，末尾这组才能单守卫命中。挪到前面老库会停在中间价位。
+- **DeepSeek 统一录高峰档**（与上游同一取舍，用户已确认）：官方措辞是
+  「空闲价为高峰价的一半」，高峰档才是基准挂牌价，且高峰时段（北京时间
+  9:00-12:00、14:00-18:00）正是主力使用时段。代价是夜间用量高估一倍。
+  勿按「阶梯取低档」惯例改成空闲档。
+- **`CodexOauthQuotaFooter` 的 `autoQueryInterval` 默认值取 5 而非 0。**
+  兄弟组件 `SubscriptionQuotaFooter` 的调用点传 `?? 0`，但 Codex OAuth footer
+  在本次改动前是无条件 5 分钟轮询；默认给 0 会静默关掉现有行为。用 `?? 5`
+  保留原默认，同时让用户显式设 0 生效为禁用。
+- **本机无 pnpm，用 `node_modules/.bin` 下的项目锁定版二进制**（tsc/vitest/
+  prettier）。不要用 `npx prettier`——会拉最新版，与 CI 的 `format:check` 结果不一致。
+  另注意 `format:check` 只覆盖 `src/**`，改了 `tests/**` 要单独跑一次 prettier。
+
+验证：前端 typecheck 通过；`vitest run` 52 files / **318 tests 全通过**
+（较上轮 322 少 4 个，正是 `d1c550ba` 删掉的 Goal mode 用例）；prettier
+`src/**` 与本轮改动的 `tests/**` 均合规；renderer build 通过（3532 modules）。
+Rust 侧改动集中在 `database/schema.rs` 与 `database/tests.rs`（定价表 + 两跳
+断言），本机无 toolchain，**待 CI 验证**。
+
 ## 未完成 / 待验证
 
+- **本轮 Rust 定价改动尚未经 CI 验证**（`schema.rs` / `tests.rs`）。
+  重点看 `model_pricing_seed_repairs_known_outdated_builtin_prices`：
+  它现在断言 `1.68/3.36/0.14` 经两跳到 `1.32/3.96/0.044`，同时锁住修复项顺序。
 - **Codex ↔ Anthropic 协议桥：转换 payload 已验证，应用内链路仍未跑过。**
 
   2026-07-27 对真实网关（智谱 `open.bigmodel.cn/api/anthropic`，模型 `glm-5.2`）
