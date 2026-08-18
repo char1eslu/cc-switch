@@ -9,13 +9,8 @@
 | 项 | 值 |
 | --- | --- |
 | 已完整评估到的上游基线 | `0b5da510`（`v3.20.0`） |
-| 2026-08-18 上游增量审计 | `a98829ba..0b5da510`；11 个提交，搬 3 个、跳过 8 个（其中 1 个已核实上游回归在 fork 中不存在；明细见下方审计表） |
-| 2026-08-17 上游增量审计 | `1f38c838..a98829ba`；35 个提交，搬 8 个、已有实现 3 个、跳过 22 个、延期 2 个 |
-| 2026-08-13 上游增量审计 | `c39c9032..1f38c838`；24 个提交，搬 1 个、跳过 23 个（其中 1 个已核实上游 bug 在 fork 中不存在；明细见下方审计表） |
-| 2026-08-10 上游增量审计 | `413c09e0..c39c9032`；1 个提交（`c39c9032` Windows WSL 原子替换回退），跳过 |
-| 2026-08-08 上游增量审计 | `28529620..413c09e0`；27 个提交，搬 3 个、跳过 24 个（明细见下方审计表） |
+| 当前已验证代码 head | `3f67786e`（`dev`；本机验证、CI 与 macOS Ad Hoc 构建均通过） |
 | 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
-| 当前已验证代码 head | `e90fe008`（`dev`；本轮本机验证、CI 与 macOS Ad Hoc 构建均通过） |
 
 **下次同步从这里开始**：
 
@@ -24,104 +19,26 @@ git fetch upstream
 git log --oneline 0b5da510..upstream/main
 ```
 
-不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-用 `0b5da510..upstream/main` 才是真实增量。
+- 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
+  用 `0b5da510..upstream/main` 才是真实增量。
+- ⚠️ 代码块里的基线值和上表第一行必须一起改。2026-08-18 曾发现两处不一致
+  （表写 `1f38c838`，审计节已到 `a98829ba`），按表起算会把 35 个已审提交重算一遍。
+- 历轮增量范围与结论见下方「同步审计日志」，从新到旧。
 
-⚠️ 上面这行基线值和本节表格第一行必须同步更新。2026-08-18 那轮发现表格还写着
-`1f38c838`，而下方审计小节已经记到 `a98829ba`——按表格起算会把 35 个已审提交
-重算一遍。改基线时两处一起改。
+## 同步守则（评估上游提交前先读）
 
-## 2026-08-17 Codex 26.810 会话兼容（fork 侧，非上游提交）
-
-**起因**：Codex Desktop 26.810 改了会话存储——子代理线程在 `threads` 表有独立行
-但只靠 `thread_spawn_edges` / `thread_source` / `source` JSON 标记归属；项目归属迁到
-`~/.codex/.codex-global-state.json`（原生 assignments + 侧栏排序）；会话列表还出现
-只有内部事件、无用户事件的行。fork 的会话管理随之出现：子代理被当独立会话列出、
-Move 不生效（只改 DB/JSONL，原生项目状态不动，Codex 桌面端刷新后被弹回）、
-删除/恢复遗漏新库与新列。
-
-**来源**：修复先在 Codex Keeper（codex-wake 自 fork，Swift）完成并验证
-（`696b59f`，含隔离兼容测试套件），本次按同一契约移植到 cc-switch 的 Rust
-会话管理。核心提交：`0c1b4327`（`dev`）。
-
-改动要点（全部在 `src-tauri/src/session_manager/providers/codex.rs`）：
-
-1. **子代理识别四路信号**：`thread_spawn_edges.child_thread_id`、
-   `threads.thread_source = 'subagent'`、`threads.source` JSON 里的
-   `subagent.thread_spawn`、以及 rollout 文件内容兜底。命中即折叠，
-   不独立列出，也拒绝被单独 move/delete/trash（"follow their parent"）。
-2. **`needs_repair` 增加 `has_user_event != 0` 前提**：新版给内部线程也建
-   `threads` 行，无用户事件的行不再被误报为待修复/待索引。
-3. **Move 三端同步**：state DB `threads.cwd` + rollout
-   `session_meta.payload.cwd` / `turn_context` + `.codex-global-state.json`
-   （写 `thread-project-assignments`、迁 `sidebar-project-thread-orders`、清
-   projectless/workspace-hint/output-dir）。目标项目必须已在 Codex 注册
-   （预检报错而非半移动），任一步失败整体回滚。
-4. **Trash/Restore manifest v2**：`relatedRows` / `externalDatabases` 逐行保存
-   **列名 + 任意类型值**（Null/Integer/Real/Text/Blob），Codex 以后加列不用改代码。
-   覆盖 `codex-dev.db`（`local_thread_catalog` 行 + `catalog_revision` 递增）和
-   `codex-history-snapshots-dev.db`（`app_server_history_snapshots`）。
-   恢复时还原原生项目状态（assignment、侧栏原位置、projectless 标记、
-   workspace hint、output dir）。
-5. **引用行清理/恢复泛化**：运行时探测每张表的
-   `thread_id` / `parent_thread_id` / `child_thread_id` / `assigned_thread_id`
-   列（`assigned_thread_id` 置 NULL 而非删行），不再写死表名清单。
-6. **SQLite 备份改用 rusqlite online Backup API**：单文件一致快照，
-   不再裸拷 `state_5.sqlite-wal` / `-shm`（旧法在 WAL 活跃时可能拷出不一致状态）。
-
-新增读写的文件：`~/.codex/.codex-global-state.json`、
-`~/.codex/sqlite/codex-dev.db`、`~/.codex/sqlite/codex-history-snapshots-dev.db`。
-
-本轮踩到 / 值得记下的约束：
-
-- **`.codex-global-state.json` 现在是 delete/move/trash 的硬依赖**：文件缺失
-  直接拒绝操作（与 Codex Keeper 行为一致）。比这更老的 Codex 版本没有该文件时，
-  这些写操作会报错——属于有意为之，避免在状态不同步的情况下盲改。
-- **v1 废纸篓 manifest 仍可恢复**：新字段（relatedRows/externalDatabases/
-  projectState）缺省按空处理，只是不带新快照能力。
-- **测试卫生（已踩）**：delete/move 的测试必须把会话放在
-  `<tmp>/sessions/`（或 `archived_sessions/`）下并把**该目录**作为 root 传入；
-  否则 `codex_home_for_session_root` 判不出 codex home，回落到真实 `~/.codex`
-  （或被设置覆盖的目录），测试会读写真实数据。旧的
-  `delete_session_removes_jsonl_file` 就是这样静默读到真实库的
-  "Codex state row not found"。
-- `local_thread_catalog_metadata.catalog_revision` 的递增逻辑：删除和恢复各 +1
-  （触发 Codex 桌面端刷新会话目录）。兼容测试断言 4→5→6。
-
-验证：
-
-- Rust 全量 **1606 测试通过**（含 3 个移植自 Codex Keeper 兼容套件的新测试：
-  子代理折叠、移动三端同步含原生侧栏、trash/restore 全链路含 catalog revision）。
-  Clippy 零警告，rustfmt 已应用。前端无改动。
-- CI [`32041716595`](https://github.com/char1eslu/cc-switch/actions/runs/32041716595) 全绿；
-  arm64 Ad Hoc [`32041958536`](https://github.com/char1eslu/cc-switch/actions/runs/32041958536)
-  构建通过，artifact `CC-Switch-macOS-arm64-ad-hoc` 11,463,215 bytes。
-- 本机验证用 `/private/tmp` 一次性 Rustup 工具链完成，结束后已删除（不污染长期环境）。
-
-## 2026-08-15 Codex 模型与恢复保护
-
-| 提交 | 内容 |
-| --- | --- |
-| `81d1a596` | 修正 Grok 4.5 缓存定价，并补 Grok 4.6 与 DeepSeek 别名 |
-| `3e3d4ef5` | `ultra` 按直连、DeepSeek、low/high 与 OpenRouter 模式分别保留或降级 |
-| `02a6bda4` | proxy takeover 恢复时保留官方 ChatGPT 登录，不再被第三方 Codex 配置覆盖 |
-| `9029c0ab` | Codex 自定义模型支持逐模型 `reasoningLevels` 与 `defaultReasoningLevel`；model catalog、前端编辑与 camelCase / snake_case 读取形成闭环 |
-| `981652fc` | 应用 CI 给出的 3 处 rustfmt 结果；这是本轮经过完整 CI 与 macOS 构建的代码 head |
-
-验证：
-
-- CI [`31893969336`](https://github.com/char1eslu/cc-switch/actions/runs/31893969336)：Rust fmt、Clippy、后端测试、TypeScript、前端格式与 306 个前端测试全部通过。
-- macOS arm64 Ad Hoc [`31894246576`](https://github.com/char1eslu/cc-switch/actions/runs/31894246576)：bundle、ad-hoc 签名与 artifact 上传通过。
-- Artifact：`CC-Switch-macOS-arm64-ad-hoc`，11,382,379 bytes；核对时未过期。
-- `f2165eec` 及后续提交仅更新文档，因此仍以 `981652fc` 作为已验证代码 head。
-
-**搬运前先核实 fork 是否已有该实现，以及上游那个 bug 在 fork 里是否真的存在。**
-2026-08-08 那轮 27 个提交里有 2 个（`9db9c56f` Chat tool call 报错、`eb356e15`
-SKILL.md 锚点）先判断为"值得搬"，cherry-pick 时才发现 fork 早已有完整实现
-（连 7 个测试都在），白做了两次冲突解决。2026-08-13 的 `967daa1a` 则相反：
-上游 bug 的前提（信任 DB 缓存哈希）在 fork 里不成立，搬过来是无效改动。
-判断依据不能只看 commit message，要 grep 核心符号和测试函数名，并读 fork
-对应函数确认缺陷前提成立。
+1. **搬运前先核实 fork 是否已有该实现，以及上游 bug 在 fork 里是否真的存在。**
+   反面案例三起：`9db9c56f` / `eb356e15`（2026-08-08）先判断值得搬，cherry-pick
+   时才发现 fork 早有完整实现，白做两次冲突解决；`967daa1a`（2026-08-13）上游
+   bug 的前提（信任 DB 缓存哈希）在 fork 不成立，搬过来是无效改动；`fd14f9c4`
+   （2026-08-18）修的是 fork 从未搬过的 #5522 重构引入的回归，fork 无此路径。
+   判断依据不能只看 commit message，要 grep 核心符号和测试函数名，并读 fork
+   对应函数确认缺陷前提成立。
+2. **上游修复项的守卫值必须按 fork 自己的历史值写，不能照抄上游。**
+   fork 与上游的种子表历史可能不同步（见 2026-08-18 审计里 deepseek-chat /
+   reasoner 的例子：照抄上游守卫值永不命中，老库价格永远不更新）。
+3. **不直接整提交覆盖 fork**：按三应用边界逐提交核对后手工适配。
+   上游的 ja / zh-TW 文案、赞助商预设、release / updater 流程天然不搬。
 
 ## 裁剪边界（决定哪些上游提交天然不用看）
 
@@ -145,42 +62,41 @@ SKILL.md 锚点）先判断为"值得搬"，cherry-pick 时才发现 fork 早已
 | | SCHEMA_VERSION |
 | --- | --- |
 | 本 fork | **16** |
-| 上游 (`v3.19.2` 之后 `413c09e0`，2026-08-08 复核) | 16 |
+| 上游（`v3.20.0`） | **17**（`40d747c0` pi 会话统计引入，2026-08-18 复核发现） |
+
+**上游已领先一个版本号。** 2026-08-17 那轮把 `40d747c0` 当 vendor 门控提交跳过时，
+没有意识到它带着 SCHEMA_VERSION 16→17 的迁移。后果与下次同步的注意事项：
+
+- fork 停在 16 目前无害：v17 迁移服务的是 pi 会话统计（fork 无此功能），
+  fork 数据库结构对自身完全自洽。
+- 但下次上游动到 v17+ 的迁移（`migrate_v16_to_v17` 及后续）时，不能再按
+  commit message 判断跳过——**先看它是否动 `SCHEMA_VERSION` 或迁移链**，
+  否则 fork 会落后多个版本号，后续适配成本滚雪球。
+- 跟进 v17 时要剥离 pi 相关列 / 表，只保留上游共享结构的部分，并同步复核
+  `ensure_upstream_schema_compatibility` 的兼容面。
 
 fork 曾经占用 `PRAGMA user_version` 17–19；现在已停止这种做法。启动时若检测到
 历史 fork v17–19 数据库，会在事务内补回官方 v16 所需的兼容列、`profiles` 表
 及 `proxy_config` 约束，然后把 `user_version` 规范化为 16。识别逻辑同时覆盖
 早期转换留下的“proxy_config 已兼容、MCP/Skills 仍为双应用列”的部分规范化 v19。
-fork 自身版本写在
-`settings.fork_schema_version`，不再与上游迁移号冲突。
+fork 自身版本写在 `settings.fork_schema_version`，不再与上游迁移号冲突。
 
-兼容列和空表不表示恢复了对应功能：fork 仍只维护 Claude Code、Claude Desktop、
-Codex；Gemini/GrokBuild/OpenCode/Hermes 的列默认值为 0，业务代码不读取。
+兼容列和空表不表示恢复了对应功能：fork 仍只维护三个应用；
+Gemini/GrokBuild/OpenCode/Hermes 的列默认值为 0，业务代码不读取。
 
-上游将来推进到 17+ 时，按正常上游迁移号适配；fork 独有结构只递增
-`fork_schema_version`。不要再次为 fork 私有改动提升 `PRAGMA user_version`。
+跟进上游 v17 时按正常上游迁移号适配；fork 独有结构只递增
+`fork_schema_version`。不要再次为 fork 私有改动提升 `PRAGMA user_version`，
 也不要用手工 `PRAGMA user_version=16` 代替结构迁移。
 
-### 2026-08-04 数据库兼容改造验证
+结构性约束（2026-08-04 改造时踩过）：
 
-- 核心提交：`4553aaa3`（官方 v16 结构）、`309cbb51`（收紧旧 fork 识别）、
-  `3a9c2a73`（部分规范化 v19）、`ba9e37c2`（最终 rustfmt）。
-- 最终 CI：[`30911059851`](https://github.com/char1eslu/cc-switch/actions/runs/30911059851)，
-  前端 typecheck / format / unit tests、Rust fmt / Clippy / tests 全部通过。
-- 最终 arm64 Ad Hoc 构建：[`30911416458`](https://github.com/char1eslu/cc-switch/actions/runs/30911416458)，
-  thin arm64、Ad Hoc 签名有效。
-- 安装前用最终构建二进制在隔离 HOME 中迁移真实数据库副本：
-  `user_version 19 -> 16`、`fork_schema_version=1`、`integrity_check=ok`；
-  providers / MCP / skills / request logs / rollups 计数迁移前后完全一致。
-- 真实库迁移后再次确认完整性、核心表计数和本地代理健康；安装前备份保留在
-  `~/.cc-switch/backups/`。
-- v15 -> v16 保持官方语义：清理可从 JSONL 重建的 Codex session usage；
-  Gemini/GrokBuild 仅保留官方兼容占位行，默认重试值分别为 5/3。
-
-另注：官方共享结构仍走 `while version < SCHEMA_VERSION`；fork 兼容列
-则必须由幂等的 `ensure_upstream_schema_compatibility` 补齐，不能只写在
-`migrate_v0_to_v1` 里（那条只对 v0/全新库执行）。否则 DAO 的 SELECT 会因缺列
-整体失败，界面数据看起来像是丢了。
+- 官方共享结构走 `while version < SCHEMA_VERSION`；fork 兼容列必须由幂等的
+  `ensure_upstream_schema_compatibility` 补齐，不能只写在 `migrate_v0_to_v1` 里
+  （那条只对 v0/全新库执行），否则 DAO 的 SELECT 会因缺列整体失败，界面数据
+  看起来像丢了。
+- 该轮验证：真实库副本隔离迁移 `19 -> 16`、`fork_schema_version=1`、
+  `integrity_check=ok`，providers / MCP / skills / request logs / rollups 计数
+  迁移前后一致。核心提交 `4553aaa3` / `309cbb51` / `3a9c2a73` / `ba9e37c2`。
 
 ## fork 独有的实现（上游没有，或与上游不同）
 
@@ -255,206 +171,44 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 6. **i18n 只有 `en` / `zh`**。上游是 en/ja/zh/zh-TW 四语言，
    搬运涉及文案的提交时注意 fork 少两个文件。
 
-## 已评估并跳过（`878c26f3..934a2d03`，7 个）
+7. **`pricing_fixes` 的条目顺序就是迁移顺序，新条目追加在数组末尾。**
+   早期条目先把历史形态收敛到同一旧值，末尾新条目才能单守卫命中；挪到前面
+   会让老库停在中间价位。有测试锁住顺序（两跳断言），详见 schema.rs 内注释。
 
-| 提交 | 内容 | 跳过原因 |
-| --- | --- | --- |
-| `9cf4ae41` | 内置定价表加 Opus 4.8 / 4.7 | 自用不关心成本统计 |
-| `b972f0a3` | 默认模型升级 Opus 5 / GPT-5.6 / Gemini 3.6 | 28 文件 460 行，主体是 Gemini/OpenCode/OpenClaw 预设与四语言文案 |
-| `bc7c8222` | OpenClaw Kimi base URL 修正 | fork 无 OpenClaw |
-| `876e9f89` | 恢复 AICoding 合作伙伴（七种应用） | 赞助商内容 |
-| `b0482320` | 刷新赞助商域名与推荐链接 | 赞助商内容 |
-| `934a2d03` | 同步赞助商列表到各应用与 README | 赞助商内容 |
-| `414b7150` | 发布产物镜像到 Cloudflare R2 | fork 不做正式分发 |
+## 同步审计日志
 
-## 2026-07-30 同步审计（`934a2d03..c0ff89b9`）
+> 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
+> run ID 留作文字记录。
 
-### 已搬运或按 fork 结构适配
+### 2026-08-18（`a98829ba..0b5da510`，11 个）
 
-| 上游提交 | fork 提交 | 处理 |
-| --- | --- | --- |
-| `c98913df` | `2c035726` | SQL 导入拒绝跨文件语句，patch-equivalent |
-| `35486afd` | `4ba0f254` | terminal cwd 使用 POSIX 单引号转义，patch-equivalent |
-| `cd17912f` | `72ca87b8`, `e7d85ad0` | 防止 common config walker 触碰 `Object.prototype`，并补回冲突遗漏的 Codex model TOML 转义 |
-| `6dbb944b` | `7ca36906` | deeplink 风险分级 helper，patch-equivalent |
-| `a443eae9` | `064e543b` | 导入确认显示 MCP args/env 并标记风险，按两语言和三应用结构适配 |
-| `19bf236e` | `f62f53ad` | URL-safe Base64 解码，patch-equivalent |
-| `cfa90f39` | `53615055` | usage scripts 默认禁用并显示代码，按 fork 结构适配 |
-| `ff3bc242` | `4f96131d` | 只搬适用的协议桥 panic、Codex MCP 非表 panic、skill zip-slip；跳过已裁剪应用部分 |
+上游 `v3.20.0` 发布轮。5 个按裁剪边界天然跳过（release / changelog / PPIO 赞助 /
+OpenCode），余下 6 个逐一核对。
 
-### 已评估并跳过或延期
-
-| 上游提交 / 范围 | 结论 |
-| --- | --- |
-| `708b3879`, `2b2f2cfa`, `414b7150` | 上游正式发布、updater 和 R2 镜像链；fork 只做手动 ad-hoc artifact |
-| `12b972a6` | models.dev 自动定价同步涉及 20 个文件和独立持久化架构；非当前需求，延期 |
-| `87b0e3fb` | 仅修上游 ZIP 测试的 TMPDIR 并发隔离；fork CI 未出现对应 flaky failure，延期 |
-| `56fb46c0` | Codex parent rollout timeline cache 是大型性能改造，fork 的 usage 实现差异很大，延期 |
-| `f5f4281d` | 上游为 8 个应用永久改成 icon-only；fork 只有 3 个应用，保留名称并按宽度自动收起更易用 |
-| `6b13d018`, `3b9d0593`, `c0ff89b9` | 上游 `v3.19.0` 版本号、CHANGELOG 和发行说明；会误报已裁剪功能，跳过 |
-| sponsor / preset / Gemini / Grok Build / OpenClaw-only commits | 超出 fork 的三应用裁剪边界 |
-
-## 2026-08-08 同步审计（`28529620..413c09e0`，27 个）
-
-### 已搬运
+已搬运：
 
 | 上游提交 | fork 提交 | 处理 |
 | --- | --- | --- |
-| `6b8f3643` | `053859b9` | 4 个安全上限：usage_script 加 5s 中断 / 16 MiB 内存 / 256 KiB 栈；`model_catalog_json` 路径限制在预期目录内 + 32 MiB 上限；proxy 响应体与解压 128 MiB 上限（压缩炸弹）；deeplink 导入前展示 usageAccessToken / usageUserId。剔除 `session_usage_grokbuild.rs`，i18n 只取 en/zh。附带 CI/release 的 pnpm 改用 `corepack install` 从 `packageManager` 读版本 |
-| `413c09e0` | `1722c1a8` | 生成 catalog 时尊重用户手写的 `model_catalog_json`，patch-equivalent |
-| `40b6376b` | `1cf8517a` | skill `readme_url` 从解析后的源目录构建（新增 `choose_doc_path` / `doc_path_for_source`），修 nested path 404 |
+| `bad9c151`（DeepSeek 部分） | `f5207382` | V4 全系峰谷双档调价：种子表 5 个模型 + `pricing_fixes` 末尾追加 5 条。Gemini 3.7 Flash 部分不适用（fork 无 gemini 行）。chat/reasoner 守卫值按 fork 历史单跳（`0.27/1.10/0.07`、`0.55/2.19/0.14`），不照抄上游两跳值 |
+| `897ca892`（前端部分） | `f92a6a56` | `useCodexOauthQuotaByAccountId` 接入 `autoQueryIntervalMinutes`；footer 默认 5 而非 0（改动前是无条件 5 分钟轮询，默认 0 会静默关掉现有行为）。tray.rs 部分不适用（fork 无 managed OAuth） |
+| `6e424fd3` + `d1c550ba` | `d2152723` | 恢复 1M 上下文开关（纯解注释）；删 Goal mode（codex-cli 已默认开 goals，取消勾选删行回落到 on 反而误导）。前端测试 322 → 318 |
 
-### 搬运过程中发现并修复的 fork 自身问题
-
-| fork 提交 | 问题 |
-| --- | --- |
-| `abf1f953` | 解 `forwarder.rs` 冲突时把上游整块照单保留，误带入 `validate_responses_success_response` / `validate_responses_stream_start`。二者依赖 fork 从未搬过的流式预检地基（`inspect_responses_json_document` / `inspect_responses_start_event` / `responses_error_envelope_message`），且无任何调用方 → 7 个 E0425/E0433。核实后删掉 109 行死代码，而非为死代码补地基 |
-| `6394ebed` | **凭证泄漏**：搬 `6b8f3643` 时带进了 `format_headers` 的回归测试却漏了实现，测试因此暴露出 fork 的 `format_headers` 无条件输出所有响应头的值——`set-cookie` 的 session、`authorization` 的 token 明文进日志。改为上游的白名单设计（只有 content-type / content-encoding / content-length / retry-after / cf-ray / x-request-id / request-id / x-correlation-id 及 `x-ratelimit-*` / `ratelimit-*` 前缀输出值），并加 160 字符截断 |
-
-### 已核实 fork 已有实现，无需搬运
+不适用：
 
 | 上游提交 | 核实结论 |
 | --- | --- |
-| `9db9c56f` | Chat tool call 被丢弃时报 failed 而非假装 completed。核心标识 `upstream_tool_call_dropped` 在 `streaming_codex_chat.rs:659`，7 个测试全部存在，`transform_codex_chat.rs` 的 cherry-pick 暂存 diff 为空 |
-| `eb356e15` | 源目录按 SKILL.md 锚点解析。fork 的 `resolve_skill_source_dir` 已是 `direct.is_dir() && direct.join("SKILL.md").is_file()` 三步结构，含两个 ast-grep wrapper 负例测试 |
+| `fd14f9c4` | 修上游 #5522 重构引入的 preflight 挂死。fork 的 `resolve_path_default` 仍是重构前形态，`wait_child_output` / `CommandDeadline` / `isolate_child_process_group` / `terminate_child_tree` 全仓零命中，无 SIGTTIN 自停路径，搬过来是无效改动 |
+| `0455a92c` | 依赖 `src/utils/providerCapabilities.ts`（fork 无此文件）与已延期的 `a2e22f33` managed OAuth |
 
-### 明确跳过
+验证：CI 32158109397 全绿（前端 318 tests；Rust 1542 passed / 2 ignored，
+含定价两跳断言）；Ad Hoc 32158596850 构建通过。代码 head：`e90fe008`（后
+`3f67786e` 为补记文档）。
 
-| 上游提交 | 跳过原因 |
-| --- | --- |
-| `59a2bd10`, `baf07a27` | Codex usage 计费大改（558 / 347 行）；fork 的 usage 实现差异大，此前已延期过 |
-| `668bbda9` | backup 性能改造 1121 行，纯性能收益、风险高 |
-| `9f19d8fd` | 搜索列表 + 批量应用开关，5284 行新功能 |
-| `0cb6e014`, `968794e3`, `492245dc` | UI 改动；`AppSwitcher` 已按三应用改过，冲突面大而收益低 |
-| `f38722a4` | Qwen3.8 Max 定价 1 行；自用不关心成本统计 |
-| `13ea497a` | GitHub Copilot 兼容现代 Claude Code。**已核实 fork 完全没有 Copilot**（Rust / 前端 0 引用，`copilot_auth.rs`、`copilot_model_map.rs` 均不存在） |
-| `3c1154be` | 删除废弃死代码。**已核实 9 个待删文件里 8 个 fork 早已不存在**，唯一残留 `useCustomEndpoints.ts` 已是 0 引用孤儿，不需要靠上游提交来删 |
-| `a354f08a` | 补 9 个翻译 key。前 2 个是 GrokBuild 表单专用（已裁）；后 6 个只是把硬编码中文 `defaultValue` 换成正式条目，fork 的 `defaultValue` 兜底已能显示，且改 4 语言文件（fork 无 ja / zh-TW） |
-| `0345fad6`, `92ca95ff` | OpenCode / OMO，已裁 |
-| `83830767` | Hermes，已裁 |
-| `290b65c0`, `5b697abc`, `0e604b75`, `4d3e2c35`, `996d512f`, `ebbf141f` | 赞助商预设 / 推荐链接 / README |
-| `43eaf073`, `425e932b`, `fbf52cff`, `a4bba43f` | `v3.19.2` 版本号、发行说明、指南文档；会误报已裁剪功能 |
+### 2026-08-17（`1f38c838..a98829ba`，35 个）
 
-## 2026-08-10 同步审计（`413c09e0..c39c9032`，1 个）+ 定价补缺
+按三应用边界逐提交核对：搬 8 个、已有实现 3 个、跳过 22 个、延期 2 个。
 
-### 上游增量
-
-| 上游提交 | 跳过原因 |
-| --- | --- |
-| `c39c9032` | fix(windows): WSL 拒绝原子替换时的回退。不用 Windows + 裁剪边界外 |
-
-无搬运。
-
-### 定价补缺（fork 侧，非上游提交）
-
-按实时 usage 库（`~/.cc-switch/cc-switch.db`）核查 `proxy_request_logs`，找出
-"有请求、无定价"的型号补进 `seed_model_pricing`：
-
-| model_id | 定价（in/out/cr/cc） | 依据 |
-| --- | --- | --- |
-| `claude-opus-5` | 5/25/0.50/6.25 | 官方 $5/$25 + Opus 档惯例；历史 1.8 亿 token 此前全 $0 |
-| `grok-4.5-build-free` | 2/6/0.30/0 | 对齐上游 `grok-4.5-build` 的 costUsdTicks 实测（build 档 $0.30，非 API 挂牌 $0.50） |
-| `xopglm52` | 1.4/4.4/0.26/0 | 用户中转别名 = GLM 5.2，镜像 live 库已学到的 glm-5.2 |
-
-提交：`e9272739`（补 3 价）、`11e74cd1`（rustfmt 修超宽行）、`52719096`
-（grok-4.5-build-free 改上游实测 $0.30，撤回误改主档 grok-4.5）。
-CI 全绿 + arm64 Ad Hoc 构建通过（runs 31370842112 / 31371115760 / 31373331309 / 31373612158）。
-
-### 核查中确认的非 bug（避免重复踩）
-
-- **Claude 短名（`claude-haiku-4-5` / `claude-sonnet-4-6`）"无定价"不是规范化问题**：
-  `find_model_pricing_row` 的前缀匹配（`should_try_pricing_prefix_match` 对
-  `claude-` 且 dash≥3 启用）本就能命中带日期条目。那些 0 成本行全是失败请求
-  （503/429/502，无 token），`pricing_model` 为空是 token 未采集的连带症状。
-- **上游 grok 定价是实测反推、非纯官方文档**：上游读 Grok CLI OAuth 上报的
-  `costUsdTicks`（1 tick = 1e-10 USD）反算，build 档实测 cache_read $0.30
-  （API 挂牌 $0.50），主档 `grok-4.5` 保留挂牌 $0.50（未实测主档）。fork 对齐
-  此分档，不要把主档也改成 $0.30（无实测依据的分叉）。
-
-### 未做（已与用户确认）
-
-- 历史 Opus 5 约 1.8 亿 token（≈ $395）**不回填**：dashboard 成本是写入时
-  存死的（`SUM(total_cost_usd)`，不重算），补价只对未来流量生效。回填需一次性
-  重算 `proxy_request_logs` + `usage_daily_rollups` 的 cost 列，用户选择不做。
-
-## 2026-08-13 同步审计（`c39c9032..1f38c838`，24 个）
-
-### 已搬运
-
-| 上游提交 | 处理 |
-| --- | --- |
-| `1f38c838` | 智谱把国内端点的配额条目类型从 `TOKENS_LIMIT` 改名为 `CREDIT_LIMIT`，原判断只认前者 → 所有档位被 `continue` 跳过、用量面板整体空白（上游 issue #6153）。改为两个名字都认（仍大小写不敏感）。用户实际在用智谱网关，属于会真实触发的线上故障。上游未加测试，fork 补 `zhipu_accepts_credit_limit_type`（两种类型名混用 + `unit` 显式分窗） |
-
-### 已核实上游 bug 在 fork 中不存在
-
-| 上游提交 | 核实结论 |
-| --- | --- |
-| `967daa1a` | 上游 `check_updates` 先信任 DB 缓存的 `content_hash` 再看磁盘，换机恢复库备份后 SSOT 目录已丢而缓存仍在 → 误报「无更新」，缺失被永久掩盖。**fork 无此路径**：`compute_local_git_tree_hash`（`skill.rs:2251`）每次实地重算、从不读 `content_hash`，目录不存在直接返回 `None`，天然进入更新列表。上游同时引入的 `require_valid_directory` 亦非 fork 所需——fork 在 `install` 阶段就把 `directory` 经 `sanitize_skill_source_path` + `sanitize_install_name` 规范成单段名后才写库（`skill.rs:594`、`604`），入库值已不可能含 `..` 或分隔符 |
-
-### 明确跳过
-
-| 上游提交 | 跳过原因 |
-| --- | --- |
-| `580a4d7b` | Hermes 表单层级，已裁 |
-| `ec842156`, `076c2744` | OpenCode / Hermes / OpenClaw 表单；`ProfileSwitcher.tsx` 在 fork 中不存在 |
-| `5b77da2b`, `95b95da6` | OpenClaw User-Agent 与模型编辑器，已裁 |
-| `7de63227`, `bef46cd5` | GrokBuild，已裁 |
-| `16cc0d7f`, `390102a2` | OpenCode Go 预设路由与 DeepSeek contextWindow；OpenCode 已裁 |
-| `58d92e56`, `3711e1a0` | JieKou AI / PPIO 供应商预设，赞助商内容 |
-| `7e5007d5` | Claude Desktop 模型配置模式文案澄清：675 行表单重排 + 4 语言文案（fork 无 ja / zh-TW），纯 UI 措辞，冲突面大收益低 |
-| `619a592c`, `8673e9d8` | Claude / Claude Desktop 表单边框与高级选项对齐，纯样式；fork 表单已按三应用改过 |
-| `ccc86298` | 代理路由激活动画，新增 `RoutingActivationBrand.tsx` 164 行装饰性组件 |
-| `c0050623` | checkbox 样式统一，纯视觉 |
-| `bc7f5f41` | 供应商编辑器留白收紧，涉及 Gemini / GrokBuild 表单（已裁） |
-| `7e152d75` | 模型映射下拉模糊搜索，改 4 语言文案，非当前需求 |
-| `3c592d93` | Windows WiX 注册表键转义；不用 Windows |
-| `ceef0a52` | Windows 后端测试跑在 WSL2 文件系统上（CI + nightly workflow）；不用 Windows，此前同类提交已跳过 |
-| `c98cc3a9`, `36ed280d` | 上游 CI 分区跳过与 i18n labeler glob；`.github/labeler.yml` 在 fork 中不存在 |
-
-### Skill 备份保留策略改造（fork 侧，非上游提交）
-
-**动机**：更新 Skill 前会自动备份（`create_uninstall_backup`，`update_skill`
-里也调），旧策略是全局「最多 20 个目录」，与体积无关。实测
-`~/.cc-switch/skill-backups/` 已 105 MB / 20 个，正好卡在上限——即已在持续
-删除，但两个问题：
-
-1. **不分 Skill**：高频更新的小 Skill（`academic-*` 系列各 ~1 MB）挤占额度，
-   把低频更新的大 Skill 备份推出去。实测 `nature-figure`（34 MB）
-   与 `academic-research-suite`（30 MB）各只剩 1–2 代。
-2. **无体积约束**：20 个大备份合计可轻松到数百 MB。`Bizard`（56 MB）
-   若进入更新循环，仅它 3 代就 168 MB。
-
-**改法**（`SKILL_BACKUP_RETAIN_PER_SKILL = 3` +
-`SKILL_BACKUP_TOTAL_SIZE_LIMIT_BYTES = 1 GiB`）：
-
-- 按 `meta.json` 的 `skill.directory` 分组，每个 Skill 各留最新 3 代；
-- 分组裁剪后若总体积仍超 1 GiB，全局按最旧优先删，但**至少留 1 个**
-  （单个备份自身超限也不删，否则「更新前已备份」静默失效）；
-- 排序键用 `meta.json` 的 `backup_created_at`，不用目录 mtime——
-  `copy_dir_recursive` 之后才写 `meta.json`，且恢复/拷贝会重置 mtime，
-  按 mtime 判定会删错代；
-- `meta.json` 不可读的目录归入同一孤儿组（`SKILL_BACKUP_ORPHAN_GROUP`）。
-  这类目录 `list_backups` 会跳过、界面不可见也无法恢复，若按目录名各自成组
-  则每组只有 1 个、永远够不到 3 代上限 → 永不回收。
-
-体积统计用 `symlink_metadata` 不解引用符号链接；单项失败只跳过该项，
-不让整轮裁剪失败（清理是旁路操作，失败不应阻止后续增长被控制）。
-实测全量 stat 4376 个文件耗时 0.07s，每次备份后跑一次可接受。
-
-5 个单测覆盖：分组独立留 3 代、按 `backup_created_at` 而非 mtime 排序、
-孤儿组归并、体积上限最旧优先、绝不删最后一个。体积相关两例通过
-`cleanup_old_skill_backups_with_limit` 注入小上限，避免造 1 GiB 载荷。
-
-**新策略只经单测验证，未在真实备份目录上跑过。** 清理只在
-`create_uninstall_backup` 末尾触发（卸载或更新 Skill 时），装新构建后不会立即
-生效。改造时本机现状：20 个目录 / 105 MB，正卡在旧的 20 个上限上。首次更新
-任一 Skill 后应观察 `academic-*` 系列是否收敛到各 3 代。
-
-## 2026-08-17 同步审计（`1f38c838..a98829ba`，35 个）
-
-本轮按三应用 fork 边界（Claude、Claude Desktop、Codex）逐提交核对，不直接整提交覆盖 fork。已搬运 8 个，已有对应 fork 实现 3 个，跳过 22 个，延期 2 个。
-
-### 已搬运或按 fork 结构适配
+已搬运：
 
 | 上游提交 | fork 提交 | 处理 |
 | --- | --- | --- |
@@ -467,108 +221,235 @@ CI 全绿 + arm64 Ad Hoc 构建通过（runs 31370842112 / 31371115760 / 3137333
 | `3d126f45` | `4340e032` | 多年 usage trend tooltip 与点位对齐，并补组件测试 |
 | `f62c854a` | `07eb86d5` | Codex Device Code login epoch，`clear_auth` 后拒绝过期流程重新登记 |
 
-### 已有对应实现，无需再次搬运
+已有对应实现，无需搬运：`d2b070c9`（已由 `02a6bda4` 完成）、`7dc0a725`（已由
+`81d1a596` 完成，`grok-4.5` 主档保持 `$0.50`）、`40cac1a6`（已由 `9029c0ab`
+完成 reasoning levels 闭环）。
 
-| 上游提交 | fork 现状 |
-| --- | --- |
-| `d2b070c9` | 已由 `02a6bda4` 完成 ChatGPT 官方 OAuth takeover restore 保护 |
-| `7dc0a725` | 已由 `81d1a596` 按 fork 定价边界完成；`grok-4.5` 主档保持 `$0.50` |
-| `40cac1a6` | 已由 `9029c0ab` 完成逐模型 reasoning levels/catalog/form 闭环 |
+跳过 / 延期：22 个供应商 / 预设 / 赞助商 / 已裁应用提交（`5602324b`、
+`5f6072ce`、`c99550e0`、`a7f073e9`、`5b8bf1fe`、`eb69e492`、`6a7da87c`、
+`f748f3ac`、`84e75ad2`、`40d747c0`⚠️、`e163a671`、`c6247d13`、`1435223b`、
+`3f75bbdf`、`e12fc623`、`9dcd3486`、`af06356d`、`4080a8e9`、`d01eab97`、
+`de9af49a`、`d4fefefc`、`b109dcd3`）；`a2e22f33`（managed OAuth 含 Copilot，
+约 11.6K 行，延期）；`bdeaac75`（Alpha Search / hosted WebSearch，约 10K 行，
+streaming_responses 已裁剪，延期）。
 
-### 跳过或延期
+⚠️ `40d747c0` 当时按 pi vendor 门控跳过，未意识到它同时把 SCHEMA_VERSION
+升到 17。功能部分跳过正确，但版本号分叉 2026-08-18 复核时才被发现，
+已记入「数据库版本与上游对齐」。教训：跳过提交前 grep 一下是否动
+`SCHEMA_VERSION` / 迁移链。
 
-| 范围 | 提交 | 原因 |
+验证：CI 32049925321 全绿；Ad Hoc 32050196805 通过（run 已删，ID 记录）。
+Rust 1542 passed / 2 ignored；前端 52 files / 322 tests。
+
+### 2026-08-13（`c39c9032..1f38c838`，24 个）
+
+已搬运：`1f38c838` → 智谱配额条目类型 `TOKENS_LIMIT` 改名 `CREDIT_LIMIT`，
+原判断只认前者导致用量面板整体空白（用户在用智谱网关，真实线上故障）。改为
+两个名字都认，fork 补了上游没有的测试 `zhipu_accepts_credit_limit_type`。
+
+已核实上游 bug 在 fork 中不存在：`967daa1a`（fork 的
+`compute_local_git_tree_hash` 每次实地重算、从不读缓存 `content_hash`；
+`install` 阶段已把 `directory` 规范成单段名）。
+
+明确跳过（17 个）：Hermes / OpenCode / OpenClaw / GrokBuild 表单（已裁）；
+JieKou AI / PPIO 预设（赞助商）；Claude Desktop 模型配置文案澄清（675 行 +
+四语言，纯措辞）；表单边框与高级选项对齐、checkbox 样式、代理路由激活动画、
+模型映射模糊搜索（纯视觉 / 非需求）；Windows WiX 注册表转义与 WSL2 CI（不用
+Windows）；上游 CI 分区跳过与 i18n labeler（`.github/labeler.yml` 不存在）。
+
+同轮完成 fork 侧 Skill 备份保留策略改造（见「fork 侧改造记录」）。
+
+### 2026-08-10（`413c09e0..c39c9032`，1 个）
+
+`c39c9032`（Windows WSL 拒绝原子替换时的回退）：不用 Windows + 裁剪边界外，跳过。
+无搬运。同轮完成 fork 侧定价补缺（见「fork 侧改造记录」）。
+
+### 2026-08-08（`28529620..413c09e0`，27 个）
+
+已搬运：
+
+| 上游提交 | fork 提交 | 处理 |
 | --- | --- | --- |
-| 数据/供应商专属或无前提 | `5602324b`, `5f6072ce`, `c99550e0`, `a7f073e9`, `5b8bf1fe`, `eb69e492`, `6a7da87c`, `f748f3ac`, `84e75ad2`, `40d747c0`, `e163a671`, `c6247d13`, `1435223b`, `3f75bbdf`, `e12fc623`, `9dcd3486`, `af06356d`, `4080a8e9`, `d01eab97`, `de9af49a`, `d4fefefc`, `b109dcd3` | 供应商/预设/赞助商或已裁应用；共享代码分支对用户不用的 vendor 门控，无需引入冲突面 |
-| 大型新功能 | `a2e22f33` | managed OAuth 含 Copilot，约 11.6K 行，超出当前 fork 边界，延期 |
-| 大型新功能 | `bdeaac75` | Alpha Search / hosted WebSearch，约 10K 行，streaming_responses 已裁剪，延期 |
+| `6b8f3643` | `053859b9` | 4 个安全上限：usage_script 加 5s 中断 / 16 MiB 内存 / 256 KiB 栈；`model_catalog_json` 路径限制在预期目录内 + 32 MiB 上限；proxy 响应体与解压 128 MiB 上限（压缩炸弹）；deeplink 导入前展示 usageAccessToken / usageUserId。剔除 `session_usage_grokbuild.rs`，i18n 只取 en/zh |
+| `413c09e0` | `1722c1a8` | 生成 catalog 时尊重用户手写的 `model_catalog_json` |
+| `40b6376b` | `1cf8517a` | skill `readme_url` 从解析后的源目录构建，修 nested path 404 |
 
-验证：前端 `pnpm test:unit`（52 files / 322 tests）、`pnpm typecheck`、`pnpm format:check` 与 renderer build 通过；Rust `cargo fmt --check`、`cargo check`、全库 1542 测试（1542 passed，2 ignored）通过；备份/恢复 13、Prompt 4、Skill 22、post-import sync 4 项定向测试通过。CI [`32049925321`](https://github.com/char1eslu/cc-switch/actions/runs/32049925321) 全绿；macOS arm64 Ad Hoc [`32050196805`](https://github.com/char1eslu/cc-switch/actions/runs/32050196805) bundle、签名与 artifact 上传通过。
+搬运过程中发现并修复的 fork 自身问题：
 
-## 2026-08-18 同步审计（`a98829ba..0b5da510`，11 个）
-
-上游 `v3.20.0` 发布轮。11 个提交里 5 个按既有裁剪边界天然跳过（release/changelog/
-赞助商/OpenCode），余下 6 个逐个核对：搬 3 个、部分搬 1 个、不适用 2 个。
-
-### 已搬运或按 fork 结构适配
-
-| 上游提交 | 处理 |
+| fork 提交 | 问题 |
 | --- | --- |
-| `bad9c151`（DeepSeek 部分） | V4 全系峰谷双档调价：种子表 5 个模型 + `pricing_fixes` 末尾追加 5 条修复项。**Gemini 3.7 Flash 部分不适用**——fork 定价表无 gemini 行（已随 Gemini 裁剪） |
-| `897ca892`（前端部分） | `useCodexOauthQuotaByAccountId` 接入 `autoQueryIntervalMinutes`，`CodexOauthQuotaFooter` 透传 `autoQueryInterval`，`ProviderCard` 接上用户设置。**tray.rs 部分不适用**——fork 无 `CODEX_OFFICIAL_PROVIDER_ID`，`provider_uses_official_subscription` 不涉 managed 账号 |
-| `6e424fd3` | 恢复 1M 上下文开关：删掉 fork 里三处 `/* */` 隐藏（文件头 import、状态/回调块、JSX）。逻辑代码本就完整保留，纯解注释 |
-| `d1c550ba` | 删除 Goal mode：2 个 helper、2 个 TOML 正则、`hasTomlSectionBodyContent`、勾选框、en/zh 两处文案、4 个测试用例。**用户确认在用最新版 Codex**（goals 已默认开启，取消勾选反而误导：删行回落到 on 而非 off） |
+| `abf1f953` | 解 `forwarder.rs` 冲突时误带入 `validate_responses_success_response` / `validate_responses_stream_start`，依赖 fork 从未搬过的地基且无调用方 → 7 个编译错误。核实后删掉 109 行死代码，而非为死代码补地基 |
+| `6394ebed` | **凭证泄漏**：搬 `6b8f3643` 时带了 `format_headers` 的回归测试却漏了实现，暴露出 fork 无条件输出所有响应头值——`set-cookie`、`authorization` 明文进日志。改为白名单（content-type / content-encoding / content-length / retry-after / cf-ray / request-id 系 + ratelimit 前缀）+ 160 字符截断 |
 
-### 不适用（上游前提在 fork 中不成立）
+已核实 fork 已有实现：`9db9c56f`（Chat tool call 报错，`upstream_tool_call_dropped`
+在 `streaming_codex_chat.rs:659`，7 个测试都在）、`eb356e15`（SKILL.md 锚点，
+`resolve_skill_source_dir` 已是三步结构）。
 
-| 上游提交 | 核实结论 |
+明确跳过（22 个）：Codex usage 计费大改（`59a2bd10` / `baf07a27`，fork 的 usage
+实现差异大，此前已延期）；backup 性能改造（`668bbda9`，1121 行纯性能）；搜索
+列表 + 批量应用开关（`9f19d8fd`，5284 行新功能）；AppSwitcher UI（已按三应用改过）；
+Copilot 兼容（`13ea497a`，fork 完全没有 Copilot）；废弃死代码清理（`3c1154be`，
+9 个待删文件里 8 个 fork 早不存在）；翻译 key（`a354f08a`，GrokBuild 专用 +
+四语言）；OpenCode / OMO / Hermes（已裁）；赞助商 / 版本号 / 发行说明。
+
+### 2026-07-30（`934a2d03..c0ff89b9`）
+
+已搬运：`c98913df`（SQL 导入拒绝跨文件语句）、`35486afd`（terminal cwd POSIX
+单引号转义）、`cd17912f`（common config walker 不碰 `Object.prototype` + 补回
+Codex model TOML 转义）、`6dbb944b`（deeplink 风险分级）、`a443eae9`（导入确认
+显示 MCP args/env 并标记风险）、`19bf236e`（URL-safe Base64）、`cfa90f39`（usage
+scripts 默认禁用并显示代码）、`ff3bc242`（协议桥 panic / Codex MCP 非表 panic /
+skill zip-slip，只搬适用部分）。
+
+跳过 / 延期：上游正式发布、updater 和 R2 镜像链；models.dev 自动定价同步
+（20 文件，延期）；上游 ZIP 测试 TMPDIR 并发隔离（fork 无对应 flaky）；
+Codex parent rollout timeline cache（大型性能改造，延期）；上游 8 应用 icon-only
+改版（fork 3 应用保留名称更易用）；`v3.19.0` 版本号 / CHANGELOG；赞助商 / 已裁
+应用提交。
+
+### 更早（`878c26f3..934a2d03`，7 个）
+
+全部跳过：内置定价表 Opus 条目（自用不关心成本统计）；默认模型升级（主体是
+Gemini / OpenCode / OpenClaw 预设）；OpenClaw base URL 修正（无 OpenClaw）；
+AICoding 合作伙伴 / 赞助商域名与推荐链接 / 赞助商列表同步（赞助商内容）；
+发布产物镜像到 Cloudflare R2（fork 不做正式分发）。
+
+## fork 侧改造记录（非上游提交）
+
+### Codex 26.810 会话兼容（2026-08-17，核心提交 `0c1b4327`）
+
+**起因**：Codex Desktop 26.810 改了会话存储——子代理线程在 `threads` 表有独立行
+但只靠 spawn edges / `thread_source` / `source` JSON 标记归属；项目归属迁到
+`~/.codex/.codex-global-state.json`（原生 assignments + 侧栏排序）；会话列表还出现
+只有内部事件、无用户事件的行。
+
+**来源**：修复先在 Codex Keeper（codex-wake 自 fork，Swift）完成并验证
+（`696b59f`，含隔离兼容测试套件），本次按同一契约移植到 cc-switch 的 Rust
+会话管理。改动全部在 `src-tauri/src/session_manager/providers/codex.rs`：
+
+1. **子代理识别四路信号**：`thread_spawn_edges.child_thread_id`、
+   `threads.thread_source = 'subagent'`、`threads.source` JSON 里的
+   `subagent.thread_spawn`、以及 rollout 文件内容兜底。命中即折叠，
+   不独立列出，也拒绝被单独 move/delete/trash（"follow their parent"）。
+2. **`needs_repair` 增加 `has_user_event != 0` 前提**：无用户事件的内部线程
+   不再被误报为待修复/待索引。
+3. **Move 三端同步**：state DB `threads.cwd` + rollout
+   `session_meta.payload.cwd` / `turn_context` + `.codex-global-state.json`
+   （写 `thread-project-assignments`、迁 `sidebar-project-thread-orders`、清
+   projectless/workspace-hint/output-dir）。目标项目必须已在 Codex 注册
+   （预检报错而非半移动），任一步失败整体回滚。
+4. **Trash/Restore manifest v2**：`relatedRows` / `externalDatabases` 逐行保存
+   **列名 + 任意类型值**（Null/Integer/Real/Text/Blob），Codex 以后加列不用改代码。
+   覆盖 `codex-dev.db`（`local_thread_catalog` 行 + `catalog_revision` 递增）和
+   `codex-history-snapshots-dev.db`（`app_server_history_snapshots`）。
+   恢复时还原原生项目状态。
+5. **引用行清理/恢复泛化**：运行时探测每张表的
+   `thread_id` / `parent_thread_id` / `child_thread_id` / `assigned_thread_id`
+   列（`assigned_thread_id` 置 NULL 而非删行），不再写死表名清单。
+6. **SQLite 备份改用 rusqlite online Backup API**：单文件一致快照，
+   不再裸拷 `state_5.sqlite-wal` / `-shm`（旧法在 WAL 活跃时可能拷出不一致状态）。
+
+值得记下的约束：
+
+- **`.codex-global-state.json` 是 delete/move/trash 的硬依赖**：文件缺失直接拒绝
+  操作（与 Codex Keeper 行为一致）。比这更老的 Codex 版本没有该文件时这些写操作
+  会报错——有意为之，避免在状态不同步的情况下盲改。
+- **v1 废纸篓 manifest 仍可恢复**：新字段缺省按空处理，只是不带新快照能力。
+- **测试卫生（已踩）**：delete/move 的测试必须把会话放在
+  `<tmp>/sessions/`（或 `archived_sessions/`）下并把**该目录**作为 root 传入；
+  否则 `codex_home_for_session_root` 判不出 codex home，回落到真实 `~/.codex`，
+  测试会读写真实数据。
+- `local_thread_catalog_metadata.catalog_revision`：删除和恢复各 +1（触发 Codex
+  桌面端刷新）。兼容测试断言 4→5→6。
+
+验证：Rust 全量 1606 测试通过（含 3 个移植自 Codex Keeper 兼容套件的新测试），
+Clippy 零警告。CI 32041716595 / Ad Hoc 32041958536（run 已删，ID 记录）。
+
+### Codex 模型与恢复保护（2026-08-15）
+
+| 提交 | 内容 |
 | --- | --- |
-| `fd14f9c4` | 修的是上游 #5522 重构引入的 preflight 挂死回归。fork 的 `resolve_path_default` 仍是重构前形态（无 deadline 参数、裸 `output()`），`wait_child_output` / `CommandDeadline` / `isolate_child_process_group` / `terminate_child_tree` 全仓零命中——fork 从不隔离进程组，没有 SIGTTIN 自停路径。**搬过来是无效改动** |
-| `0455a92c` | 依赖 `src/utils/providerCapabilities.ts`（fork 无此文件）与已延期的 `a2e22f33` managed OAuth |
+| `81d1a596` | 修正 Grok 4.5 缓存定价，并补 Grok 4.6 与 DeepSeek 别名 |
+| `3e3d4ef5` | `ultra` 按直连、DeepSeek、low/high 与 OpenRouter 模式分别保留或降级 |
+| `02a6bda4` | proxy takeover 恢复时保留官方 ChatGPT 登录，不被第三方 Codex 配置覆盖 |
+| `9029c0ab` | Codex 自定义模型支持逐模型 `reasoningLevels` 与 `defaultReasoningLevel`；model catalog、前端编辑与 camelCase / snake_case 读取形成闭环 |
+| `981652fc` | 应用 CI 给出的 rustfmt 结果；本轮经完整 CI 与 macOS 构建的代码 head |
 
-### 本轮踩到 / 值得记下的约束
+验证：CI 31893969336 / Ad Hoc 31894246576（run 已删，ID 记录）。
 
-- **`pricing_fixes` 的守卫值必须按 fork 自己的历史值写，不能照抄上游。**
-  上游 chat/reasoner 的守卫是 `0.14/0.28/0.0028`（他们 2026-07 先搬过一次
-  「chat/reasoner 降为 V4 Flash 别名」的收敛条目），而 fork 从未搬那一跳，
-  种子值仍是远古的 `0.27/1.10/0.07` 与 `0.55/2.19/0.14`。照抄上游守卫值
-  **永不命中**，老库价格永远不更新。fork 这两个模型是单跳到位，v4-flash /
-  v4-pro 才是两跳。
-- **五条新增修复项必须留在 `pricing_fixes` 数组末尾。** 前面的 v4-flash
-  （cache_read `0.028→0.0028`）与 v4-pro（`1.68/3.36→0.435/0.87`）条目先把
-  历史形态收敛到同一旧值，末尾这组才能单守卫命中。挪到前面老库会停在中间价位。
-- **DeepSeek 统一录高峰档**（与上游同一取舍，用户已确认）：官方措辞是
-  「空闲价为高峰价的一半」，高峰档才是基准挂牌价，且高峰时段（北京时间
-  9:00-12:00、14:00-18:00）正是主力使用时段。代价是夜间用量高估一倍。
-  勿按「阶梯取低档」惯例改成空闲档。
-- **`CodexOauthQuotaFooter` 的 `autoQueryInterval` 默认值取 5 而非 0。**
-  兄弟组件 `SubscriptionQuotaFooter` 的调用点传 `?? 0`，但 Codex OAuth footer
-  在本次改动前是无条件 5 分钟轮询；默认给 0 会静默关掉现有行为。用 `?? 5`
-  保留原默认，同时让用户显式设 0 生效为禁用。
-- **本机无 pnpm，用 `node_modules/.bin` 下的项目锁定版二进制**（tsc/vitest/
-  prettier）。不要用 `npx prettier`——会拉最新版，与 CI 的 `format:check` 结果不一致。
-  另注意 `format:check` 只覆盖 `src/**`，改了 `tests/**` 要单独跑一次 prettier。
+### Skill 备份保留策略（2026-08-13）
 
-验证：本机前端 typecheck 通过；`vitest run` 52 files / **318 tests 全通过**
-（较上轮 322 少 4 个，正是 `d1c550ba` 删掉的 Goal mode 用例）；prettier
-`src/**` 与本轮改动的 `tests/**` 均合规；renderer build 通过（3532 modules）。
+**动机**：旧策略是全局「最多 20 个目录」，与体积无关。实测
+`~/.cc-switch/skill-backups/` 已 105 MB / 20 个，正卡在上限：高频更新的小 Skill
+（`academic-*` 系列各 ~1 MB）挤占额度，把低频更新的大 Skill 备份推出去
+（`nature-figure` 34 MB 与 `academic-research-suite` 30 MB 各只剩 1–2 代），
+且 20 个大备份合计可到数百 MB。
 
-CI [`32158109397`](https://github.com/char1eslu/cc-switch/actions/runs/32158109397)
-全绿：前端 typecheck / format / 52 files·318 tests，后端 `cargo fmt --check`、
-Clippy、全库 **1542 passed / 2 ignored**（含改后的定价两跳断言）。
-macOS arm64 Ad Hoc [`32158596850`](https://github.com/char1eslu/cc-switch/actions/runs/32158596850)
-构建通过（7m44s），artifact `CC-Switch-macOS-arm64-ad-hoc` 11,460,173 bytes，
-核对时未过期。
+**改法**（`SKILL_BACKUP_RETAIN_PER_SKILL = 3` + 总体积上限 1 GiB）：
 
-本轮代码 head：`e90fe008`（`dev`）。
+- 按 `meta.json` 的 `skill.directory` 分组，每个 Skill 各留最新 3 代；
+- 分组裁剪后若总体积仍超 1 GiB，全局按最旧优先删，但**至少留 1 个**
+  （单个备份自身超限也不删，否则「更新前已备份」静默失效）；
+- 排序键用 `meta.json` 的 `backup_created_at` 而非目录 mtime——恢复/拷贝会重置
+  mtime，按 mtime 判定会删错代；
+- `meta.json` 不可读的目录归入同一孤儿组（否则 `list_backups` 跳过的这类目录
+  每组只有 1 个、永远够不到上限 → 永不回收）。
+
+体积统计用 `symlink_metadata` 不解引用符号链接；单项失败只跳过，不让整轮裁剪
+失败。5 个单测覆盖：分组独立留 3 代、按 `backup_created_at` 排序、孤儿组归并、
+体积上限最旧优先、绝不删最后一个。
+
+**新策略只经单测验证，未在真实备份目录上跑过。** 清理只在
+`create_uninstall_backup` 末尾触发，装新构建后首次更新任一 Skill 时应观察
+`academic-*` 系列是否收敛到各 3 代。
+
+### 定价补缺（2026-08-10）
+
+按实时 usage 库核查 `proxy_request_logs`，找出"有请求、无定价"的型号补进
+`seed_model_pricing`：
+
+| model_id | 定价（in/out/cr/cc） | 依据 |
+| --- | --- | --- |
+| `claude-opus-5` | 5/25/0.50/6.25 | 官方 $5/$25 + Opus 档惯例；历史 1.8 亿 token 此前全 $0 |
+| `grok-4.5-build-free` | 2/6/0.30/0 | 对齐上游 `grok-4.5-build` 的 costUsdTicks 实测（build 档 $0.30，非 API 挂牌 $0.50） |
+| `xopglm52` | 1.4/4.4/0.26/0 | 用户中转别名 = GLM 5.2，镜像 live 库已学到的 glm-5.2 |
+
+提交：`e9272739`（补 3 价）、`11e74cd1`（rustfmt）、`52719096`
+（grok-4.5-build-free 改上游实测 $0.30，撤回误改主档 grok-4.5）。
+
+核查中确认的非 bug（避免重复踩）：
+
+- Claude 短名"无定价"不是规范化问题：`find_model_pricing_row` 的前缀匹配本就能
+  命中带日期条目；那些 0 成本行全是失败请求（503/429/502，无 token）。
+- 上游 grok 定价是实测反推（读 Grok CLI OAuth 的 `costUsdTicks`），build 档实测
+  cache_read $0.30，主档 `grok-4.5` 保留挂牌 $0.50。fork 对齐此分档，不要把
+  主档也改成 $0.30。
+
+未做（已确认）：历史 Opus 5 约 1.8 亿 token（≈ $395）不回填——dashboard 成本是
+写入时存死的，补价只对未来流量生效；回填需一次性重算 cost 列，用户选择不做。
 
 ## 未完成 / 待验证
 
 - **Codex ↔ Anthropic 协议桥：转换 payload 已验证，应用内链路仍未跑过。**
 
   2026-07-27 对真实网关（智谱 `open.bigmodel.cn/api/anthropic`，模型 `glm-5.2`）
-  验证了 7 个场景，全部返回 200：非流式、流式 SSE（事件序列完整到
-  `message_stop`）、工具调用（`stop_reason: tool_use` 且参数正确）、`[1m]`
-  标记剥离、空 text block 过滤、`tool_result` 多轮回传、`cache_control` 注入。
+  验证了 7 个场景，全部返回 200：非流式、流式 SSE、工具调用、`[1m]` 标记剥离、
+  空 text block 过滤、tool_result 多轮回传、`cache_control` 注入。
 
-  **但这是用 Python 按 `transform_codex_anthropic.rs` 的逻辑复现 payload 测的**，
-  验证的是「转换后的请求能被 Anthropic 网关接受、响应能被正确解析」。
-  Rust 实现与复现之间若有偏差，这个测试发现不了。
+  **但这是用 Python 按 `transform_codex_anthropic.rs` 的逻辑复现 payload 测的**。
+  Rust 实现与复现之间若有偏差，这个测试发现不了。仍待验证：在应用里真配一个
+  `Anthropic Messages` 格式的 Codex 供应商，用 Codex 实跑一轮完整 Rust 链路。
 
-  仍待验证：在应用里真配一个 `Anthropic Messages` 格式的 Codex 供应商，用
-  Codex 实跑一轮，走完整的 Rust 转换链路。
-
-  另：缓存未命中（`cache_creation=0 / cache_read=0`），可能是该中转不支持
-  prompt caching，也可能是测试 prompt 未达 Anthropic 的 1024 token 缓存下限。
-  这条没验证成功，但只影响成本，不影响功能。
-- **Claude Desktop MCP 已回退，不再是待办。**
-  详见上方「Claude Desktop MCP：尝试过并已回退」。gateway 接管导致本地
-  `mcpServers` 被忽略，与格式无关，上游同样不支持。
+  另：缓存未命中可能是该中转不支持 prompt caching，也可能是测试 prompt 未达
+  1024 token 下限。只影响成本，不影响功能。
+- **Skill 备份新策略未在真实备份目录上观察过收敛**（见「fork 侧改造记录」）。
 
 ## 验证手段
 
-本机默认不保留 Rust toolchain；后端改动以 GitHub CI 为最终验证，若临时在本机
-验证，必须使用隔离目录并在完成后删除 Rustup/Cargo/target 缓存：
+本机默认不保留 Rust toolchain，也没有 pnpm；后端改动以 GitHub CI 为最终验证。
+本机跑前端用 `node_modules/.bin` 下的项目锁定版二进制（tsc / vitest / prettier），
+不要用 `npx prettier`——会拉最新版，与 CI 的 `format:check` 结果不一致。
+另注意 `format:check` 只覆盖 `src/**`，改了 `tests/**` 要单独跑一次 prettier。
 
 ```bash
 gh workflow run "CI" --ref dev -R char1eslu/cc-switch
@@ -577,11 +458,7 @@ gh workflow run build-macos-ad-hoc.yml --ref dev -R char1eslu/cc-switch
 
 注意 `gh` 可能解析到 upstream remote，命令要显式带 `-R char1eslu/cc-switch`。
 
-前端格式化必须用项目锁定版本，不要用 `npx prettier`（会拉最新版，
-格式化结果与 CI 的 `pnpm format:check` 不一致）：
-
-```bash
-pnpm install && pnpm format
-```
+若临时在本机验证 Rust，必须使用隔离目录并在完成后删除 Rustup/Cargo/target 缓存
+（2026-08-17 那轮用 `/private/tmp` 一次性工具链，结束即删）。
 
 数据库迁移改动，建议先用真实库的副本干跑验证，确认列/行变化与数据无损。

@@ -13,55 +13,38 @@
 
 > 这是 `farion1231/cc-switch` 的个人 fork，不是上游官方发布页。
 > 这个分支主要记录相对上游的自用改动，稳定跨平台版本请优先看上游项目。
-
-> 同步上游前先读 [FORK_STATUS.md](FORK_STATUS.md)：记录了同步基线、裁剪边界、
-> 数据库版本已与上游对齐；fork 私有迁移独立记账。更多维护边界和已踩过的坑见下文。
+> 同步上游前先读 [FORK_STATUS.md](FORK_STATUS.md)。
 
 ## 和上游的主要区别
 
 | 方向 | 这个 fork 的改动 |
 | --- | --- |
 | 应用范围 | 聚焦 Claude Code、Claude Desktop、Codex，清理了一批当前不维护的旧工具入口 |
-| Codex 会话管理 | Session Manager 增加 Codex 会话扫描、状态识别、Repair、Move、Trim、Branch、Trash、Restore、Backup 等维护操作 |
+| Codex 会话管理 | Session Manager 增加 Codex 会话扫描、状态识别、Repair、Move、Trim、Branch、Trash、Restore、Backup 等维护操作（详见下节） |
 | 会话浏览 | Codex 对话支持 Markdown/GFM 渲染，目录和标题会过滤 AGENTS、环境上下文、工具 schema 等注入噪音 |
 | 搜索和批量操作 | 增加项目过滤、状态计数、JSONL Deep Search、多选批量 Repair/Move/Trash |
 | 路径操作 | 会话详情支持 Reveal / Copy Path，Move dialog 对长路径和候选目录做了可用性处理 |
 | 技能更新 | 修正本地哈希与 GitHub tree 的排序口径，消除反复提示更新；大型仓库下载超时放宽，结构化错误显示可读文案 |
-| Codex 上游协议 | 支持只提供原生 Anthropic Messages（`/v1/messages`）的网关，由本地代理做 Responses ⇄ Anthropic 双向转换 |
+| Codex 上游协议 | 支持只提供原生 Anthropic Messages（`/v1/messages`）的网关，由本地代理做 Responses ⇄ Anthropic 双向转换（详见下节） |
 | Codex 模型与登录保护 | 自定义模型可配置逐模型推理档位和默认档位；`ultra` 按网关模式安全降级；接管恢复不会覆盖官方 ChatGPT 登录 |
+| Codex OAuth 额度 | 额度轮询间隔跟随用户设置（含设 0 禁用），不再写死 5 分钟 |
+| 内置定价 | 跟随上游人工核价（DeepSeek V4 峰谷双档等）；Gemini 行随应用裁剪移除 |
 | MCP 覆盖 | Claude Code 与 Codex 两端；Claude Desktop 因 gateway 接管无法支持，与上游一致 |
-| 数据库 | 与上游 v3.19.1 共用 `user_version=16`；仅保留已裁剪应用的空兼容字段，fork 私有迁移独立记账 |
+| 数据库 | fork 停在 `user_version=16`（上游 `v3.20.0` 已随 pi 会话统计升 17，fork 无该功能暂不跟进）；仅保留已裁剪应用的空兼容字段，fork 私有迁移独立记账 |
 | 应用自更新 | 屏蔽 Tauri updater、自更新 endpoint 和 updater artifact，避免应用内检查上游更新 |
 | 构建方式 | 保留 macOS Apple Silicon ad-hoc GitHub Actions 构建，当前不做 DMG、公证或自动更新包 |
 
-### 2026-08-15 Codex 更新
-
-- 自定义模型可分别声明可用推理档位和默认档位；生成 model catalog 时保留这些设置。
-- `ultra` 会按直连、DeepSeek、low/high 与 OpenRouter 模式分别保留或降级。
-- proxy takeover 恢复不会再用第三方配置覆盖官方 ChatGPT 登录。
-- 修正 Grok 4.5 缓存价格，并补齐 Grok 4.6 与一个 DeepSeek 定价别名。
-
-### 2026-08-17 Codex 26.810 会话兼容
-
-- 子代理线程折叠进父会话：不再作为独立会话列出，也不能被单独移动、删除或移入回收区。
-- 待修复判定增加「有用户事件」前提，新版里只有内部事件的线程不再被误报。
-- Move 同步 Codex 原生项目状态（`.codex-global-state.json` 的项目归属与侧栏排序），
-  目标目录必须已在 Codex 注册，任一步失败整体回滚。
-- Trash / Restore 升级为 v2 manifest：完整快照 SQLite 行（含任意列值类型）、
-  `codex-dev.db` 会话目录与 `codex-history-snapshots-dev.db` 历史快照，恢复时还原原生项目位置。
-- SQLite 备份改用 online Backup API，不再裸拷 WAL/SHM 文件。
-
-## Codex 会话相关改动
+## Codex 会话管理
 
 - 读取 `~/.codex/sqlite/state_5.sqlite`、`codex-dev.db`、`codex-history-snapshots-dev.db`、`.codex-global-state.json`、`session_index.jsonl` 和 `sessions` / `archived_sessions` JSONL。
-- 子代理线程通过 spawn edges、`thread_source`、`source` JSON 与 rollout 元数据识别，折叠进父会话而不独立展示。
-- 区分 indexed、not indexed、missing file、archived、needs repair 等状态。
+- 子代理线程通过 spawn edges、`thread_source`、`source` JSON 与 rollout 元数据识别，折叠进父会话而不独立展示，也不能被单独移动、删除或移入回收区（兼容 Codex 26.810 会话存储）。
+- 区分 indexed、not indexed、missing file、archived、needs repair 等状态；新版里只有内部事件的线程不再被误报待修复。
 - Repair Index 会修复 Codex index 缺失或状态不一致，操作前备份 state、session_index 和 JSONL。
 - Move Session 会同步 SQLite `threads.cwd`、JSONL `session_meta.payload.cwd` 和 Codex 原生项目归属（项目分配 + 侧栏排序），失败自动回滚。
 - Trim from here 会从指定用户轮次后截断 JSONL，并保留 `.codex-rescue-backup-*` 备份。
 - Branch from here 会从指定轮次派生新会话，生成新 UUID、新 JSONL，并写入 SQLite / session_index。
-- Trash / Restore 使用 v2 manifest：快照完整 SQLite 行、外部 catalog 与历史快照库，并保留 / 还原原生项目位置；Permanent delete 同步清理所有引用。
-- Backup Manager 支持列出、恢复、移入 Trash、清空维护备份。
+- Trash / Restore 使用 v2 manifest：快照完整 SQLite 行（任意列值类型）、外部 catalog 与历史快照库，并保留 / 还原原生项目位置；Permanent delete 同步清理所有引用。
+- Backup Manager 支持列出、恢复、移入 Trash、清空维护备份；SQLite 备份为 online Backup API 生成的一致快照。
 - 项目过滤按 Codex 项目目录聚合会话，显示项目会话数和待修复数。
 - Deep Search 可以扫描 Codex JSONL 原文，找隐藏在长对话里的内容。
 - 批量模式支持多选 Codex 会话后批量 Repair、Move、Trash，并汇总失败项。
@@ -95,8 +78,7 @@
 
 Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
 `inferenceProvider: "gateway"`。gateway 模式下 Desktop 从 managed config 读取 MCP，
-`claude_desktop_config.json` 里的 `mcpServers` 会被忽略并记为
-`Skipped invalid MCP server config entries`。
+`claude_desktop_config.json` 里的 `mcpServers` 会被忽略。
 
 这是 gateway 接管的固有代价，上游 cc-switch 同样不支持 3P Desktop 的本地 MCP。
 需要在 Desktop 里用 MCP 时，在 Desktop 自己的界面添加，或使用未被接管的原版实例。
@@ -135,17 +117,15 @@ Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
 ## 构建和下载
 
 当前 fork 的 bundle 版本仍为 `3.16.3`。这里的手动 macOS arm64 ad-hoc
-产物不是上游 `v3.19.1` 的官方发布包，也不包含上游已裁剪的应用面。
+产物不是上游 `v3.20.0` 的官方发布包，也不包含上游已裁剪的应用面。
 
 ### GitHub Actions 自用构建
 
 - Workflow: [Build macOS Ad Hoc](https://github.com/char1eslu/cc-switch/actions/workflows/build-macos-ad-hoc.yml)
 - 目标架构：`aarch64-apple-darwin`
-- 产物名：`CC-Switch-macOS-arm64-ad-hoc`
-- 产物内容：ad-hoc signed `CC Switch.app` zip
-- 当前已验证代码 head：[`0c1b4327`](https://github.com/char1eslu/cc-switch/commit/0c1b4327)
-- 最终验证：[CI 32041716595](https://github.com/char1eslu/cc-switch/actions/runs/32041716595) / [Build 32041958536](https://github.com/char1eslu/cc-switch/actions/runs/32041958536)
-- 构建产物：`CC-Switch-macOS-arm64-ad-hoc`（11,463,215 bytes，Actions artifact）
+- 产物名：`CC-Switch-macOS-arm64-ad-hoc`（ad-hoc signed `CC Switch.app` zip）
+- 当前已验证代码 head：[`3f67786e`](https://github.com/char1eslu/cc-switch/commit/3f67786e)
+- 最终验证：[CI 32158109397](https://github.com/char1eslu/cc-switch/actions/runs/32158109397) / [Build 32158596850](https://github.com/char1eslu/cc-switch/actions/runs/32158596850)（artifact 11,460,173 bytes）
 
 如果 macOS 拦截，可以右键打开，或清理 quarantine：
 
