@@ -71,7 +71,9 @@ struct TokenUsageSignature {
 fn parse_signature_counters(value: Option<&serde_json::Value>) -> Option<TokenCountersSignature> {
     let value = value?.as_object()?;
     Some(TokenCountersSignature {
-        input: value.get("input_tokens").and_then(serde_json::Value::as_u64),
+        input: value
+            .get("input_tokens")
+            .and_then(serde_json::Value::as_u64),
         cached_input: value
             .get("cached_input_tokens")
             .or_else(|| value.get("cache_read_input_tokens"))
@@ -82,7 +84,9 @@ fn parse_signature_counters(value: Option<&serde_json::Value>) -> Option<TokenCo
         reasoning_output: value
             .get("reasoning_output_tokens")
             .and_then(serde_json::Value::as_u64),
-        total: value.get("total_tokens").and_then(serde_json::Value::as_u64),
+        total: value
+            .get("total_tokens")
+            .and_then(serde_json::Value::as_u64),
     })
 }
 
@@ -839,37 +843,34 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("session.jsonl");
 
-        let token_count = |total: (u64, u64, u64),
-                           last: (u64, u64, u64),
-                           limit_id: &str,
-                           ts: &str|
-         -> String {
-            serde_json::json!({
-                "timestamp": ts,
-                "type": "event_msg",
-                "payload": {
-                    "type": "token_count",
-                    "info": {
-                        "total_token_usage": {
-                            "input_tokens": total.0,
-                            "cached_input_tokens": total.1,
-                            "output_tokens": total.2,
-                            "reasoning_output_tokens": 0,
-                            "total_tokens": total.0 + total.2
+        let token_count =
+            |total: (u64, u64, u64), last: (u64, u64, u64), limit_id: &str, ts: &str| -> String {
+                serde_json::json!({
+                    "timestamp": ts,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {
+                            "total_token_usage": {
+                                "input_tokens": total.0,
+                                "cached_input_tokens": total.1,
+                                "output_tokens": total.2,
+                                "reasoning_output_tokens": 0,
+                                "total_tokens": total.0 + total.2
+                            },
+                            "last_token_usage": {
+                                "input_tokens": last.0,
+                                "cached_input_tokens": last.1,
+                                "output_tokens": last.2,
+                                "reasoning_output_tokens": 0,
+                                "total_tokens": last.0 + last.2
+                            }
                         },
-                        "last_token_usage": {
-                            "input_tokens": last.0,
-                            "cached_input_tokens": last.1,
-                            "output_tokens": last.2,
-                            "reasoning_output_tokens": 0,
-                            "total_tokens": last.0 + last.2
-                        }
-                    },
-                    "rate_limits": { "limit_id": limit_id }
-                }
-            })
-            .to_string()
-        };
+                        "rate_limits": { "limit_id": limit_id }
+                    }
+                })
+                .to_string()
+            };
 
         let lines = [
             serde_json::json!({
@@ -885,7 +886,12 @@ mod tests {
             })
             .to_string(),
             // 通道 A 正常事件
-            token_count((100, 60, 10), (100, 60, 10), "lane_a", "2026-08-21T00:00:02Z"),
+            token_count(
+                (100, 60, 10),
+                (100, 60, 10),
+                "lane_a",
+                "2026-08-21T00:00:02Z",
+            ),
             // 通道 B 累计值更低（独立通道）：旧实现差分为 0 丢事件，新实现取 last
             token_count((90, 50, 8), (30, 20, 4), "lane_b", "2026-08-21T00:00:03Z"),
             // 通道 A 推进
@@ -921,7 +927,7 @@ mod tests {
             "last_token_usage": { "input_tokens": 10, "output_tokens": 2 }
         });
         let sig = parse_token_signature(&info).expect("signature");
-        let total = sig.total.expect("total signature");
+        let total = sig.total.clone().expect("total signature");
         assert_eq!(total.input, Some(10));
         assert_eq!(total.cached_input, None, "缺失字段与 0 值必须可区分");
         assert!(sig.last.is_some());

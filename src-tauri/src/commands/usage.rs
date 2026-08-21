@@ -277,4 +277,3 @@ pub fn get_usage_data_sources(
 ) -> Result<Vec<crate::services::session_usage::DataSourceSummary>, AppError> {
     crate::services::session_usage::get_data_source_breakdown(&state.db)
 }
-

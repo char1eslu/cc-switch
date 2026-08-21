@@ -549,3 +549,13 @@ upstream remote 已配置为只跟踪 `main`（2026-08-21：fetch refspec 收紧
 （2026-08-17 那轮用 `/private/tmp` 一次性工具链，结束即删）。
 
 数据库迁移改动，建议先用真实库的副本干跑验证，确认列/行变化与数据无损。
+
+### 2026-08-21 本机验证补记
+
+- 首次用 `/private/tmp` 一次性 Rustup 工具链在本机跑通全量 `cargo test --lib`
+  （1566 passed / 2 ignored）与 Clippy，CI 前就抓到 3 个问题：2 处 rustfmt、
+  1 个测试所有权错误、以及下条。工具链验证完即删。
+- **移植测试的夹具必须引用 fork 种子表里存在的型号。** 上游 `model_pricing.rs`
+  的测试用 `claude-sonnet-5` 做夹具——该型号来自 fork 跳过的上游定价提交，
+  fork 种子表没有，测试断言 0 行更新直接失败。换成 fork 有的
+  `claude-sonnet-4-6-20260217`。这是守则 2（守卫值按 fork 历史写）的测试版。

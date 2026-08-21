@@ -529,7 +529,7 @@ mod tests {
                     conn.execute(
                         "UPDATE model_pricing
                          SET input_cost_per_million = '99'
-                         WHERE model_id = 'claude-sonnet-5'",
+                         WHERE model_id = 'claude-sonnet-4-6-20260217'",
                         [],
                     )
                     .expect("simulate built-in pricing repair"),
@@ -543,7 +543,7 @@ mod tests {
             let input: String = conn
                 .query_row(
                     "SELECT input_cost_per_million
-                     FROM model_pricing WHERE model_id = 'claude-sonnet-5'",
+                     FROM model_pricing WHERE model_id = 'claude-sonnet-4-6-20260217'",
                     [],
                     |row| row.get(0),
                 )
@@ -695,7 +695,7 @@ mod tests {
                 .expect("insert zero-cost usage");
             }
 
-            delete_model_pricing(db, "claude-sonnet-5").expect("create tombstone");
+            delete_model_pricing(db, "claude-sonnet-4-6-20260217").expect("create tombstone");
             db.ensure_model_pricing_seeded()
                 .expect("reseed built-in pricing");
             assert_eq!(sync_local_model_pricing(db).expect("apply tombstone"), 1);
@@ -704,7 +704,7 @@ mod tests {
             let deleted_count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM model_pricing
-                     WHERE model_id = 'claude-sonnet-5'",
+                     WHERE model_id = 'claude-sonnet-4-6-20260217'",
                     [],
                     |row| row.get(0),
                 )
