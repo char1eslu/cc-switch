@@ -34,12 +34,19 @@ git log --oneline 0b5da510..upstream/main
    （2026-08-18）修的是 fork 从未搬过的 #5522 重构引入的回归，fork 无此路径。
    判断依据不能只看 commit message，要 grep 核心符号和测试函数名，并读 fork
    对应函数确认缺陷前提成立。
-2. **上游修复项的守卫值必须按 fork 自己的历史值写，不能照抄上游。**
+2. **安全敏感路径不受裁切门控豁免，逐提交过 diff。** 凡动
+   `src-tauri/src/proxy/`、`src-tauri/src/database/`、deeplink、usage_script
+   执行链的上游提交，**无论是否命中 vendor 门控都要看 diff**，重点：新增的
+   输入解析、凭据/响应头处理、路径与体积限制。proxy 每月约 23 个上游提交，
+   安全修复可能藏在看似 vendor 门控的提交里。反面证据：`6394ebed` 搬安全修复
+   时带了 `format_headers` 的测试却漏了实现，暴露并修掉 fork 的凭据明文进日志
+   ——流程是双向脆弱的，靠人记不可靠，必须按路径强制。
+3. **上游修复项的守卫值必须按 fork 自己的历史值写，不能照抄上游。**
    fork 与上游的种子表历史可能不同步（见 2026-08-18 审计里 deepseek-chat /
    reasoner 的例子：照抄上游守卫值永不命中，老库价格永远不更新）。
-3. **不直接整提交覆盖 fork**：按三应用边界逐提交核对后手工适配。
+4. **不直接整提交覆盖 fork**：按三应用边界逐提交核对后手工适配。
    上游的 ja / zh-TW 文案、赞助商预设、release / updater 流程天然不搬。
-4. **跳过上游提交前，先 grep 它是否动 `SCHEMA_VERSION` 或迁移链。**
+5. **跳过上游提交前，先 grep 它是否动 `SCHEMA_VERSION` 或迁移链。**
    `40d747c0` 当 vendor 门控跳过时没人发现它带 16→17 迁移，直到真实库被
    fork 的启动守卫拒绝才暴露。vendor 门控的功能代码可以跳，版本号迁移不行。
 
@@ -298,6 +305,19 @@ Copilot 兼容（`13ea497a`，fork 完全没有 Copilot）；废弃死代码清�
 9 个待删文件里 8 个 fork 早不存在）；翻译 key（`a354f08a`，GrokBuild 专用 +
 四语言）；OpenCode / OMO / Hermes（已裁）；赞助商 / 版本号 / 发行说明。
 
+**usage 延期项重估（2026-08-21）：维持延期，但定性变了。**
+
+- `59a2bd10`（交错 Codex token 计数，单文件 +558）是正确性修复而非新功能，
+  理论上值得搬；但实测 fork 的 `session_usage_codex.rs` 与上游同位置版本差
+  约 2084 行，不是 cherry-pick 而是要按 fork 解析器重写修复逻辑。**搬运前提
+  待核实**：fork 自己的解析器是否真有交错计数 bug（按守则 1）。若用户没观察到
+  Codex 会话用量明显偏低/异常，优先级低。
+- `12b972a6`（models.dev 自动定价同步，20 文件 +2669）能消掉手工维护
+  seed + pricing_fixes 的负担（DeepSeek 峰谷那次就是纯手工活）。加法为主、
+  不动现有表结构，是三个延期项里唯一「值得排期」的候选。触发条件：下次再
+  遇到厂商调价需要手工补表时重新评估。
+- `baf07a27` 与 `59a2bd10` 同域，跟随前者决定。
+
 ### 2026-07-30（`934a2d03..c0ff89b9`）
 
 已搬运：`c98913df`（SQL 导入拒绝跨文件语句）、`35486afd`（terminal cwd POSIX
@@ -463,6 +483,10 @@ gh workflow run build-macos-ad-hoc.yml --ref dev -R char1eslu/cc-switch
 ```
 
 注意 `gh` 可能解析到 upstream remote，命令要显式带 `-R char1eslu/cc-switch`。
+
+upstream remote 已配置为只跟踪 `main`（2026-08-21：fetch refspec 收紧 +
+清理 124 个 stale 分支引用）。若需临时看上游特性分支：
+`git fetch upstream <branch>:refs/remotes/upstream/<branch>`。
 
 若临时在本机验证 Rust，必须使用隔离目录并在完成后删除 Rustup/Cargo/target 缓存
 （2026-08-17 那轮用 `/private/tmp` 一次性工具链，结束即删）。
