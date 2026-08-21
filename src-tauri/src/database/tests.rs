@@ -916,6 +916,45 @@ fn upstream_v16_database_is_accepted() {
     assert_eq!(proxy_defaults, (5, 3));
 }
 
+/// 上游 v17 数据库（跑过上游 pi 会话统计构建后落盘的形态）必须能被 fork
+/// 原样接受：版本号相等走不进迁移循环，只补幂等兼容结构。
+#[test]
+fn upstream_v17_database_is_accepted() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+    Database::set_user_version(&conn, 17).expect("set user_version=17");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("v17 db must be accepted");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version"),
+        SCHEMA_VERSION
+    );
+}
+
+/// v16 → v17 迁移与上游逐字一致：建出 `session_usage_dedup` 去重账本表，
+/// 且迁移链整体收敛到 SCHEMA_VERSION。
+#[test]
+fn migration_v16_to_v17_creates_session_usage_dedup_ledger() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+    Database::set_user_version(&conn, 16).expect("set user_version=16");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate to SCHEMA_VERSION");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version"),
+        SCHEMA_VERSION
+    );
+    conn.execute(
+        "INSERT INTO session_usage_dedup
+         (data_source, request_id, semantic_id, has_entry_id)
+         VALUES ('pi_session', 'request', 'semantic', 1)",
+        [],
+    )
+    .expect("dedup ledger table must exist with upstream columns");
+}
+
 #[test]
 fn legacy_fork_v19_is_normalized_without_losing_core_rows() {
     let conn = Connection::open_in_memory().expect("open in-memory db");

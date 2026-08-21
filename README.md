@@ -30,7 +30,7 @@
 | Codex OAuth 额度 | 额度轮询间隔跟随用户设置（含设 0 禁用），不再写死 5 分钟 |
 | 内置定价 | 跟随上游人工核价（DeepSeek V4 峰谷双档等）；Gemini 行随应用裁剪移除 |
 | MCP 覆盖 | Claude Code 与 Codex 两端；Claude Desktop 因 gateway 接管无法支持，与上游一致 |
-| 数据库 | fork 停在 `user_version=16`（上游 `v3.20.0` 已随 pi 会话统计升 17，fork 无该功能暂不跟进）；仅保留已裁剪应用的空兼容字段，fork 私有迁移独立记账 |
+| 数据库 | 与上游 `v3.20.0` 同为 `user_version=17`（v17 仅含 fork 不读写的去重账本表，SQL 逐字对齐）；仅保留已裁剪应用的空兼容字段，fork 私有迁移独立记账 |
 | 应用自更新 | 屏蔽 Tauri updater、自更新 endpoint 和 updater artifact，避免应用内检查上游更新 |
 | 构建方式 | 保留 macOS Apple Silicon ad-hoc GitHub Actions 构建，当前不做 DMG、公证或自动更新包 |
 

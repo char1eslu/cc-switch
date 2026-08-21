@@ -526,6 +526,11 @@ impl Database {
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
                     }
+                    16 => {
+                        log::info!("迁移数据库从 v16 到 v17（创建会话用量去重账本）");
+                        Self::migrate_v16_to_v17(conn)?;
+                        Self::set_user_version(conn, 17)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -1305,7 +1310,27 @@ impl Database {
         crate::services::session_usage_codex::reset_codex_usage_on_conn(conn, &codex_dir)
     }
 
-    /// 保持上游 schema v16 的列/表/约束。fork 业务代码只读写
+    /// 上游 v17：新建会话用量去重账本表。SQL 与上游逐字一致——fork 业务代码
+    /// 不读写这张表（pi 会话统计已裁），但建出来保持版本号对齐，未来上游
+    /// v18+ 迁移才能在干净的基础上叠加。
+    fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS session_usage_dedup (
+                data_source TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                semantic_id TEXT NOT NULL,
+                has_entry_id INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (data_source, request_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_session_usage_dedup_semantic
+             ON session_usage_dedup(data_source, semantic_id, has_entry_id);",
+        )
+        .map_err(|error| AppError::Database(format!("创建会话用量去重账本失败: {error}")))?;
+        Ok(())
+    }
+
+    /// 保持上游 schema 的列/表/约束（含 v17 的 `session_usage_dedup`，
+    /// 由迁移链或下方幂等补建）。fork 业务代码只读写
     /// Claude/Codex 字段，其它列是默认为 0 的兼容占位。
     fn ensure_upstream_schema_compatibility(conn: &Connection) -> Result<(), AppError> {
         conn.execute(

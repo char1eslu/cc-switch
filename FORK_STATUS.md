@@ -39,6 +39,9 @@ git log --oneline 0b5da510..upstream/main
    reasoner 的例子：照抄上游守卫值永不命中，老库价格永远不更新）。
 3. **不直接整提交覆盖 fork**：按三应用边界逐提交核对后手工适配。
    上游的 ja / zh-TW 文案、赞助商预设、release / updater 流程天然不搬。
+4. **跳过上游提交前，先 grep 它是否动 `SCHEMA_VERSION` 或迁移链。**
+   `40d747c0` 当 vendor 门控跳过时没人发现它带 16→17 迁移，直到真实库被
+   fork 的启动守卫拒绝才暴露。vendor 门控的功能代码可以跳，版本号迁移不行。
 
 ## 裁剪边界（决定哪些上游提交天然不用看）
 
@@ -61,19 +64,18 @@ git log --oneline 0b5da510..upstream/main
 
 | | SCHEMA_VERSION |
 | --- | --- |
-| 本 fork | **16** |
-| 上游（`v3.20.0`） | **17**（`40d747c0` pi 会话统计引入，2026-08-18 复核发现） |
+| 本 fork | **17**（2026-08-21 跟进） |
+| 上游（`v3.20.0`） | **17**（`40d747c0` pi 会话统计引入） |
 
-**上游已领先一个版本号。** 2026-08-17 那轮把 `40d747c0` 当 vendor 门控提交跳过时，
-没有意识到它带着 SCHEMA_VERSION 16→17 的迁移。后果与下次同步的注意事项：
+**v17 跟进记录（2026-08-21）。** 真实库因跑过上游构建已落盘 v17，fork 的启动守卫
+拒绝打开。上游 v16→v17 迁移只新建 `session_usage_dedup` 去重账本表、不动现有表，
+故 fork 照搬该迁移并同步提升 SCHEMA_VERSION：SQL 与上游逐字一致，fork 业务代码
+不读写这张表（pi 已裁），但版本号对齐后未来 v18+ 才能干净叠加。新增测试：
+`upstream_v17_database_is_accepted`（现场场景：v17 库原样接受）、
+`migration_v16_to_v17_creates_session_usage_dedup_ledger`。
 
-- fork 停在 16 目前无害：v17 迁移服务的是 pi 会话统计（fork 无此功能），
-  fork 数据库结构对自身完全自洽。
-- 但下次上游动到 v17+ 的迁移（`migrate_v16_to_v17` 及后续）时，不能再按
-  commit message 判断跳过——**先看它是否动 `SCHEMA_VERSION` 或迁移链**，
-  否则 fork 会落后多个版本号，后续适配成本滚雪球。
-- 跟进 v17 时要剥离 pi 相关列 / 表，只保留上游共享结构的部分，并同步复核
-  `ensure_upstream_schema_compatibility` 的兼容面。
+教训（已入守则）：跳过上游提交前先 grep 是否动 `SCHEMA_VERSION` / 迁移链——
+`40d747c0` 当 vendor 门控跳过时没人发现它带版本号迁移，直到真实库被拒才暴露。
 
 fork 曾经占用 `PRAGMA user_version` 17–19；现在已停止这种做法。启动时若检测到
 历史 fork v17–19 数据库，会在事务内补回官方 v16 所需的兼容列、`profiles` 表
