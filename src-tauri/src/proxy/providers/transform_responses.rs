@@ -523,6 +523,19 @@ pub(crate) fn build_anthropic_usage_from_responses(usage: Option<&Value>) -> Val
             result["cache_read_input_tokens"] = json!(cached);
         }
     }
+    // GPT-5.6+ 在嵌套的 OpenAI token-details 对象里上报缓存写入。
+    // 写入按 Anthropic cache creation 处理，下游客户端与计费层才能
+    // 把它和全新输入区分开（上游 f991726f）。
+    let nested_cache_write = u
+        .pointer("/input_tokens_details/cache_write_tokens")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            u.pointer("/prompt_tokens_details/cache_write_tokens")
+                .and_then(|v| v.as_u64())
+        });
+    if let Some(cache_write) = nested_cache_write {
+        result["cache_creation_input_tokens"] = json!(cache_write);
+    }
 
     // Step 2: Direct Anthropic-style fields override (authoritative if present)
     // These preserve cache tokens even if input/output_tokens are missing
@@ -1984,6 +1997,21 @@ mod tests {
         // 直传 cache_read(100) 优先于 nested(80)；input(100) - 100 = 0（fresh）
         assert_eq!(result["input_tokens"], json!(0));
         assert_eq!(result["cache_read_input_tokens"], json!(100)); // Direct field overrides nested
+    }
+
+    #[test]
+    fn test_build_usage_cache_write_tokens_from_nested_details() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "input_tokens_details": {
+                "cached_tokens": 30,
+                "cache_write_tokens": 20
+            }
+        })));
+        assert_eq!(result["input_tokens"], json!(50));
+        assert_eq!(result["cache_read_input_tokens"], json!(30));
+        assert_eq!(result["cache_creation_input_tokens"], json!(20));
     }
 
     #[test]
