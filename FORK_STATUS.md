@@ -558,4 +558,12 @@ upstream remote 已配置为只跟踪 `main`（2026-08-21：fetch refspec 收紧
 - **移植测试的夹具必须引用 fork 种子表里存在的型号。** 上游 `model_pricing.rs`
   的测试用 `claude-sonnet-5` 做夹具——该型号来自 fork 跳过的上游定价提交，
   fork 种子表没有，测试断言 0 行更新直接失败。换成 fork 有的
-  `claude-sonnet-4-6-20260217`。这是守则 2（守卫值按 fork 历史写）的测试版。
+  `claude-sonnet-4-6-20260217`。这是守则 3（守卫值按 fork 历史写）的测试版。
+- 上游移植的 `modelsDevAutoSync` 测试有一处毫秒级边界（`INTERVAL + 1`），
+  CI 慢调度下 flaky，已放宽到 +5s（上游仍带着这个潜在 flake）。
+
+验证（代码 head `440ca9fc`）：本机 Rust 全量 1566 passed / 2 ignored、Clippy
+零警告；前端 typecheck / prettier / 54 files·331 tests 通过。
+CI [`32525733555`](https://github.com/char1eslu/cc-switch/actions/runs/32525733555)
+全绿；Ad Hoc [`32525735709`](https://github.com/char1eslu/cc-switch/actions/runs/32525735709)
+构建通过，artifact `CC-Switch-macOS-arm64-ad-hoc` 11,522,958 bytes。
