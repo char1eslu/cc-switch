@@ -82,7 +82,8 @@ describe("syncModelsDevPricing", () => {
   });
 
   it("skips startup network access when pricing synced within the interval", async () => {
-    const lastSyncAt = Date.now() - MODELS_DEV_STARTUP_SYNC_INTERVAL_MS + 1;
+    // 留 5s 余量：CI 调度延迟可能吃掉毫秒级边界（+1 在慢环境会 flaky）
+    const lastSyncAt = Date.now() - MODELS_DEV_STARTUP_SYNC_INTERVAL_MS + 5_000;
     getModelsDevSyncConfig.mockResolvedValue({
       ...state,
       config: { ...state.config, lastSyncAt },
