@@ -23,6 +23,7 @@ use crate::services::session_usage::{
 };
 use crate::services::usage_stats::{find_model_pricing, should_skip_session_insert, DedupKey};
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -50,11 +51,76 @@ impl DeltaTokens {
     }
 }
 
+/// 单个 token 计数快照的签名（字段级 Option，缺字段与 0 值可区分）
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TokenCountersSignature {
+    input: Option<u64>,
+    cached_input: Option<u64>,
+    output: Option<u64>,
+    reasoning_output: Option<u64>,
+    total: Option<u64>,
+}
+
+/// 一条 token_count 事件的签名（total + last 两份快照）
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TokenUsageSignature {
+    total: Option<TokenCountersSignature>,
+    last: Option<TokenCountersSignature>,
+}
+
+fn parse_signature_counters(value: Option<&serde_json::Value>) -> Option<TokenCountersSignature> {
+    let value = value?.as_object()?;
+    Some(TokenCountersSignature {
+        input: value.get("input_tokens").and_then(serde_json::Value::as_u64),
+        cached_input: value
+            .get("cached_input_tokens")
+            .or_else(|| value.get("cache_read_input_tokens"))
+            .and_then(serde_json::Value::as_u64),
+        output: value
+            .get("output_tokens")
+            .and_then(serde_json::Value::as_u64),
+        reasoning_output: value
+            .get("reasoning_output_tokens")
+            .and_then(serde_json::Value::as_u64),
+        total: value.get("total_tokens").and_then(serde_json::Value::as_u64),
+    })
+}
+
+fn parse_token_signature(info: &serde_json::Value) -> Option<TokenUsageSignature> {
+    let total = parse_signature_counters(info.get("total_token_usage"));
+    let last = parse_signature_counters(info.get("last_token_usage"));
+    (total.is_some() || last.is_some()).then_some(TokenUsageSignature { total, last })
+}
+
+/// 快照来源：rate_limits.limit_id。限流刷新会在不同 limit_id 下重发同值
+/// token 信息，去重必须分通道进行（见 parse 循环内注释）。
+fn token_snapshot_source(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .get("rate_limits")
+        .and_then(|rate_limits| rate_limits.get("limit_id"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn update_high_water(high_water: &mut CumulativeTokens, current: &CumulativeTokens) {
+    high_water.input = high_water.input.max(current.input);
+    high_water.cached_input = high_water.cached_input.max(current.cached_input);
+    high_water.output = high_water.output.max(current.output);
+}
+
 /// 单文件解析时的运行状态
 struct FileParseState {
     session_id: Option<String>,
     current_model: String,
-    prev_total: Option<CumulativeTokens>,
+    // `total_token_usage` 是会话累计值，跨模型与限流通道变化。分叉快照靠
+    // 优先取精确 `last_token_usage` 处理，而不是拆累计基线。
+    total_high_water: Option<CumulativeTokens>,
+    // 限流刷新会在另一个 limit_id 下重发未变化的 token 信息。同通道重复用
+    // 该通道最新完整快照识别；跨通道重复必须匹配紧邻的上一条 token 事件，
+    // 不与其他通道的旧快照比较（计数器重置后旧签名可能合法复现）。
+    last_signature_by_source: HashMap<Option<String>, TokenUsageSignature>,
+    previous_token_signature: Option<TokenUsageSignature>,
     event_index: u32,
 }
 
@@ -122,7 +188,18 @@ fn compute_delta(prev: &Option<CumulativeTokens>, current: &CumulativeTokens) ->
 
 /// 从 JSON Value 中提取累计 token 用量
 fn parse_cumulative_tokens(total_usage: &serde_json::Value) -> Option<CumulativeTokens> {
-    if total_usage.is_null() || !total_usage.is_object() {
+    let fields = total_usage.as_object()?;
+    if ![
+        "input_tokens",
+        "cached_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "total_tokens",
+    ]
+    .iter()
+    .any(|field| fields.contains_key(*field))
+    {
         return None;
     }
     Some(CumulativeTokens {
@@ -317,7 +394,9 @@ fn sync_single_codex_file(db: &Database, file_path: &Path) -> Result<(u32, u32),
     let mut state = FileParseState {
         session_id: None,
         current_model: "unknown".to_string(),
-        prev_total: None,
+        total_high_water: None,
+        last_signature_by_source: HashMap::new(),
+        previous_token_signature: None,
         event_index: 0,
     };
 
@@ -409,33 +488,58 @@ fn sync_single_codex_file(db: &Database, file_path: &Path) -> Result<(u32, u32),
                     state.current_model = normalize_codex_model(model);
                 }
 
-                // 优先用 total_token_usage（累计值），fallback 到 last_token_usage（增量值）
-                let (cumulative, is_total) = if let Some(total) = info.get("total_token_usage") {
-                    (parse_cumulative_tokens(total), true)
-                } else if let Some(last) = info.get("last_token_usage") {
-                    (parse_cumulative_tokens(last), false)
-                } else {
-                    continue;
-                };
-
-                let cumulative = match cumulative {
-                    Some(c) => c,
+                let signature = match parse_token_signature(info) {
+                    Some(s) => s,
                     None => continue,
                 };
 
-                let delta = if is_total {
-                    // 累计值模式：计算与上次的 delta
-                    let d = compute_delta(&state.prev_total, &cumulative);
-                    state.prev_total = Some(cumulative);
-                    d
-                } else {
-                    // 增量值模式：直接使用 last_token_usage 的值
+                // 优先取精确的 last_token_usage（单次调用真实用量）；
+                // 只有缺失时才退回 total 快照差分。
+                let snapshot_source = token_snapshot_source(payload);
+                let total = info
+                    .get("total_token_usage")
+                    .and_then(parse_cumulative_tokens);
+                let last = info
+                    .get("last_token_usage")
+                    .and_then(parse_cumulative_tokens);
+                if total.is_none() && last.is_none() {
+                    continue;
+                }
+                let has_total_snapshot = total.is_some();
+                let duplicate_snapshot = has_total_snapshot
+                    && (state.last_signature_by_source.get(&snapshot_source) == Some(&signature)
+                        || state.previous_token_signature.as_ref() == Some(&signature));
+                if has_total_snapshot {
+                    state
+                        .last_signature_by_source
+                        .insert(snapshot_source, signature.clone());
+                }
+                state.previous_token_signature = Some(signature.clone());
+
+                let delta = if duplicate_snapshot {
+                    // 重放的同值快照：零增量，防止限流刷新导致的重复计费
                     DeltaTokens {
-                        input: cumulative.input as u32,
-                        cached_input: cumulative.cached_input as u32,
-                        output: cumulative.output as u32,
+                        input: 0,
+                        cached_input: 0,
+                        output: 0,
                     }
+                } else if let Some(last) = last {
+                    DeltaTokens {
+                        input: last.input as u32,
+                        cached_input: last.cached_input as u32,
+                        output: last.output as u32,
+                    }
+                } else if let Some(total) = total.as_ref() {
+                    compute_delta(&state.total_high_water, total)
+                } else {
+                    continue;
                 };
+                if let Some(total) = total {
+                    match state.total_high_water.as_mut() {
+                        Some(high_water) => update_high_water(high_water, &total),
+                        None => state.total_high_water = Some(total),
+                    }
+                }
 
                 // 钳制：cached 不应超过 input（防护异常数据）
                 let delta = DeltaTokens {
@@ -721,6 +825,123 @@ mod tests {
     fn test_collect_codex_session_files_nonexistent() {
         let files = collect_codex_session_files(Path::new("/nonexistent/path"));
         assert!(files.is_empty());
+    }
+
+    /// 交错限流通道 + 跨通道重放快照的回归测试（上游 59a2bd10）。
+    ///
+    /// 场景：两个 limit_id 交替上报 total 快照，且限流刷新会重发同值快照。
+    /// 旧实现（单一 prev_total 基线、优先 total 差分）会因通道 B 的较低累计值
+    /// 丢事件、因重放快照重复计费。新实现优先取精确 last_token_usage，
+    /// 并按通道 + 紧邻事件去重。
+    #[test]
+    fn test_interleaved_lanes_and_replayed_snapshots() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("session.jsonl");
+
+        let token_count = |total: (u64, u64, u64),
+                           last: (u64, u64, u64),
+                           limit_id: &str,
+                           ts: &str|
+         -> String {
+            serde_json::json!({
+                "timestamp": ts,
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": total.0,
+                            "cached_input_tokens": total.1,
+                            "output_tokens": total.2,
+                            "reasoning_output_tokens": 0,
+                            "total_tokens": total.0 + total.2
+                        },
+                        "last_token_usage": {
+                            "input_tokens": last.0,
+                            "cached_input_tokens": last.1,
+                            "output_tokens": last.2,
+                            "reasoning_output_tokens": 0,
+                            "total_tokens": last.0 + last.2
+                        }
+                    },
+                    "rate_limits": { "limit_id": limit_id }
+                }
+            })
+            .to_string()
+        };
+
+        let lines = [
+            serde_json::json!({
+                "timestamp": "2026-08-21T00:00:00Z",
+                "type": "session_meta",
+                "payload": { "session_id": "sess-lanes" }
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-08-21T00:00:01Z",
+                "type": "turn_context",
+                "payload": { "model": "gpt-5.6-sol" }
+            })
+            .to_string(),
+            // 通道 A 正常事件
+            token_count((100, 60, 10), (100, 60, 10), "lane_a", "2026-08-21T00:00:02Z"),
+            // 通道 B 累计值更低（独立通道）：旧实现差分为 0 丢事件，新实现取 last
+            token_count((90, 50, 8), (30, 20, 4), "lane_b", "2026-08-21T00:00:03Z"),
+            // 通道 A 推进
+            token_count((105, 62, 12), (5, 2, 2), "lane_a", "2026-08-21T00:00:04Z"),
+            // 同值快照换到通道 B 重放：必须识别为零增量
+            token_count((105, 62, 12), (5, 2, 2), "lane_b", "2026-08-21T00:00:05Z"),
+        ];
+        fs::write(&file, lines.join("\n") + "\n").expect("write jsonl");
+
+        let (imported, _skipped) = sync_single_codex_file(&db, &file)?;
+
+        // 事件 1/2/3 入库；事件 4 是重放，零增量被跳过
+        assert_eq!(imported, 3, "replayed snapshot must not be imported");
+
+        let conn = lock_conn!(db.conn);
+        let (total_input, total_cached, total_output): (i64, i64, i64) = conn.query_row(
+            "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(cache_read_tokens),0),
+                    COALESCE(SUM(output_tokens),0)
+             FROM proxy_request_logs WHERE data_source = 'codex_session'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        // 精确 last 之和：100+30+5 / 60+20+2 / 10+4+2
+        assert_eq!((total_input, total_cached, total_output), (135, 82, 16));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_token_signature_distinguishes_fields() {
+        let info: serde_json::Value = serde_json::json!({
+            "total_token_usage": { "input_tokens": 10, "output_tokens": 2 },
+            "last_token_usage": { "input_tokens": 10, "output_tokens": 2 }
+        });
+        let sig = parse_token_signature(&info).expect("signature");
+        let total = sig.total.expect("total signature");
+        assert_eq!(total.input, Some(10));
+        assert_eq!(total.cached_input, None, "缺失字段与 0 值必须可区分");
+        assert!(sig.last.is_some());
+
+        // 同值不同通道的签名相等（去重依据）
+        let info2: serde_json::Value = serde_json::json!({
+            "total_token_usage": { "input_tokens": 10, "output_tokens": 2 },
+            "last_token_usage": { "input_tokens": 10, "output_tokens": 2 }
+        });
+        assert_eq!(sig, parse_token_signature(&info2).unwrap());
+
+        // 值变化 → 签名不同
+        let info3: serde_json::Value = serde_json::json!({
+            "total_token_usage": { "input_tokens": 11, "output_tokens": 2 },
+            "last_token_usage": { "input_tokens": 1, "output_tokens": 0 }
+        });
+        assert_ne!(sig, parse_token_signature(&info3).unwrap());
+
+        // 两份快照都缺 → 无签名
+        assert!(parse_token_signature(&serde_json::json!({})).is_none());
     }
 
     #[test]
