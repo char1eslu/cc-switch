@@ -124,8 +124,8 @@ Claude Desktop 由 cc-switch 以独立的 3P 实例接管，profile 里写的是
 - Workflow: [Build macOS Ad Hoc](https://github.com/char1eslu/cc-switch/actions/workflows/build-macos-ad-hoc.yml)
 - 目标架构：`aarch64-apple-darwin`
 - 产物名：`CC-Switch-macOS-arm64-ad-hoc`（ad-hoc signed `CC Switch.app` zip）
-- 当前已验证代码 head：[`3f67786e`](https://github.com/char1eslu/cc-switch/commit/3f67786e)
-- 最终验证：[CI 32158109397](https://github.com/char1eslu/cc-switch/actions/runs/32158109397) / [Build 32158596850](https://github.com/char1eslu/cc-switch/actions/runs/32158596850)（artifact 11,460,173 bytes）
+- 当前已验证代码 head：[`c664ad90`](https://github.com/char1eslu/cc-switch/commit/c664ad90)
+- 最终验证：[CI 32518251141](https://github.com/char1eslu/cc-switch/actions/runs/32518251141) / [Build 32518253035](https://github.com/char1eslu/cc-switch/actions/runs/32518253035)（artifact 11,459,808 bytes）
 
 如果 macOS 拦截，可以右键打开，或清理 quarantine：
 

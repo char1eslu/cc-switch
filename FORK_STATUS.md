@@ -9,7 +9,7 @@
 | 项 | 值 |
 | --- | --- |
 | 已完整评估到的上游基线 | `0b5da510`（`v3.20.0`） |
-| 当前已验证代码 head | `3f67786e`（`dev`；本机验证、CI 与 macOS Ad Hoc 构建均通过） |
+| 当前已验证代码 head | `c664ad90`（`dev`；本机验证、CI 与 macOS Ad Hoc 构建均通过） |
 | 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
 
 **下次同步从这里开始**：
@@ -73,6 +73,10 @@ git log --oneline 0b5da510..upstream/main
 不读写这张表（pi 已裁），但版本号对齐后未来 v18+ 才能干净叠加。新增测试：
 `upstream_v17_database_is_accepted`（现场场景：v17 库原样接受）、
 `migration_v16_to_v17_creates_session_usage_dedup_ledger`。
+
+验证（`c664ad90`）：真实库副本干跑确认 v17 + dedup 表已在 + integrity ok，
+fork 打开零迁移。CI 32518251141 全绿；Ad Hoc 32518253035 构建通过，
+artifact `CC-Switch-macOS-arm64-ad-hoc` 11,459,808 bytes。
 
 教训（已入守则）：跳过上游提交前先 grep 是否动 `SCHEMA_VERSION` / 迁移链——
 `40d747c0` 当 vendor 门控跳过时没人发现它带版本号迁移，直到真实库被拒才暴露。
