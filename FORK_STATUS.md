@@ -99,19 +99,24 @@ ChatGPT 账号，该功能无使用场景。** 已产生的连带影响：`0455a
 **判定规则**：上游提交 diff 只落在上述区域 → 跳过，审计表记「unportable zone」
 即可；diff 同时触及区域外代码 → 只评估区域外部分。
 
-### ⚠️ `streaming_responses.rs` 冻结漂移（2026-08-21 发现，待安全复查）
+### ⚠️ `streaming_responses.rs` 冻结漂移（2026-08-21 发现，**当晚已复查并修复**）
 
-该文件**不是死代码**：`api_format == "openai_responses"` 的供应商经代理时，
-Responses SSE 由它解析（`handlers.rs:414`
-`create_anthropic_sse_stream_from_responses`）。fork 版本冻结在 2026-05-11
-（`aec055a1`），上游此后从 2,197 行演进到 7,066 行——三个月的安全敏感解析路径
-改动未被评估过，直接违反守则 2。
+该文件不是死代码：`api_format == "openai_responses"` 的供应商经代理时，
+Responses SSE 由它解析。fork 版本曾冻结在 2026-05-11（`aec055a1`），上游此后
+从 2,197 行演进到 7,066 行。
 
-**待办**：对上游 `aec055a1..upstream/main` 区间该文件的 diff 做一次安全向复查
-（输入解析、panic 路径、无界缓冲），把适用的修复按 fork 结构移植；功能性新增
-（websearch 事件等）随 Alpha Search 放弃，不搬。复查完成前本节保留。
-冻结本身的原因（上游为 websearch 大改导致同步冲突面爆炸）应在复查后写明，
-让「哪些文件可以冻结、冻结到哪」变成显式决定而非无声漂移。
+2026-08-21 复查结论（区间内仅 3 个上游提交）：
+
+| 上游提交 | 结论 |
+| --- | --- |
+| `27ce0a51` | **已搬**：并发 reasoning/tool 项按稳定 ID+output_index 追踪、done 事件恢复参数、协议序闭合 |
+| `650905af` | **已搬**：流截断显式终结（`stream_truncated`）、2xx 失败信封→error 事件、clean-EOF 整段 JSON 响应处理 |
+| `bdeaac75` | Alpha Search，随放弃区跳过 |
+
+搬运方式：核实 fork 版本无独有定制后，整体替换为上游 `650905af` 时点版本
+（1185 → 2197 行）。同轮顺带移植 `f991726f` 的嵌套 `cache_write_tokens`
+计费回退到 `transform_responses.rs`。`server.rs` 区间内仅 Grok 路由与
+Alpha Search 注册，均不适用；`transform_responses.rs` 其余提交已在 fork 或属放弃区。
 
 ## 数据库版本与上游对齐，fork 迁移单独记账
 
@@ -350,18 +355,25 @@ Copilot 兼容（`13ea497a`，fork 完全没有 Copilot）；废弃死代码清�
 9 个待删文件里 8 个 fork 早不存在）；翻译 key（`a354f08a`，GrokBuild 专用 +
 四语言）；OpenCode / OMO / Hermes（已裁）；赞助商 / 版本号 / 发行说明。
 
-**usage 延期项重估（2026-08-21）：维持延期，但定性变了。**
+**usage 延期项重估（2026-08-21）：当晚全部落地。**
 
-- `59a2bd10`（交错 Codex token 计数，单文件 +558）是正确性修复而非新功能，
-  理论上值得搬；但实测 fork 的 `session_usage_codex.rs` 与上游同位置版本差
-  约 2084 行，不是 cherry-pick 而是要按 fork 解析器重写修复逻辑。**搬运前提
-  待核实**：fork 自己的解析器是否真有交错计数 bug（按守则 1）。若用户没观察到
-  Codex 会话用量明显偏低/异常，优先级低。
-- `12b972a6`（models.dev 自动定价同步，20 文件 +2669）能消掉手工维护
-  seed + pricing_fixes 的负担（DeepSeek 峰谷那次就是纯手工活）。加法为主、
-  不动现有表结构，是三个延期项里唯一「值得排期」的候选。触发条件：下次再
-  遇到厂商调价需要手工补表时重新评估。
-- `baf07a27` 与 `59a2bd10` 同域，跟随前者决定。
+- `59a2bd10`（交错 Codex token 计数，单文件 +558）：**已搬（`session_usage_codex.rs`）**。
+  前提核实成立——fork 解析器正是旧模式（单一 `prev_total` 基线、优先 total 差分、
+  无来源去重）。按 fork 结构适配：上游的局部变量改为 fork 的 `FileParseState`
+  字段；签名基础设施（`TokenUsageSignature` / `parse_signature_counters` /
+  `token_snapshot_source` / `update_high_water`）随迁。e2e 回归测试覆盖
+  交错通道 + 跨通道重放两场景（fork 测试基建无上游的 rollout helper，直接测
+  `sync_single_codex_file`）。`baf07a27` 同域，视后续需要另行评估。
+- `12b972a6`（models.dev 自动定价同步，20 文件 +2669）：**已搬**。
+  数据流：前端 fetch models.dev API → 写 `~/.cc-switch/model-pricing.json`
+  （用户覆盖价 + 墓碑，自管 version）→ 启动时 upsert 进 DB `model_pricing` 表。
+  **叠加而非替代**：内置 seed 与 pricing_fixes 保留为最底层，同 model_id 时
+  同步价覆盖之；空文件不回滚修复。默认关闭（`autoSyncEnabled=false`），启用有
+  覆盖确认提示，6 小时节流。适配点：`commands/usage.rs` 不能整文件替换
+  （fork 的 `sync_session_usage` 已是 8-17 轮的 async+mutex 新版），定点合并；
+  `PricingConfigPanel` 挂载两行、`PRICING_APPS` 保持 fork 的双应用；
+  i18n 只取 en/zh（32 key）；`ModelsDevPickerDialog` 及其测试是 fork 没有的
+  前置功能，跳过。main.tsx 的 `reportFrontendError` fork 没有，改 console.error。
 
 ### 2026-07-30（`934a2d03..c0ff89b9`）
 
