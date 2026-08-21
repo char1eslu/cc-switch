@@ -6,6 +6,7 @@ pub mod env_checker;
 pub mod env_manager;
 pub mod mcp;
 pub mod model_fetch;
+pub mod model_pricing;
 pub mod prompt;
 pub mod provider;
 pub mod proxy;

@@ -14,6 +14,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import { exit } from "@tauri-apps/plugin-process";
 import { initializeWindowActivity } from "@/lib/windowActivity";
+import {
+  MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
+  syncModelsDevPricingOnStartup,
+} from "./lib/modelsDevAutoSync";
 
 // 根据平台添加 body class，便于平台特定样式
 try {
@@ -101,6 +105,26 @@ async function bootstrap() {
       </QueryClientProvider>
     </React.StrictMode>,
   );
+
+  void syncModelsDevPricingOnStartup()
+    .then((result) => {
+      if (!result.skipped) {
+        return Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["usage"] }),
+          queryClient.invalidateQueries({
+            queryKey: MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
+          }),
+        ]);
+      }
+    })
+    .catch((error) => {
+      // 离线或 models.dev 暂时不可用不应阻塞应用启动。
+      // fork 无 frontendLogger，用 console 记录。
+      console.error("models_dev_startup_sync", error);
+      void queryClient.invalidateQueries({
+        queryKey: MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
+      });
+    });
 }
 
 void bootstrap();
