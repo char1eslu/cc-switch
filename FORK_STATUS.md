@@ -67,6 +67,52 @@ git log --oneline 0b5da510..upstream/main
 凡是只动这些应用的上游提交，一律跳过。赞助商预设、推荐链接、域名刷新同理
 （上游商业合作内容，与自用无关）。
 
+## 永久放弃的功能（unportable zone，2026-08-21 拍板）
+
+以下两个上游大功能**永久放弃**，不再按「延期」处理。审计遇到依赖它们的上游提交时
+**直接跳过，不再重新评估**。这不是不可逆的决定：哪天真需要，改掉本节重新立项即可，
+但在此之前不要每轮都付重复评估的成本。
+
+### managed OAuth（上游 `a2e22f33`，约 11.6K 行）
+
+一个供应商条目绑定多个 ChatGPT 账号、卡片上切换。**放弃理由：用户只有一个
+ChatGPT 账号，该功能无使用场景。** 已产生的连带影响：`0455a92c`（多供应商
+跟随同一登录）因此不可搬。
+
+地基文件（上游提交 diff 局限在这些区域时直接跳过）：
+`src/utils/providerCapabilities.ts`（fork 无此文件）、
+`src-tauri/src/services/provider/mod.rs` 的 managed-account 层、
+`src-tauri/src/proxy/providers/codex_oauth_auth.rs` 的多账号部分。
+
+### Alpha Search / hosted WebSearch（上游 `bdeaac75`，约 10K 行）
+
+三方中转不支持搜索时由上游托管补齐 WebSearch。**放弃理由：① 用户官方登录时
+搜索是 Codex 原生能力，不经 cc-switch；② 该功能 7,489 行落在
+`streaming_responses.rs`，而 fork 的该文件冻结在 2026-05-11 快照（1185 行，
+上游同期 2197 行、现 7066 行）——搬运等于先把约 6,000 行漂移追平再叠加新功能；
+③ 三方中转不支持搜索是中转自身的限制，fork 补不了也不该补。**
+
+地基文件：`src-tauri/src/proxy/providers/streaming_responses.rs`（fork 冻结在
+旧快照）、`transform_responses.rs` 的 websearch 部分、`handlers.rs` /
+`server.rs` 的对应路由。
+
+**判定规则**：上游提交 diff 只落在上述区域 → 跳过，审计表记「unportable zone」
+即可；diff 同时触及区域外代码 → 只评估区域外部分。
+
+### ⚠️ `streaming_responses.rs` 冻结漂移（2026-08-21 发现，待安全复查）
+
+该文件**不是死代码**：`api_format == "openai_responses"` 的供应商经代理时，
+Responses SSE 由它解析（`handlers.rs:414`
+`create_anthropic_sse_stream_from_responses`）。fork 版本冻结在 2026-05-11
+（`aec055a1`），上游此后从 2,197 行演进到 7,066 行——三个月的安全敏感解析路径
+改动未被评估过，直接违反守则 2。
+
+**待办**：对上游 `aec055a1..upstream/main` 区间该文件的 diff 做一次安全向复查
+（输入解析、panic 路径、无界缓冲），把适用的修复按 fork 结构移植；功能性新增
+（websearch 事件等）随 Alpha Search 放弃，不搬。复查完成前本节保留。
+冻结本身的原因（上游为 websearch 大改导致同步冲突面爆炸）应在复查后写明，
+让「哪些文件可以冻结、冻结到哪」变成显式决定而非无声漂移。
+
 ## 数据库版本与上游对齐，fork 迁移单独记账
 
 | | SCHEMA_VERSION |
@@ -242,9 +288,8 @@ OpenCode），余下 6 个逐一核对。
 `5f6072ce`、`c99550e0`、`a7f073e9`、`5b8bf1fe`、`eb69e492`、`6a7da87c`、
 `f748f3ac`、`84e75ad2`、`40d747c0`⚠️、`e163a671`、`c6247d13`、`1435223b`、
 `3f75bbdf`、`e12fc623`、`9dcd3486`、`af06356d`、`4080a8e9`、`d01eab97`、
-`de9af49a`、`d4fefefc`、`b109dcd3`）；`a2e22f33`（managed OAuth 含 Copilot，
-约 11.6K 行，延期）；`bdeaac75`（Alpha Search / hosted WebSearch，约 10K 行，
-streaming_responses 已裁剪，延期）。
+`de9af49a`、`d4fefefc`、`b109dcd3`）；`a2e22f33` 与 `bdeaac75` 当时延期，
+**2026-08-21 已改判永久放弃**，见「永久放弃的功能」。
 
 ⚠️ `40d747c0` 当时按 pi vendor 门控跳过，未意识到它同时把 SCHEMA_VERSION
 升到 17。功能部分跳过正确，但版本号分叉 2026-08-18 复核时才被发现，
