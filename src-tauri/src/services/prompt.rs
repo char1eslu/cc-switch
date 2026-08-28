@@ -29,11 +29,12 @@ fn project_prompt_set_to_path(
 
     if let Some((_, prompt)) = enabled.first() {
         write_text_file(target_path, &prompt.content)?;
-    } else if target_path.exists() {
-        // Match the existing "disable the last prompt" behavior without
-        // creating an otherwise unused application config directory.
-        write_text_file(target_path, "")?;
     }
+    // With nothing enabled, leave the target file untouched. This projection
+    // only runs after a database restore, and the live file is not part of
+    // the sync payload — clearing it here would wipe local content the
+    // restored snapshot never contained. Disabling the last prompt from the
+    // UI still clears the file via `PromptService::upsert_prompt`.
 
     if enabled.len() <= 1 {
         return Ok(None);
@@ -584,5 +585,23 @@ mod tests {
             PromptService::get_prompts(&state, AppType::Claude).expect("get synced prompts");
 
         assert!(prompts.values().all(|prompt| !prompt.enabled));
+    }
+
+    #[test]
+    fn restored_prompt_projection_preserves_the_live_file_when_none_are_enabled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("AGENTS.md");
+        std::fs::write(&path, "local content").expect("seed live prompt file");
+        let mut prompts = IndexMap::new();
+        prompts.insert("off".to_string(), prompt("off", "managed", false));
+
+        let warning = project_prompt_set_to_path(&prompts, &path).expect("project prompt");
+        assert!(warning.is_none());
+        // The live file is not part of the sync payload, so a restore with no
+        // enabled prompt must not wipe local content it never contained.
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read prompt"),
+            "local content"
+        );
     }
 }
