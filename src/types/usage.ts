@@ -40,6 +40,8 @@ export interface SessionSyncResult {
   imported: number;
   skipped: number;
   filesScanned: number;
+  /** 本轮有内容被推迟到下轮的文件数（尾部半行未写完、或读取中断） */
+  deferredFiles?: number;
   errors: string[];
 }
 

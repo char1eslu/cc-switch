@@ -917,7 +917,7 @@ fn upstream_v16_database_is_accepted() {
 }
 
 /// 上游 v17 数据库（跑过上游 pi 会话统计构建后落盘的形态）必须能被 fork
-/// 原样接受：版本号相等走不进迁移循环，只补幂等兼容结构。
+/// 打开：走一次 v17 → v18 迁移（补齐会话日志字节游标列）后收敛。
 #[test]
 fn upstream_v17_database_is_accepted() {
     let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -930,6 +930,59 @@ fn upstream_v17_database_is_accepted() {
         Database::get_user_version(&conn).expect("version"),
         SCHEMA_VERSION
     );
+}
+
+/// 上游 v18 数据库（当前对齐版本）必须原样接受：版本号相等走不进迁移循环，
+/// 只补幂等兼容结构。
+#[test]
+fn upstream_v18_database_is_accepted() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+    Database::set_user_version(&conn, 18).expect("set user_version=18");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("v18 db must be accepted");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version"),
+        SCHEMA_VERSION
+    );
+}
+
+/// v17 → v18：给存量 `session_log_sync` 表补上字节游标与尾部指纹列，
+/// 存量行保持 NULL（首轮按旧行号游标转换为字节位置）。
+#[test]
+fn migration_v17_to_v18_adds_byte_cursor_to_existing_sync_table() {
+    // 真实升级路径：v17 库带旧 DDL 的 session_log_sync（无字节游标列）
+    // 与存量游标行，迁移后列补上、存量行保持 NULL。
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    conn.execute_batch(
+        "CREATE TABLE session_log_sync (
+            file_path TEXT PRIMARY KEY,
+            last_modified INTEGER NOT NULL,
+            last_line_offset INTEGER NOT NULL DEFAULT 0,
+            last_synced_at INTEGER NOT NULL
+         );
+         INSERT INTO session_log_sync VALUES ('/tmp/a.jsonl', 5, 3, 1);",
+    )
+    .expect("seed legacy sync table");
+    Database::set_user_version(&conn, 17).expect("set user_version=17");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate v17 -> v18");
+
+    assert!(Database::has_column(&conn, "session_log_sync", "last_byte_offset").expect("column"));
+    assert!(
+        Database::has_column(&conn, "session_log_sync", "last_tail_fingerprint").expect("column")
+    );
+    let (byte_offset, fingerprint): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT last_byte_offset, last_tail_fingerprint
+             FROM session_log_sync WHERE file_path = '/tmp/a.jsonl'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read migrated row");
+    assert_eq!(byte_offset, None, "存量行的字节游标必须为 NULL");
+    assert_eq!(fingerprint, None, "存量行的尾部指纹必须为 NULL");
 }
 
 /// v16 → v17 迁移与上游逐字一致：建出 `session_usage_dedup` 去重账本表，

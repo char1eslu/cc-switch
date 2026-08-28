@@ -294,12 +294,20 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         // 18. Session Log Sync 表 (会话日志同步状态)
+        //
+        // last_byte_offset：Claude 路径的字节游标（seek 增量读）；NULL 表示
+        // 尚无字节游标（旧行号游标或非 Claude 路径行），此时回退全量读。
+        // last_tail_fingerprint：游标边界前尾部字节的指纹，用于识别文件被
+        // 外部重写（同尺寸/更大的替换无法靠 size 检测）；NULL 表示无指纹
+        // 可校验，按纯追加处理。
         conn.execute(
             "CREATE TABLE IF NOT EXISTS session_log_sync (
                 file_path TEXT PRIMARY KEY,
                 last_modified INTEGER NOT NULL,
                 last_line_offset INTEGER NOT NULL DEFAULT 0,
-                last_synced_at INTEGER NOT NULL
+                last_synced_at INTEGER NOT NULL,
+                last_byte_offset INTEGER,
+                last_tail_fingerprint INTEGER
             )",
             [],
         )
@@ -530,6 +538,11 @@ impl Database {
                         log::info!("迁移数据库从 v16 到 v17（创建会话用量去重账本）");
                         Self::migrate_v16_to_v17(conn)?;
                         Self::set_user_version(conn, 17)?;
+                    }
+                    17 => {
+                        log::info!("迁移数据库从 v17 到 v18（会话日志字节游标列）");
+                        Self::migrate_v17_to_v18(conn)?;
+                        Self::set_user_version(conn, 18)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1329,6 +1342,34 @@ impl Database {
         Ok(())
     }
 
+    /// v17 -> v18: Claude 会话日志的字节游标列与尾部指纹列。
+    ///
+    /// 独立成版而非搭 v17 车：v17 已在开发库上执行过（迁移不会重跑，
+    /// `CREATE TABLE IF NOT EXISTS` 也不补列），追加进 v17 会让这些库
+    /// 永远缺列。存量行保持 NULL，首轮扫描按旧行号游标转换为字节位置
+    /// 后继续增量；之后写入字节偏移走 seek 增量，并记录游标边界前的
+    /// 尾部指纹用于识别外部重写（截断由 size 检测，同尺寸/更大的替换
+    /// 只有指纹能发现）。
+    fn migrate_v17_to_v18(conn: &Connection) -> Result<(), AppError> {
+        // 缺表的库（异常/测试夹具）跳过：create_tables 会以含列的新 DDL 建表。
+        if Self::table_exists(conn, "session_log_sync")? {
+            Self::ensure_session_log_sync_cursor_columns(conn)?;
+        }
+        Ok(())
+    }
+
+    /// 幂等补齐 v18 的两个游标列。
+    ///
+    /// 除迁移链外还挂在 `ensure_upstream_schema_compatibility` 上：fork 历史库
+    /// （v17–19 未转换形态）走的是"直接盖版本号"的转换分支，不经过
+    /// `while version < SCHEMA_VERSION` 循环，只靠迁移链补列会漏掉它们，
+    /// DAO 的 SELECT 会因缺列整体失败。
+    fn ensure_session_log_sync_cursor_columns(conn: &Connection) -> Result<(), AppError> {
+        Self::add_column_if_missing(conn, "session_log_sync", "last_byte_offset", "INTEGER")?;
+        Self::add_column_if_missing(conn, "session_log_sync", "last_tail_fingerprint", "INTEGER")?;
+        Ok(())
+    }
+
     /// 保持上游 schema 的列/表/约束（含 v17 的 `session_usage_dedup`，
     /// 由迁移链或下方幂等补建）。fork 业务代码只读写
     /// Claude/Codex 字段，其它列是默认为 0 的兼容占位。
@@ -1361,6 +1402,10 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(format!("创建 profiles 兼容表失败: {e}")))?;
+
+        if Self::table_exists(conn, "session_log_sync")? {
+            Self::ensure_session_log_sync_cursor_columns(conn)?;
+        }
 
         Self::ensure_upstream_proxy_config(conn)?;
         Ok(())

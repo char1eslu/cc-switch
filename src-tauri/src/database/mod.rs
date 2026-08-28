@@ -51,7 +51,7 @@ use std::sync::Mutex;
 ///
 /// fork 自身的兼容迁移不得占用 `PRAGMA user_version`，否则上游 App
 /// 会将同一数据库判定为“版本过新”而拒绝打开。
-pub(crate) const SCHEMA_VERSION: i32 = 17;
+pub(crate) const SCHEMA_VERSION: i32 = 18;
 pub(crate) const FORK_SCHEMA_VERSION: i32 = 1;
 
 /// 安全地序列化 JSON，避免 unwrap panic

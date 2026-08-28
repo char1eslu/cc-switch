@@ -260,6 +260,7 @@ pub fn sync_session_usage(
             result.imported += codex_result.imported;
             result.skipped += codex_result.skipped;
             result.files_scanned += codex_result.files_scanned;
+            result.deferred_files += codex_result.deferred_files;
             result.errors.extend(codex_result.errors);
         }
         Err(e) => {
