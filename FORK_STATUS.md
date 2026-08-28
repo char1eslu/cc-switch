@@ -2,21 +2,21 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-08-18
+最后更新：2026-08-28
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `0b5da510`（`v3.20.0`） |
-| 当前已验证代码 head | `c664ad90`（`dev`；本机验证、CI 与 macOS Ad Hoc 构建均通过） |
-| 最近一轮已适配的上游安全修复 | `6b8f3643`（脚本/文件读/响应体上限）+ `format_headers` 白名单 |
+| 已完整评估到的上游基线 | `3217f725`（`v3.20.1`） |
+| 当前已验证代码 head | `dev`（2026-08-28 本机全绿：Rust 1687 tests / clippy / fmt，前端 339 tests / typecheck / prettier） |
+| 最近一轮已适配的上游安全修复 | `cbb79127` 系列的 Codex 0.149 凭据隔离（auth.json 不再承载三方 key）+ 两道 auth 回退安全门 |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 0b5da510..upstream/main
+git log --oneline 3217f725..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
@@ -122,8 +122,26 @@ Alpha Search 注册，均不适用；`transform_responses.rs` 其余提交已在
 
 | | SCHEMA_VERSION |
 | --- | --- |
-| 本 fork | **17**（2026-08-21 跟进） |
-| 上游（`v3.20.0`） | **17**（`40d747c0` pi 会话统计引入） |
+| 本 fork | **18**（2026-08-28 跟进） |
+| 上游（`v3.20.1`） | **18**（`bcee61be` 会话日志字节游标引入） |
+
+**v18 跟进记录（2026-08-28）。** 随 `bcee61be` / `f8d97348` 的 Claude 会话日志
+字节游标改造一起搬入：`session_log_sync` 新增 `last_byte_offset`（seek 增量读的
+字节游标）与 `last_tail_fingerprint`（游标边界前 4 KiB 的指纹，识别同尺寸/更大的
+外部重写——size 检测不出来）。迁移与上游同形：`migrate_v17_to_v18` 用
+`add_column_if_missing` 补列，存量行保持 NULL、首轮按旧行号游标转换为字节位置。
+
+⚠️ fork 特有的一处必要偏差：历史 fork 库（未转换的 v17–19 形态）走的是
+`is_legacy_fork_schema` 那条"直接盖版本号"分支，**不经过** `while version <
+SCHEMA_VERSION` 迁移循环，只把补列写在迁移链里会漏掉它们、DAO 的 SELECT 会因缺列
+整体失败。因此把两列的幂等补齐抽成 `ensure_session_log_sync_cursor_columns`，
+迁移链与 `ensure_upstream_schema_compatibility` 两处都调用（后者本就是 fork 兼容列
+的统一落点，见下方结构性约束）。
+
+新增测试：`upstream_v18_database_is_accepted`（v18 库原样接受、不进迁移循环）、
+`migration_v17_to_v18_adds_byte_cursor_to_existing_sync_table`（旧 DDL 存量表补列 +
+存量行两列均为 NULL）；`upstream_v17_database_is_accepted` 保留但语义更新为
+"v17 库走一次 v17→v18 迁移后收敛"。
 
 **v17 跟进记录（2026-08-21）。** 真实库因跑过上游构建已落盘 v17，fork 的启动守卫
 拒绝打开。上游 v16→v17 迁移只新建 `session_usage_dedup` 去重账本表、不动现有表，
@@ -243,6 +261,118 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-08-28（`0b5da510..3217f725`，28 个）
+
+上游 `v3.20.1` 发布轮。按第一梯队（必搬）全量搬运 19 个，可选 2 个未搬，
+明确跳过 7 个。
+
+已搬运：
+
+| 上游提交 | 处理 |
+| --- | --- |
+| `4549d290` | `capabilities/default.json` 补 `process:allow-exit`。db-version-too-new 恢复界面与配置加载失败页都调 `exit()`，只授过 `allow-restart` 时 IPC 被拒且被 void/await 吞掉，那两个界面退不出应用 |
+| `c911c7e3` | 恢复投影不再清空未托管的 prompt 文件：`project_prompt_set_to_path` 删掉"无启用项就写空串"分支。该投影只由恢复路径触达，快照里没有启用项**不代表**本地文件该被清空（本地 `AGENTS.md` 等根本不在同步载荷里）；UI 里禁用最后一个 prompt 仍由 `upsert_prompt` 正常清空 |
+| `bbe8bb93` | 编辑当前 Codex 供应商时用 live 的 `experimental_bearer_token` 覆盖共享 `auth.json` 的过期 key（`reconcileCodexLiveAuth`）。OAuth-only 卡片不被静默转成 API-key 卡片；非当前供应商不读 live。另修 `useCodexConfigState` 初始化顺序（先 config 后 auth） |
+| `926af949` | 统一 live 所有权判定：新增 `LiveSyncOutcome` / `sync_live_for_provider_respecting_takeover` / `proxy_owns_live_config`。残留备份不再单独构成"接管中"证据（须叠加 enabled+代理在跑，或按应用的切换锁窗口），残留备份会随供应商刷新但不再改道；统一供应商同步后按应用重投影 live 并逐应用汇报失败。新增 `SwitchLockManager::is_locked_for_app` |
+| `cbb79127`→`c5e4f705`（10 个） | **Codex 0.149 兼容整链**（详见下节） |
+| `092ea1f3` | 会话用量自动/手动扫描开关（`session_auto_sync_enabled`，默认开）。手动模式停掉后台定时扫描与启动扫描，仅"立即同步"按钮触发；费用回填只改数据库既有行、不读会话文件，不受开关影响 |
+| `bcee61be` + `f8d97348` + `f05e2033` | **Claude 会话日志字节游标增量扫描**（详见下节），含 SCHEMA v18 |
+| `5ff199b5` | 会话同步卡片与下方 Accordion 共用 `space-y-4` 包装对齐间距；"立即同步"按钮仅在关闭自动扫描时出现 |
+
+不适用 / 跳过：
+
+| 上游提交 | 核实结论 |
+| --- | --- |
+| `c2ec78dd`、`6243e20a` | managed OAuth 多账号隔离与其 JWT 身份测试 → 永久放弃区 |
+| `5ca9459d` | Pi 会话去重索引；fork 无 `session_usage_pi.rs` |
+| `9a596158` | TeamoRouter 域名迁移（赞助商预设） |
+| `0ae561b8` | WSL2 契约测试改用预构建二进制（不用 Windows） |
+| `9485cf2f`、`3217f725` | 版本号 / 四语言发行说明 |
+| `bd15ea11`（可选未搬） | macOS Otty 终端支持；不用该终端，需要时单独补 |
+| `270a4ff3`（可选未搬） | OpenCode Go 订阅用量查询；`codingPlanProviders` 的 fork 版只有 kimi/zhipu/minimax/zenmux，且 OpenCode 已裁 |
+
+#### Codex 0.149 兼容整链（`cbb79127`..`c5e4f705`）
+
+上游背景：Codex 0.149（openai/codex#39214）起自定义 provider 不再继承 `auth.json`
+的环境认证，三方 key 必须作为 provider 级 `experimental_bearer_token` 落在
+`config.toml`；同时 0.148+ 拒绝加载任何覆盖保留内置 id（`openai` / `ollama` /
+`lmstudio`，bedrock 两个豁免）的 provider 表，0.149 还拒绝 `name` 为空/缺失的
+非 bedrock 表、非 `"responses"` 的 `wire_api`、`aws` 出现在非 bedrock 表、以及
+`auth` 与 `requires_openai_auth` / `env_key` / `experimental_bearer_token` 并存。
+
+搬入的核心行为（`codex_config.rs`）：
+
+1. **三方切换改为 config-only**：`auth.json` 只留给官方 ChatGPT 登录——保留开关
+   开着就原样保留、关着就删除文件，永不承载三方 key。因此官方 OAuth 不可能经
+   `requires_openai_auth` 回退泄漏到三方端点。
+2. **两道安全门**（原先只在保留路径上）：带 key 但配置没有可承载它的自定义
+   provider 表 → 拒绝；无 key 但配置会经 `requires_openai_auth` / 顶层
+   `openai_base_url` 回退去读 `auth.json` → 拒绝。
+3. **保留表迁移**：`[model_providers.openai|ollama|lmstudio]` 无损重命名为第一个
+   空闲的 `cc-switch[-N]`，补 `wire_api = "responses"` 与非空 `name`；活动路由
+   是否跟随按"该表能否自证认证"决定（能则跟随，仅无凭据的 `requires_openai_auth`
+   表回落到内置 provider，避免把保留的 OAuth 送去过期地址）。保留 id 判定改为
+   **大小写精确**（`OpenAI` 是合法自定义 id），`oss` / `ollama-chat` 移出保留表。
+4. **切换前预检**（`preflight_codex_live_write` + `plan_codex_live_write`）：写入层
+   的拒绝在 `current` 提交**之前**发生——否则 `current` 已挪走而写入失败，下次切换
+   会把旧 live 回填进新供应商的 DB 行。
+5. **`requires_openai_auth` 按保留开关打标**、`update_codex_toml_field` 不再制造
+   保留表（内置 openai 改址走顶层 `openai_base_url`，ollama/lmstudio 直接报错）
+   并回填 `name`（bedrock 反向豁免）。
+6. 保留开关关闭时删 `auth.json` 失败 → 走 `SwitchResult` warning
+   `codex_auth_cleanup_failed`，前端按 code 分流提示（不再误报"回填失败"）。
+
+fork 适配点：`is_codex_official_provider` / `has_explicit_codex_third_party_upstream`
+（`proxy/providers/codex.rs`）fork 没有，`93bb91aa` 的该文件部分不适用；
+`switch_normal` 的预检没有 managed OAuth 的 `preflighted_provider` 分支；
+i18n 只取 en/zh。前端 `providerConfigUtils.ts` 同步保留 id 表、精确匹配、
+`hasExplicitNonOpenAiCodexModelProvider`，`setCodexBaseUrl` 改用 `tomlBasicString`。
+
+受影响的既有测试按新契约改判（不是放宽）：三方切换/接管写入不再产生
+`auth.json`，占位符 `PROXY_MANAGED` 改为落在活动 provider 表的
+`experimental_bearer_token`——`codex_custom_provider_live_write_removes_auth_when_preserve_disabled`、
+`codex_takeover_preserve_disabled_writes_config_only`、
+`hot_switch_codex_chat_provider_updates_live_provider_display`
+以及集成测试 `provider_service_switch_codex_default_removes_auth_json_when_preservation_off`。
+另按上游补 7 个集成测试（config-only 注入、空配置拒绝、legacy reroute 归一化 ×3、
+keyless 回退拒绝 + 预检不挪 current、keyless header-auth 放行）。
+
+#### Claude 会话日志字节游标（`bcee61be` / `f8d97348` / `f05e2033`）
+
+行号游标改字节游标：文件追加时 seek 到游标只读新增尾部（上游实测 12 MB 活跃文件
+6.04 s 全量扫 → 9.3 ms 增量）。游标只推进到最后一个**完整**行之后，顺带修掉旧行号
+游标的半行 bug（半行被计入行号 → 补全后永久跳过）。截断（游标越过文件尺寸）与
+重写（游标边界前 4 KiB 指纹失配）都把游标钉到当前 EOF、**不重放**任何旧区间——
+`rollup_and_prune` 会把 30 天前的明细汇总后删除，request_id 去重只查明细表、对已剪
+条目失明，重放等于把它们再累加一次、永久放大统计。读取中断保留旧 mtime 让下轮从
+断点续读，并经 `errors` + `deferred_files` 上报（手动同步没有"下一轮"）；钉住的
+改写区间也走 `errors` 上报（永久跳过，不是 deferred）。插入与游标推进在同一事务里
+原子提交。
+
+fork 适配点：上游同轮还把游标预取（`load_sync_cursors`）铺到 5 个 importer 上，
+fork 只有 Claude + Codex 两个；`SyncCursor` / `load_sync_cursors` 照搬（Claude 路径
+每轮一次全表预取），Codex importer 继续用原有的逐文件 `get_sync_state` /
+`update_sync_state`（行号语义，`last_byte_offset` 对它保持 NULL）。上游此轮没写单测，
+fork 补了 5 个回归测试：仅读追加尾部、半行导入但不提交游标、同尺寸重写钉住游标
+不重放、截断钉住游标、旧行号游标按字节转换不重导。
+
+#### 顺带修掉的 fork 侧 lint（非上游提交）
+
+`dev` head 在当前 stable（rustc 1.98）下 `cargo clippy -- -D warnings` 本就有 4 个
+报错，与本轮无关但会挡住 CI：`forwarder.rs` 两个 `result_large_err`（`ForwardError`
+携带整份 attempt 诊断，装箱要改整条代理错误路径的调用方，错误路径不在热点上，
+就地 `#[allow]` 并注明理由）、`codex_oauth_auth.rs` 与 `tray.rs` 各一个
+`format!` 里的冗余 `&`（直接删）。
+
+验证（2026-08-28 本机）：Rust `cargo test` 1687 passed / 0 failed / 2 ignored，
+`cargo clippy -- -D warnings` 与 `cargo fmt --check` 全绿；前端
+`pnpm test:unit` 55 files / 339 tests 全通过，`pnpm typecheck`、
+`pnpm format:check` 全绿。真实库副本干跑（`~/.cc-switch/cc-switch.db` 拷贝，
+原库未动、仍为 v17）：走正式启动路径迁移后 `user_version=18`、两列已补齐、
+759 条游标行全部保留且两列均为 NULL、`integrity_check=ok`、providers 30 /
+request logs 40270 计数不变。CI / Ad Hoc 构建尚未跑（CI 是 `workflow_dispatch`，
+需手动触发）。
 
 ### 2026-08-18（`a98829ba..0b5da510`，11 个）
 
