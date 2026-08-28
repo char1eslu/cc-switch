@@ -386,6 +386,11 @@ pub struct AppSettings {
     /// User has confirmed the stream check first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_check_confirmed: Option<bool>,
+    /// 会话用量自动扫描开关（默认开启=自动模式）。关闭后停止后台定时扫描
+    /// 各客户端会话日志，仅在用户点击"立即同步"时手动扫描；只管扫描时机，
+    /// 代理接管记账与启动费用回填（不读会话文件）不受此开关影响。
+    #[serde(default = "default_session_auto_sync_enabled")]
+    pub session_auto_sync_enabled: bool,
     /// Whether to show the failover toggle independently on the main page
     #[serde(default)]
     pub enable_failover_toggle: bool,
@@ -483,6 +488,10 @@ fn default_minimize_to_tray_on_close() -> bool {
     true
 }
 
+fn default_session_auto_sync_enabled() -> bool {
+    true
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -497,6 +506,7 @@ impl Default for AppSettings {
             proxy_confirmed: None,
             usage_confirmed: None,
             stream_check_confirmed: None,
+            session_auto_sync_enabled: true,
             enable_failover_toggle: false,
             preserve_codex_official_auth_on_switch: false,
             unify_codex_session_history: false,

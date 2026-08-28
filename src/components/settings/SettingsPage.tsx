@@ -503,7 +503,14 @@ export function SettingsPage({
               </TabsContent>
 
               <TabsContent value="usage" className="mt-0">
-                <UsageDashboard />
+                <UsageDashboard
+                  sessionAutoSyncEnabled={
+                    settings?.sessionAutoSyncEnabled ?? true
+                  }
+                  onSessionAutoSyncEnabledChange={(sessionAutoSyncEnabled) =>
+                    handleAutoSave({ sessionAutoSyncEnabled })
+                  }
+                />
               </TabsContent>
             </div>
 

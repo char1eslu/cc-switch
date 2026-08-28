@@ -335,6 +335,8 @@ export interface Settings {
   usageConfirmed?: boolean;
   // User has confirmed the stream check first-run notice
   streamCheckConfirmed?: boolean;
+  // 会话用量自动扫描开关（默认开启=自动模式；关闭后仅手动同步时扫描会话日志，代理记账不受影响）
+  sessionAutoSyncEnabled?: boolean;
   // Whether to show the failover toggle independently on the main page
   enableFailoverToggle?: boolean;
   // Preserve Codex ChatGPT login in auth.json when switching third-party providers

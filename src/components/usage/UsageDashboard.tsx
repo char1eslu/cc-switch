@@ -19,6 +19,8 @@ import {
   RefreshCw,
   Coins,
   LayoutGrid,
+  Loader2,
+  ScanSearch,
 } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import {
@@ -43,6 +45,10 @@ import { getLocaleFromLanguage } from "./format";
 import { getUsageRangePresetLabel, resolveUsageRange } from "@/lib/usageRange";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { usageApi } from "@/lib/api/usage";
+import { toast } from "sonner";
 
 const APP_FILTER_OPTIONS: AppTypeFilter[] = ["all", ...KNOWN_APP_TYPES];
 
@@ -62,7 +68,17 @@ const encodeOptionValue = (name: string) => `${DYNAMIC_OPTION_PREFIX}${name}`;
 const decodeOptionValue = (value: string) =>
   value === "all" ? undefined : value.slice(DYNAMIC_OPTION_PREFIX.length);
 
-export function UsageDashboard() {
+interface UsageDashboardProps {
+  sessionAutoSyncEnabled?: boolean;
+  onSessionAutoSyncEnabledChange?: (
+    next: boolean,
+  ) => Promise<boolean> | boolean | void;
+}
+
+export function UsageDashboard({
+  sessionAutoSyncEnabled = true,
+  onSessionAutoSyncEnabledChange,
+}: UsageDashboardProps = {}) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [range, setRange] = useState<UsageRangeSelection>({ preset: "today" });
@@ -72,6 +88,35 @@ export function UsageDashboard() {
   );
   const [model, setModel] = useState<string | undefined>(undefined);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(30000);
+  const [syncingSession, setSyncingSession] = useState(false);
+
+  // 手动触发一次会话日志同步：手动模式下是唯一的直连用量补录途径，
+  // 入口按钮仅在关闭自动扫描时展示（自动模式有后台定时扫描，无需手动触发）
+  const runManualSessionSync = async () => {
+    setSyncingSession(true);
+    try {
+      const result = await usageApi.syncSessionUsage();
+      await queryClient.invalidateQueries({ queryKey: usageKeys.all });
+      const message = t("usage.sessionSync.syncCompleted", {
+        imported: result.imported,
+        files: result.filesScanned,
+        errors: result.errors.length,
+      });
+      if (result.errors.length > 0) {
+        toast.warning(message);
+      } else {
+        toast.success(message);
+      }
+    } catch (error) {
+      toast.error(
+        t("usage.sessionSync.syncFailed", {
+          error: String(error),
+        }),
+      );
+    } finally {
+      setSyncingSession(false);
+    }
+  };
 
   // 切应用时清掉下游筛选，避免留下一个在新范围内查无数据的"幽灵"组合；
   // 切 Provider 同理清掉模型（模型选项随 Provider 级联）。
@@ -358,29 +403,73 @@ export function UsageDashboard() {
         </Tabs>
       </div>
 
-      <Accordion type="multiple" defaultValue={[]} className="w-full space-y-4">
-        <AccordionItem
-          value="pricing"
-          className="rounded-xl glass-card overflow-hidden"
-        >
-          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-            <div className="flex items-center gap-3">
-              <Coins className="h-5 w-5 text-yellow-500" />
-              <div className="text-left">
-                <h3 className="text-base font-semibold">
-                  {t("settings.advanced.pricing.title")}
-                </h3>
-                <p className="text-sm text-muted-foreground font-normal">
-                  {t("settings.advanced.pricing.description")}
-                </p>
-              </div>
+      <div className="space-y-4">
+        <div className="rounded-xl glass-card px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <ScanSearch className="h-5 w-5 text-sky-500" />
+            <div>
+              <h3 className="text-base font-semibold">
+                {t("usage.sessionSync.title")}
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                {t("usage.sessionSync.description")}
+              </p>
             </div>
-          </AccordionTrigger>
-          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-            <PricingConfigPanel />
-          </AccordionContent>
-        </AccordionItem>
-      </Accordion>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            {!sessionAutoSyncEnabled && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={syncingSession}
+                onClick={() => void runManualSessionSync()}
+              >
+                {syncingSession ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                {t("usage.sessionSync.syncNow")}
+              </Button>
+            )}
+            <Switch
+              checked={sessionAutoSyncEnabled}
+              onCheckedChange={(value) =>
+                void onSessionAutoSyncEnabledChange?.(value)
+              }
+              aria-label={t("usage.sessionSync.title")}
+            />
+          </div>
+        </div>
+
+        <Accordion
+          type="multiple"
+          defaultValue={[]}
+          className="w-full space-y-4"
+        >
+          <AccordionItem
+            value="pricing"
+            className="rounded-xl glass-card overflow-hidden"
+          >
+            <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+              <div className="flex items-center gap-3">
+                <Coins className="h-5 w-5 text-yellow-500" />
+                <div className="text-left">
+                  <h3 className="text-base font-semibold">
+                    {t("settings.advanced.pricing.title")}
+                  </h3>
+                  <p className="text-sm text-muted-foreground font-normal">
+                    {t("settings.advanced.pricing.description")}
+                  </p>
+                </div>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+              <PricingConfigPanel />
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+      </div>
     </motion.div>
   );
 }

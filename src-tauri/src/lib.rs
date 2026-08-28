@@ -33,7 +33,8 @@ mod usage_script;
 
 pub use app_config::{AppType, InstalledSkill, McpApps, McpServer, MultiAppConfig, SkillApps};
 pub use codex_config::{
-    get_codex_auth_path, get_codex_config_path, read_codex_live_settings, write_codex_live_atomic,
+    extract_codex_experimental_bearer_token, get_codex_auth_path, get_codex_config_path,
+    read_codex_live_settings, write_codex_live_atomic,
 };
 pub use commands::open_provider_terminal;
 pub use commands::*;
@@ -837,19 +838,23 @@ pub fn run() {
 
                     let db = &db_for_session_sync;
 
-                    // 首次同步
+                    // 首次同步：费用回填只修补数据库既有行（含代理记账行）、
+                    // 不读会话文件，因此不受自动扫描开关影响；会话日志扫描
+                    // 本身在手动模式下跳过（含启动这一轮）。
                     run_step(
                         "Usage cost startup backfill",
                         db.backfill_missing_usage_costs(),
                     );
-                    run_step(
-                        "Session usage initial sync",
-                        crate::services::session_usage::sync_claude_session_logs(db),
-                    );
-                    run_step(
-                        "Codex usage initial sync",
-                        crate::services::session_usage_codex::sync_codex_usage(db),
-                    );
+                    if crate::settings::get_settings().session_auto_sync_enabled {
+                        run_step(
+                            "Session usage initial sync",
+                            crate::services::session_usage::sync_claude_session_logs(db),
+                        );
+                        run_step(
+                            "Codex usage initial sync",
+                            crate::services::session_usage_codex::sync_codex_usage(db),
+                        );
+                    }
 
                     // 定期同步
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
@@ -858,6 +863,10 @@ pub fn run() {
                     interval.tick().await; // skip immediate first tick
                     loop {
                         interval.tick().await;
+                        // 手动扫描模式下停止后台定时扫描（仅"立即同步"触发）
+                        if !crate::settings::get_settings().session_auto_sync_enabled {
+                            continue;
+                        }
                         run_step(
                             "Session usage periodic sync",
                             crate::services::session_usage::sync_claude_session_logs(db),
