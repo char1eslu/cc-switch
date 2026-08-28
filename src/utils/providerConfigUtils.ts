@@ -466,13 +466,14 @@ const TOML_PROVIDER_NAME_PATTERN =
   /^\s*name\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_PROVIDER_NAME_REPLACE_PATTERN =
   /^(\s*name\s*=\s*)(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')(\s*(?:#.*)?)$/;
+// Keep in sync with the backend list in src-tauri/src/codex_config.rs
+// (CODEX_RESERVED_MODEL_PROVIDER_IDS).
 const CODEX_RESERVED_MODEL_PROVIDER_IDS = new Set([
   "amazon-bedrock",
+  "amazon-bedrock-runtime",
   "openai",
   "ollama",
   "lmstudio",
-  "oss",
-  "ollama-chat",
 ]);
 
 interface TomlSectionRange {
@@ -572,6 +573,39 @@ const getCodexModelProviderName = (configText: string): string | undefined => {
   return providerName || undefined;
 };
 
+const isCodexUnifiedSessionProjection = (configText: string): boolean => {
+  try {
+    const parsed = parseToml(normalizeTomlText(configText)) as Record<
+      string,
+      any
+    >;
+    const custom = parsed.model_providers?.custom;
+    return (
+      parsed.model_provider === "custom" &&
+      isPlainObject(custom) &&
+      Object.keys(custom).length === 4 &&
+      custom.name === "OpenAI" &&
+      custom.requires_openai_auth === true &&
+      custom.supports_websockets === true &&
+      custom.wire_api === "responses"
+    );
+  } catch {
+    return false;
+  }
+};
+
+export const hasExplicitNonOpenAiCodexModelProvider = (
+  configText: string | undefined | null,
+): boolean => {
+  if (typeof configText !== "string") return false;
+  if (isCodexUnifiedSessionProjection(configText)) return false;
+  const providerName = getCodexModelProviderName(configText);
+  // Exact match, mirroring the backend: Codex's built-in lookup is
+  // case-sensitive, so `OpenAI` routes to a custom table — a third-party
+  // upstream, not the official provider.
+  return Boolean(providerName && providerName.trim() !== "openai");
+};
+
 const getCodexProviderSectionName = (
   configText: string,
 ): string | undefined => {
@@ -580,7 +614,10 @@ const getCodexProviderSectionName = (
 };
 
 const isCustomCodexModelProviderId = (providerName: string): boolean => {
-  const id = providerName.trim().toLowerCase();
+  // Exact match, mirroring upstream Codex and the backend predicate: the
+  // built-in provider lookup is case-sensitive, so "OpenAI" etc. are
+  // legitimate custom ids whose tables carry the bearer token.
+  const id = providerName.trim();
   return Boolean(id) && !CODEX_RESERVED_MODEL_PROVIDER_IDS.has(id);
 };
 
@@ -1268,7 +1305,7 @@ export const setCodexBaseUrl = (
   }
 
   const normalizedUrl = trimmed.replace(/\s+/g, "");
-  const replacementLine = `base_url = "${normalizedUrl}"`;
+  const replacementLine = `base_url = ${tomlBasicString(normalizedUrl)}`;
 
   if (targetSectionName) {
     let targetSectionRange = getTomlSectionRange(lines, targetSectionName);

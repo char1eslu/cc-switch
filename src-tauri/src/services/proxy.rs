@@ -403,6 +403,11 @@ impl ProxyService {
         self.switch_locks.lock_for_app(app_type).await
     }
 
+    /// 该应用是否正有切换 / 接管操作在进行中。见 `SwitchLockManager::is_locked_for_app`。
+    pub(crate) async fn is_switch_in_progress_for_app(&self, app_type: &str) -> bool {
+        self.switch_locks.is_locked_for_app(app_type).await
+    }
+
     /// 启动代理服务器
     pub async fn start(&self) -> Result<ProxyServerInfo, String> {
         // 1. 启动时自动设置 proxy_enabled = true
@@ -3581,7 +3586,7 @@ wire_api = "responses"
 
     #[tokio::test]
     #[serial]
-    async fn codex_takeover_preserve_disabled_uses_legacy_auth_write_path() {
+    async fn codex_takeover_preserve_disabled_writes_config_only() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
         crate::settings::update_settings(crate::settings::AppSettings {
@@ -3641,30 +3646,23 @@ wire_api = "responses"
             .await
             .expect("take over Codex live config");
 
-        let live_auth: Value =
-            crate::config::read_json_file(&crate::codex_config::get_codex_auth_path())
-                .expect("read live auth");
-        assert_eq!(
-            live_auth
-                .get("OPENAI_API_KEY")
-                .and_then(|value| value.as_str()),
-            Some(PROXY_TOKEN_PLACEHOLDER),
-            "disabled preservation should keep the legacy auth.json takeover placeholder"
-        );
-        assert_eq!(
-            live_auth
-                .get("tokens")
-                .and_then(|tokens| tokens.get("access_token"))
-                .and_then(|value| value.as_str()),
-            Some("oauth-access"),
-            "the new config-only takeover branch must not run when preservation is disabled"
+        // Since Codex 0.149 third-party writes are config-only on every path:
+        // preservation off deletes auth.json (the OAuth login is gone either
+        // way — it used to be overwritten by the placeholder) and the takeover
+        // placeholder rides in config.toml as the provider-scoped bearer token,
+        // which is what Codex actually sends to the local proxy.
+        assert!(
+            !crate::codex_config::get_codex_auth_path().exists(),
+            "disabled preservation removes auth.json on a third-party takeover write"
         );
 
         let live_config = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
             .expect("read live config");
         assert!(
-            !live_config.contains(PROXY_TOKEN_PLACEHOLDER),
-            "disabled preservation should not move the takeover placeholder into config.toml"
+            live_config.contains(&format!(
+                "experimental_bearer_token = \"{PROXY_TOKEN_PLACEHOLDER}\""
+            )),
+            "the takeover placeholder must ride in config.toml; got:\n{live_config}"
         );
 
         crate::settings::update_settings(crate::settings::AppSettings::default())
@@ -3733,7 +3731,7 @@ experimental_bearer_token = "PROXY_MANAGED"
 
     #[test]
     #[serial]
-    fn codex_custom_provider_live_write_can_overwrite_auth_when_preserve_disabled() {
+    fn codex_custom_provider_live_write_removes_auth_when_preserve_disabled() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
         crate::settings::update_settings(crate::settings::AppSettings {
@@ -3799,22 +3797,22 @@ wire_api = "responses"
             .write_codex_live_for_provider(&takeover_settings, Some(&provider))
             .expect("write provider-driven Codex live config");
 
-        let live_auth: Value =
-            crate::config::read_json_file(&crate::codex_config::get_codex_auth_path())
-                .expect("read live auth");
-        assert_eq!(
-            live_auth,
-            json!({
-                "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER
-            }),
-            "disabled preservation should let third-party switches overwrite auth.json"
+        // Disabled preservation historically overwrote the OAuth login with
+        // the placeholder; config-only switching removes auth.json instead —
+        // the login is equally gone, and the placeholder now travels as the
+        // provider-scoped bearer token that Codex >= 0.149 actually sends.
+        assert!(
+            !crate::codex_config::get_codex_auth_path().exists(),
+            "disabled preservation removes auth.json on a third-party takeover write"
         );
 
         let live_config = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
             .expect("read live config");
         assert!(
-            !live_config.contains("experimental_bearer_token"),
-            "provider token should stay in auth.json when preservation is disabled"
+            live_config.contains(&format!(
+                "experimental_bearer_token = \"{PROXY_TOKEN_PLACEHOLDER}\""
+            )),
+            "the placeholder must ride in config.toml as the provider token; got:\n{live_config}"
         );
 
         crate::settings::update_settings(crate::settings::AppSettings::default())
@@ -5033,9 +5031,13 @@ requires_openai_auth = true
             parsed_live.get("model").and_then(|v| v.as_str()),
             Some("deepseek-v4-flash")
         );
+        // Config-only writes (Codex >= 0.149): the takeover placeholder rides
+        // in the active provider table instead of auth.json.
         assert_eq!(
-            live.get("auth")
-                .and_then(|auth| auth.get("OPENAI_API_KEY"))
+            parsed_live
+                .get("model_providers")
+                .and_then(|v| v.get("deepseek"))
+                .and_then(|v| v.get("experimental_bearer_token"))
                 .and_then(|v| v.as_str()),
             Some(PROXY_TOKEN_PLACEHOLDER)
         );
