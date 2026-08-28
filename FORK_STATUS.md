@@ -9,7 +9,7 @@
 | 项 | 值 |
 | --- | --- |
 | 已完整评估到的上游基线 | `3217f725`（`v3.20.1`） |
-| 当前已验证代码 head | `dev`（2026-08-28 本机全绿：Rust 1687 tests / clippy / fmt，前端 339 tests / typecheck / prettier） |
+| 当前已验证代码 head | `6e31ca91`（`dev`；本机验证、CI 与 macOS Ad Hoc 构建均通过） |
 | 最近一轮已适配的上游安全修复 | `cbb79127` 系列的 Codex 0.149 凭据隔离（auth.json 不再承载三方 key）+ 两道 auth 回退安全门 |
 
 **下次同步从这里开始**：
@@ -371,8 +371,9 @@ fork 补了 5 个回归测试：仅读追加尾部、半行导入但不提交游
 `pnpm format:check` 全绿。真实库副本干跑（`~/.cc-switch/cc-switch.db` 拷贝，
 原库未动、仍为 v17）：走正式启动路径迁移后 `user_version=18`、两列已补齐、
 759 条游标行全部保留且两列均为 NULL、`integrity_check=ok`、providers 30 /
-request logs 40270 计数不变。CI / Ad Hoc 构建尚未跑（CI 是 `workflow_dispatch`，
-需手动触发）。
+request logs 40270 计数不变。CI 33168270207 全绿（前端 339 tests；Rust
+1687 passed / 2 ignored）；Ad Hoc 33168698161 构建通过，artifact
+`CC-Switch-macOS-arm64-ad-hoc` 11,549,954 bytes。代码 head：`6e31ca91`（`dev`）。
 
 ### 2026-08-18（`a98829ba..0b5da510`，11 个）
 
