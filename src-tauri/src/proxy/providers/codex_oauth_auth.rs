@@ -217,7 +217,7 @@ impl From<&CodexAccountData> for OAuthAccount {
             login: data
                 .email
                 .clone()
-                .unwrap_or_else(|| format!("ChatGPT ({})", &data.account_id)),
+                .unwrap_or_else(|| format!("ChatGPT ({})", data.account_id)),
             avatar_url: None,
             authenticated_at: data.authenticated_at,
         }
