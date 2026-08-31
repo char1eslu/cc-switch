@@ -288,6 +288,7 @@ fn known_text_only_model(model: &str) -> bool {
         // 精确匹配而非 TAIL_PREFIXES：智谱视觉版沿用 4v/5v 命名（glm-5.2v），
         // 前缀匹配会误剥未来多模态变体的图片。
         "glm-5.2",
+        "glm-5.3",
         "kat-coder",
         "kat-coder-pro",
         "kat-coder-pro v1",
@@ -991,14 +992,16 @@ mod tests {
     }
 
     #[test]
-    fn glm_52_is_classified_text_only() {
-        // issue #5025：火山 Coding Plan 的 GLM 5.2 是纯文本端点，
-        // 映射链 glm-5.2[1M] 归一化后尾部为 glm-5.2。
+    fn glm_52_and_53_are_classified_text_only() {
+        // 火山 Coding Plan 的 GLM 5.2 / 5.3 是纯文本端点，
+        // 映射链的上下文后缀会在匹配前归一化。
         assert!(known_text_only_model("glm-5.2"));
         assert!(known_text_only_model("GLM-5.2[1M]"));
         assert!(known_text_only_model("zai-org/GLM-5.2"));
+        assert!(known_text_only_model("GLM-5.3[1M]"));
         // 未来视觉版（智谱 4v/5v 命名惯例）不能被误判为纯文本。
         assert!(!known_text_only_model("glm-5.2v"));
+        assert!(!known_text_only_model("glm-5.3v"));
     }
 
     #[test]
