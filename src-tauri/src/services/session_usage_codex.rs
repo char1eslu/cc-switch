@@ -374,6 +374,14 @@ fn collect_jsonl_recursive(dir: &Path, files: &mut Vec<PathBuf>, depth: u32, max
     }
 }
 
+fn rollout_id_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let candidate = stem.get(stem.len().checked_sub(36)?..)?;
+    uuid::Uuid::parse_str(candidate)
+        .ok()
+        .map(|value| value.hyphenated().to_string())
+}
+
 /// 同步单个 Codex JSONL 文件，返回 (imported, skipped)
 fn sync_single_codex_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppError> {
     let file_path_str = file_path.to_string_lossy().to_string();
@@ -564,8 +572,15 @@ fn sync_single_codex_file(db: &Database, file_path: &Path) -> Result<(u32, u32),
                 }
 
                 // 生成唯一 request_id
-                let session_id_str = state.session_id.as_deref().unwrap_or("unknown");
-                let request_id = format!("codex_session:{}:{}", session_id_str, state.event_index);
+                let request_id_namespace = rollout_id_from_filename(file_path)
+                    .as_deref()
+                    .or(state.session_id.as_deref())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let request_id = format!(
+                    "codex_session:{}:{}",
+                    request_id_namespace, state.event_index
+                );
 
                 // 提取时间戳
                 let timestamp = value
@@ -917,6 +932,63 @@ mod tests {
         )?;
         // 精确 last 之和：100+30+5 / 60+20+2 / 10+4+2
         assert_eq!((total_input, total_cached, total_output), (135, 82, 16));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_resumed_rollout_uses_physical_id_for_request_and_meta_id_for_session(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let thread_id = "019d0000-0000-7000-8000-000000000001";
+        let rollout_id = "019d0000-0000-7000-8000-000000000002";
+        let file = dir.path().join(format!(
+            "rollout-2026-09-01T00-00-00-{thread_id}_{rollout_id}.jsonl"
+        ));
+        let lines = [
+            serde_json::json!({
+                "timestamp": "2026-09-01T00:00:00Z",
+                "type": "session_meta",
+                "payload": { "id": thread_id }
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-09-01T00:00:01Z",
+                "type": "turn_context",
+                "payload": { "model": "gpt-5.6-sol" }
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-09-01T00:00:02Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": 10,
+                            "cached_input_tokens": 5,
+                            "output_tokens": 2,
+                            "total_tokens": 12
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        ];
+        fs::write(&file, lines.join("\n") + "\n").expect("write jsonl");
+
+        assert_eq!(sync_single_codex_file(&db, &file)?.0, 1);
+
+        let conn = lock_conn!(db.conn);
+        let (request_id, session_id): (String, String) = conn.query_row(
+            "SELECT request_id, session_id FROM proxy_request_logs
+             WHERE data_source = 'codex_session'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(request_id, format!("codex_session:{rollout_id}:1"));
+        assert_eq!(session_id, thread_id);
 
         Ok(())
     }
