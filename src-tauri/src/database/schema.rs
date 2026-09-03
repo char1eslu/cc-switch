@@ -2335,20 +2335,6 @@ impl Database {
 
     fn repair_current_model_pricing(conn: &Connection) -> Result<(), AppError> {
         let pricing_fixes = [
-            // 2026-09-02 官方定价页确认 Sonnet 5 $2/$10 介绍价转为正式价、原定 09-01 涨至
-            // $3/$15 取消：早先按 list 价 seed 的行改回正式价（用户手改过的行不匹配旧值，不动）
-            (
-                "claude-sonnet-5",
-                "Claude Sonnet 5",
-                "2",
-                "10",
-                "0.20",
-                "2.50",
-                "3",
-                "15",
-                "0.30",
-                "3.75",
-            ),
             // Correct the previously seeded Grok 4.5 cached-input price while
             // leaving user-edited rows untouched through the old-value guard.
             (
@@ -2618,9 +2604,9 @@ impl Database {
             // 2026-08-16 16:00 UTC DeepSeek V4 全系改峰谷双档，统一录高峰档
             // （理由见 seed_model_pricing 里 DeepSeek V4 段的注释）。
             //
-            // 🔴 这五条必须留在数组末尾：上面的 v4-flash（cache_read 0.028→0.0028）
-            // 与 v4-pro（1.68/3.36→0.435/0.87）条目会先把历史形态收敛到同一旧值，
-            // 这里才能单守卫命中。挪到它们之前，老库会停在中间价位不再前进。
+            // 🔴 这五条必须成组放在上面的 v4-flash（cache_read 0.028→0.0028）
+            // 与 v4-pro（1.68/3.36→0.435/0.87）条目之后，先把历史形态收敛到同一
+            // 旧值，这里才能单守卫命中。独立的新修复项仍按时间追加在本组之后。
             //
             // chat/reasoner 的守卫值是 fork 自己的种子历史值（0.27/1.10/0.07 与
             // 0.55/2.19/0.14）而非上游的 0.14/0.28/0.0028：fork 从未搬运上游
@@ -2685,6 +2671,20 @@ impl Database {
                 "0.87",
                 "0.003625",
                 "0",
+            ),
+            // 新修复项追加在迁移链末尾。官方定价页确认 Sonnet 5 $2/$10 介绍价
+            // 转为正式价、原定 09-01 涨至 $3/$15 取消；只修正仍匹配旧 seed 的行。
+            (
+                "claude-sonnet-5",
+                "Claude Sonnet 5",
+                "2",
+                "10",
+                "0.20",
+                "2.50",
+                "3",
+                "15",
+                "0.30",
+                "3.75",
             ),
         ];
 
