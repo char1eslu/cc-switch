@@ -2204,6 +2204,7 @@
     },
     "switchFailed": "Switch failed: {{error}}",
     "takeover": {
+      "ariaLabel": "{{appLabel}} local routing",
       "hint": "Select apps to route — once enabled, requests from that app will go through local routing",
       "enabled": "{{app}} routing enabled",
       "disabled": "{{app}} routing disabled",

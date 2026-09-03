@@ -13,6 +13,7 @@ import { formatJSON } from "@/utils/formatters";
 
 interface JsonEditorProps {
   id?: string;
+  ariaLabel?: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
@@ -25,6 +26,7 @@ interface JsonEditorProps {
 }
 
 const JsonEditor: React.FC<JsonEditorProps> = ({
+  ariaLabel,
   value,
   onChange,
   placeholder: placeholderText = "",
@@ -142,6 +144,9 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       baseTheme,
       sizingTheme,
       jsonLinter,
+      EditorView.contentAttributes.of(
+        ariaLabel ? { "aria-label": ariaLabel } : {},
+      ),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const newValue = update.state.doc.toString();
@@ -208,7 +213,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       view.destroy();
       viewRef.current = null;
     };
-  }, [darkMode, rows, height, language, jsonLinter]); // 依赖项中不包含 onChange 和 placeholder，避免不必要的重建
+  }, [ariaLabel, darkMode, rows, height, language, jsonLinter]); // 依赖项中不包含 onChange 和 placeholder，避免不必要的重建
 
   // 当 value 从外部改变时更新编辑器内容
   useEffect(() => {

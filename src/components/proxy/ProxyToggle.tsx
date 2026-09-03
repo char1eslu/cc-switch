@@ -75,6 +75,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         checked={takeoverEnabled}
         onCheckedChange={handleToggle}
         disabled={isPending}
+        aria-label={t("proxy.takeover.ariaLabel", { appLabel })}
       />
     </div>
   );

@@ -2204,6 +2204,7 @@
     },
     "switchFailed": "切换失败: {{error}}",
     "takeover": {
+      "ariaLabel": "{{appLabel}} 本地路由",
       "hint": "选择要路由的应用，启用后该应用的请求将通过本地路由转发",
       "enabled": "{{app}} 路由已启用",
       "disabled": "{{app}} 路由已关闭",

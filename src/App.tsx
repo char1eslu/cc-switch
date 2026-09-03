@@ -933,6 +933,7 @@ function App() {
                 <Button
                   variant="outline"
                   size="icon"
+                  aria-label={t("common.back")}
                   onClick={() =>
                     setCurrentView(
                       currentView === "skillsDiscovery"
