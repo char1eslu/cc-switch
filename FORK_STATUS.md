@@ -2,25 +2,25 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-08-28
+最后更新：2026-09-03
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `3217f725`（`v3.20.1`） |
-| 当前已验证代码 head | `6e31ca91`（`dev`；本机验证、CI 与 macOS Ad Hoc 构建均通过） |
-| 最近一轮已适配的上游安全修复 | `cbb79127` 系列的 Codex 0.149 凭据隔离（auth.json 不再承载三方 key）+ 两道 auth 回退安全门 |
+| 已完整评估到的上游基线 | `92d52916` |
+| 当前已验证代码 head | `d00bb0bd`（`dev`；本机前端验证、CI 与 macOS Ad Hoc 构建均通过） |
+| 最近一轮已适配的上游修复 | prefix cache 的中途 system 保序、GLM 5.3 纯文本识别、usage 轴标签、Codex 双 UUID rollout 归属、Claude 5.1 / Sonnet 5 定价、GUI accessible name |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 3217f725..upstream/main
+git log --oneline 92d52916..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-  用 `0b5da510..upstream/main` 才是真实增量。
+  用 `92d52916..upstream/main` 才是真实增量。
 - ⚠️ 代码块里的基线值和上表第一行必须一起改。2026-08-18 曾发现两处不一致
   （表写 `1f38c838`，审计节已到 `a98829ba`），按表起算会把 35 个已审提交重算一遍。
 - 历轮增量范围与结论见下方「同步审计日志」，从新到旧。
@@ -261,6 +261,39 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-09-03（`3217f725..92d52916`，25 个）
+
+按三应用边界逐提交核对：搬 6 个、跳过 19 个。该区间没有
+`SCHEMA_VERSION` / migration 变化；唯一数据库改动是模型定价种子与守卫修复。
+
+已搬运：
+
+| 上游提交 | fork 提交 | 处理 |
+| --- | --- | --- |
+| `d8065cc6` | `cfa06d09` | 删除会把所有 system 消息合并到头部的归一化；仅合并顶层 system 数组，中途 system 保持原位，避免每轮破坏 prefix cache，并补回归测试 |
+| `273c9cc2` | `222897c9` | fork 没有上游 `model_capabilities.rs`，等价适配到现有 `known_text_only_model`：加入 `glm-5.3`，保留 `glm-5.3v` 多模态负例 |
+| `92a9b4a9` | `65d5e77e` | usage trend token Y 轴改用本地化 compact number formatter，固定轴宽与 margin，并补中英文格式测试 |
+| `e4b03a38` | `05354ee9` | 按 fork 的行游标 importer 适配双 UUID rollout：尾部 rollout UUID 继续做 request_id namespace，root meta 的稳定线程 UUID 写入 `session_id`；补完整同步测试 |
+| `460aa8c7` | `4c4a234e` + `d00bb0bd` | 新增 Fable 5.1 / Mythos 5.1 定价，Sonnet 5 改为 2/10/0.20/2.50；守卫只修正旧 3/15 行、不覆盖用户自定义价，并把新修复项追加在既有迁移链末尾 |
+| `c58a25b2` | `33de8404` | 按 fork 只有 en/zh、无 ProfileSwitcher 的结构适配：图标返回键、代理开关、Skills checkbox 与两个 JSON editor 增加 accessible name；`JsonEditor` 新增 `ariaLabel` 传到 CodeMirror content attributes |
+
+不适用 / 跳过：
+
+| 上游提交 | 核实结论 |
+| --- | --- |
+| `c88b00fa`、`92d52916` | xAI / GitHub Copilot managed OAuth 配置归一化与重复账号拒绝，依赖 fork 已永久放弃的 managed OAuth 多账号能力 |
+| `c08040e9`、`b7da894b`、`914c8bb5`、`0a9a4378`、`dfc9b066`、`bf325b25`、`527b56f8`、`9e110053`、`d05a11cc`、`054673e0`、`21fda0ea` | xAI/Grok 原生 Responses sanitizer、namespace helper 与对应 preset/test 链；fork 无这些地基文件且不维护 xAI managed OAuth 路径 |
+| `b45b2bd1`、`6d25f34e`、`cbbf7279`、`68d71cc6`、`4f62f676` | Tencent Token Plan、QwenCloud、AICodeWith、9527CODE 等合作方/赞助商预设与图标，不进入自用 fork |
+| `b1250dc7` | Hermes 版本查询；Hermes 已裁 |
+
+验证（代码 head `d00bb0bd`）：本机 `pnpm typecheck`、renderer build、
+55 files / 341 frontend tests 与本轮改动格式检查通过。CI
+[`33798050363`](https://github.com/char1eslu/cc-switch/actions/runs/33798050363)
+全绿：前端 341 tests；Rust 主库 1600 passed / 2 ignored，其他测试目标全部通过，
+Clippy 与 rustfmt 零错误。Ad Hoc
+[`33798461033`](https://github.com/char1eslu/cc-switch/actions/runs/33798461033)
+构建、签名、上传通过；artifact `CC-Switch-macOS-arm64-ad-hoc`，11,549,385 bytes。
 
 ### 2026-08-28（`0b5da510..3217f725`，28 个）
 
