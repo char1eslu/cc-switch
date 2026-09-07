@@ -2,25 +2,25 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-09-03
+最后更新：2026-09-07
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `92d52916` |
+| 已完整评估到的上游基线 | `f3b18df1` |
 | 当前已验证代码 head | `d00bb0bd`（`dev`；本机前端验证、CI 与 macOS Ad Hoc 构建均通过） |
-| 最近一轮已适配的上游修复 | prefix cache 的中途 system 保序、GLM 5.3 纯文本识别、usage 轴标签、Codex 双 UUID rollout 归属、Claude 5.1 / Sonnet 5 定价、GUI accessible name |
+| 最近一轮已适配的上游修复 | Codex catalog 必填字段、OAuth 客户端身份与并行工具、接管登录标志、Moonshot schema、Images 生成/编辑、Claude 5 接管别名、会话过滤、UTF-8 截断与九月定价（本轮 CI/构建待验证） |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 92d52916..upstream/main
+git log --oneline f3b18df1..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-  用 `92d52916..upstream/main` 才是真实增量。
+  用 `f3b18df1..upstream/main` 才是真实增量。
 - ⚠️ 代码块里的基线值和上表第一行必须一起改。2026-08-18 曾发现两处不一致
   （表写 `1f38c838`，审计节已到 `a98829ba`），按表起算会把 35 个已审提交重算一遍。
 - 历轮增量范围与结论见下方「同步审计日志」，从新到旧。
@@ -261,6 +261,46 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-09-07（`92d52916..f3b18df1`，29 个）
+
+上游 v3.20.2 轮：按 fork 的现存实现核查后，17 个全部或部分适配，12 个跳过。
+代理、数据库变更均读过 diff；没有 schema 版本、表结构或迁移链变化，继续使用
+`SCHEMA_VERSION=18`、`fork_schema_version=1`。
+
+| 上游提交 | 本轮适配 |
+| --- | --- |
+| `bc4ed66d` | 动态模型模板补齐解析器必需的 `supports_parallel_tool_calls`，保留已有 false 值；覆盖旧模板及最终 catalog |
+| `e47b5fca`（部分） | 自定义 GLM native Responses 的 hosted WebSearch 禁用；以 URL 解析及 DNS label 匹配替代 substring，防止 `z.ai` 误伤 `xyz.ai` 等域名。fork 没有智谱预设和 NativeResponses 专用 catalog，不带入这些分支 |
+| `db41d701` | 仅 Moonshot/Kimi Responses→Chat 工具 schema 将 `$ref` 的同级约束改成等价 `allOf`；不遍历 default/enum 等数据值，不改其他供应商的缓存前缀 |
+| `db346128` | 模型发现与 Claude→Codex OAuth 请求共用 `codex_cli_rs` / `0.153.4` 身份，模型发现 query 与 version header 对齐；账号绑定与 token 存储沿用 fork |
+| `38cfafdc` | Claude 接管的 Sonnet/Opus 别名更新为 5；在 fork 的 `thinking_model.rs` 加 Opus 5 adaptive thinking |
+| `872ec775` | Claude→Codex OAuth 默认允许并行工具调用，并尊重 `disable_parallel_tool_use`；非 OAuth 路径不新增该字段 |
+| `17be9092` + `e724270d`（部分） | 增加 Images generations/edits 各四个本地路由，复用 Codex 凭据替换与 usage 记录；完整 URL 只派生已知兄弟路径，opaque URL 拒绝。没有引入 Alpha Search 或 variations |
+| `2cd40064`（部分） | 保留登录的 takeover 写入按实际 auth/store 状态对齐 `requires_openai_auth`；file 按认证模式优先级识别，缺失/损坏/Bedrock 不算 OpenAI 登录，ephemeral 视为未登录，keyring/auto 不猜。沿用 fork 的关闭保留开关即删除 auth.json 的既定路径，不扩大该变更；新增路径只读 auth.json |
+| `741e802f` + `291946d5` + `66ae6446` | 新增 GLM 5.3、GPT-6 Astra、GLM 5.3 Flash seed |
+| `ccc140a2`（部分） | 新增 Qwen 3.8 Flash；更新 MiniMax M2/M2.1/M2.5，并在 repair 链末尾追加 fork 旧值守卫，测试 M2.5 两跳及自定义价保留。GPT-5.6/Gemini 的旧 seed 不在 fork 中，不搬对应调价条目 |
+| `3e2562a4` | 定价来源下拉框加宽，恢复与相邻输入一致的控件高度 |
+| `3c1d3c94` | 测试目录同时隔离 Windows `LOCALAPPDATA`，避免测试写真实 Claude Desktop 配置 |
+| `12296aeb` | 无效代理 URL 按 UTF-8 字符边界截断，消除多字节切片 panic |
+| `2510a4e2` | Claude 会话列表排除 workflow `journal.jsonl`，普通会话和 agent 过滤行为有回归覆盖 |
+
+Images 适配时补齐了上游遗漏的请求体限制：新 handler 用 Axum `Bytes` extractor
+应用 router 的 `DefaultBodyLimit`，不沿用会绕过该限制的 raw `Body::collect`。
+回归测试覆盖两端点的八个 alias、上游凭据替换、data-URL 图片保真、usage 落库、
+非法 JSON 400 与超限 413；不添加新的配置项或 payload schema。
+
+| 跳过提交 | 核实结论 |
+| --- | --- |
+| `5a040348`、`b5f9fd0d` | 修上游 DeepSeek/vendor 专用 catalog；fork 没有该模板文件、builder 或 input_modalities 分支，缺陷前提不成立，不修改共享 GPT 模板 |
+| `9692ff5e` | Gemini 3.8 定价；fork 没有 Gemini seed，沿用已有排除决定 |
+| `5f3ea4d6`、`1b34d322`、`648d89cd`、`389dd96c` | PPIO、腾讯、JieKou/Novita、SoleAPI 的赞助商/已裁应用预设及相关资源 |
+| `75be16cb` | 两个缺失 i18n key 仅由 Pi 表单引用，fork 两个符号均无调用方 |
+| `e3b5a628` | 上游 README 目录树修正；fork README 没有该树 |
+| `bd1265d2` | updater 错误提示；fork 已停用 updater |
+| `b6254432`、`f3b18df1` | 上游版本号与发行说明，不改变 fork 构建/分发流程 |
+
+本轮验证：待 dev CI 与 macOS Ad Hoc 构建完成后补记。
 
 ### 2026-09-03（`3217f725..92d52916`，25 个）
 

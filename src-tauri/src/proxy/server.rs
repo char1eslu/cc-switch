@@ -337,6 +337,30 @@ impl ProxyServer {
                 "/codex/v1/responses/compact",
                 post(handlers::handle_responses_compact),
             )
+            // Codex ImageGen uses JSON payloads for both Images endpoints.
+            .route(
+                "/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route(
+                "/v1/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route(
+                "/v1/v1/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route(
+                "/codex/v1/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route("/images/edits", post(handlers::handle_images_edits))
+            .route("/v1/images/edits", post(handlers::handle_images_edits))
+            .route("/v1/v1/images/edits", post(handlers::handle_images_edits))
+            .route(
+                "/codex/v1/images/edits",
+                post(handlers::handle_images_edits),
+            )
             // 提高默认请求体大小限制（避免 413 Payload Too Large）
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
             .with_state(self.state.clone())
@@ -374,5 +398,199 @@ impl ProxyServer {
             .provider_router
             .reset_provider_breaker(provider_id, app_type)
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::Provider;
+    use axum::{
+        extract::State,
+        http::{header, StatusCode},
+        Json,
+    };
+    use serde_json::{json, Value};
+    use tokio::sync::Mutex;
+
+    #[derive(Debug)]
+    struct CapturedImageRequest {
+        path: String,
+        authorization: Option<String>,
+        api_key: Option<String>,
+        body: Value,
+    }
+
+    async fn image_upstream(
+        State(captured): State<Arc<Mutex<Vec<CapturedImageRequest>>>>,
+        request: axum::extract::Request,
+    ) -> Json<Value> {
+        let (parts, body) = request.into_parts();
+        let bytes = axum::body::to_bytes(body, 1024 * 1024)
+            .await
+            .expect("read mock body");
+        captured.lock().await.push(CapturedImageRequest {
+            path: parts.uri.to_string(),
+            authorization: parts
+                .headers
+                .get(header::AUTHORIZATION)
+                .map(|h| h.to_str().unwrap().to_string()),
+            api_key: parts
+                .headers
+                .get("x-api-key")
+                .map(|h| h.to_str().unwrap().to_string()),
+            body: serde_json::from_slice(&bytes).expect("parse mock body"),
+        });
+        Json(json!({
+            "created": 1, "data": [{"b64_json": "aW1hZ2U="}],
+            "usage": {"input_tokens": 7, "output_tokens": 11, "total_tokens": 18,
+                      "input_tokens_details": {"text_tokens": 3, "image_tokens": 4}}
+        }))
+    }
+
+    #[tokio::test]
+    async fn codex_images_aliases_forward_credentials_payload_and_usage() {
+        let captured = Arc::new(Mutex::new(Vec::<CapturedImageRequest>::new()));
+        let mock = Router::new()
+            .route("/v1/images/generations", post(image_upstream))
+            .route("/v1/images/edits", post(image_upstream))
+            .with_state(captured.clone());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        let db = Arc::new(Database::memory().expect("memory database"));
+        let provider = Provider::with_id(
+            "images".into(),
+            "Images upstream".into(),
+            json!({
+                "base_url": format!("http://{address}/v1"),
+                "auth": {"OPENAI_API_KEY": "upstream-secret"}
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider).unwrap();
+        db.set_current_provider("codex", &provider.id).unwrap();
+        let proxy = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                enable_logging: true,
+                non_streaming_timeout: 10,
+                ..ProxyConfig::default()
+            },
+            db.clone(),
+            None,
+        );
+        let info = proxy.start().await.expect("start proxy");
+        let client = reqwest::Client::new();
+        for endpoint in ["generations", "edits"] {
+            for prefix in ["", "/v1", "/v1/v1", "/codex/v1"] {
+                let mut body =
+                    json!({"model": "gpt-image-1", "prompt": format!("{endpoint} {prefix}")});
+                if endpoint == "edits" {
+                    body["images"] = json!([{"image_url": "data:image/png;base64,aW1hZ2U="}]);
+                }
+                let response = client
+                    .post(format!(
+                        "http://127.0.0.1:{}{prefix}/images/{endpoint}?client_version=0.153.4",
+                        info.port
+                    ))
+                    .header(header::AUTHORIZATION, "Bearer client-secret")
+                    .header("x-api-key", "client-api-key")
+                    .json(&body)
+                    .send()
+                    .await
+                    .expect("image request");
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(
+                    response.json::<Value>().await.unwrap()["data"][0]["b64_json"],
+                    "aW1hZ2U="
+                );
+                let requests = captured.lock().await;
+                let request = requests.last().unwrap();
+                assert_eq!(
+                    request.path,
+                    format!("/v1/images/{endpoint}?client_version=0.153.4")
+                );
+                assert_eq!(
+                    request.authorization.as_deref(),
+                    Some("Bearer upstream-secret")
+                );
+                assert_eq!(request.api_key, None);
+                assert_eq!(request.body, body);
+            }
+        }
+        assert_eq!(captured.lock().await.len(), 8);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (count, input, output): (i64, i64, i64) = db.conn.lock().unwrap().query_row(
+                "SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0)
+                 FROM proxy_request_logs WHERE app_type = 'codex' AND provider_id = 'images'",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).unwrap();
+            if count == 8 {
+                assert_eq!((input, output), (56, 88));
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "expected 8 usage records, got {count}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        proxy.stop().await.expect("stop proxy");
+        upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn codex_images_reject_invalid_json_and_enforce_router_body_limit() {
+        let proxy = ProxyServer::new(
+            ProxyConfig::default(),
+            Arc::new(Database::memory().unwrap()),
+            None,
+        );
+        let router = Router::new()
+            .route(
+                "/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route("/images/edits", post(handlers::handle_images_edits))
+            .layer(DefaultBodyLimit::max(64))
+            .with_state(proxy.state.clone());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        for endpoint in ["generations", "edits"] {
+            let url = format!("http://{address}/images/{endpoint}");
+            assert_eq!(
+                client
+                    .post(&url)
+                    .body("invalid-json")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+            assert_eq!(
+                client
+                    .post(&url)
+                    .body("x".repeat(65))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::PAYLOAD_TOO_LARGE
+            );
+        }
+        task.abort();
     }
 }

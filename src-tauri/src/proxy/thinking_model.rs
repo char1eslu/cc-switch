@@ -7,6 +7,7 @@ pub(crate) fn uses_adaptive_thinking(model: &str) -> bool {
         "mythos-5",
         "mythos-preview",
         "sonnet-5",
+        "opus-5",
         "opus-4-8",
         "opus-4-7",
         "opus-4-6",
@@ -41,6 +42,7 @@ mod tests {
     #[test]
     fn recognizes_adaptive_model_aliases() {
         assert!(uses_adaptive_thinking("anthropic.claude-opus-4_8"));
+        assert!(uses_adaptive_thinking("claude-opus-5"));
         assert!(adaptive_thinking_is_default("fable.5"));
         assert!(thinking_cannot_be_disabled("mythos_5"));
         assert!(!thinking_cannot_be_disabled("claude-opus-4-8"));

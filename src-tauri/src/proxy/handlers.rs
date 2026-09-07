@@ -829,6 +829,86 @@ pub async fn handle_responses(
     .await
 }
 
+pub async fn handle_images_generations(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    handle_codex_standalone_passthrough(state, request, "/images/generations").await
+}
+
+/// Handle Codex's legacy Images API edit endpoint for built-in ImageGen.
+///
+/// Codex switches from `/images/generations` to `/images/edits` whenever the
+/// ImageGen tool references existing images (explicit file paths or the last N
+/// generated images). The body is plain JSON with data-URL images, so it takes
+/// the same standalone passthrough as generations; only the upstream path differs.
+pub async fn handle_images_edits(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    handle_codex_standalone_passthrough(state, request, "/images/edits").await
+}
+
+async fn handle_codex_standalone_passthrough(
+    state: ProxyState,
+    request: axum::extract::Request,
+    canonical_endpoint: &'static str,
+) -> Result<axum::response::Response, ProxyError> {
+    use axum::extract::FromRequest;
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let mut headers = request.headers().clone();
+    let extensions = request.extensions().clone();
+    // Bytes applies the router's DefaultBodyLimit; raw Body::collect does not.
+    let body_bytes = match Bytes::from_request(request, &state).await {
+        Ok(bytes) => bytes,
+        Err(rejection) => return Ok(rejection.into_response()),
+    };
+    let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
+    let body: Value = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ProxyError::InvalidRequest(format!("Failed to parse request body: {e}")))?;
+
+    let mut ctx =
+        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    let endpoint = endpoint_with_query(&uri, canonical_endpoint);
+
+    let forwarder = ctx.create_forwarder(&state);
+    let mut result = match forwarder
+        .forward_with_retry(
+            &AppType::Codex,
+            method,
+            &endpoint,
+            body,
+            headers,
+            extensions,
+            ctx.get_providers(),
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(mut err) => {
+            if let Some(provider) = err.provider.take() {
+                ctx.provider = provider;
+            }
+            log_forward_error(&state, &ctx, false, &err.error);
+            return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
+        }
+    };
+
+    let connection_guard = result.connection_guard.take();
+    ctx.outbound_model = result.outbound_model.take();
+    ctx.provider = result.provider;
+
+    process_response(
+        result.response,
+        &ctx,
+        &state,
+        &CODEX_PARSER_CONFIG,
+        connection_guard,
+    )
+    .await
+}
+
 /// 处理 /v1/responses/compact 请求（OpenAI Responses Compact API - Codex CLI 透传）
 pub async fn handle_responses_compact(
     State(state): State<ProxyState>,

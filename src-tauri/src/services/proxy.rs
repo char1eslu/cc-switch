@@ -40,8 +40,8 @@ const CLAUDE_MODEL_OVERRIDE_ENV_KEYS: [&str; 9] = [
 ];
 
 const CLAUDE_TAKEOVER_HAIKU_MODEL: &str = "claude-haiku-4-5";
-const CLAUDE_TAKEOVER_SONNET_MODEL: &str = "claude-sonnet-4-6";
-const CLAUDE_TAKEOVER_OPUS_MODEL: &str = "claude-opus-4-8";
+const CLAUDE_TAKEOVER_SONNET_MODEL: &str = "claude-sonnet-5";
+const CLAUDE_TAKEOVER_OPUS_MODEL: &str = "claude-opus-5";
 // 写给 Claude Code 时沿用文档示例的大写形式；解析侧大小写不敏感。
 const CLAUDE_ONE_M_MARKER_FOR_CLIENT: &str = "[1M]";
 
@@ -2276,6 +2276,36 @@ impl ProxyService {
         auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()) == Some(PROXY_TOKEN_PLACEHOLDER)
     }
 
+    // Keyring/auto stores cannot be inferred from auth.json. A corrupt or
+    // missing file is signed out in Codex's file store and must not block takeover.
+    fn codex_live_login_state(config_text: &str) -> Option<bool> {
+        let doc = config_text.parse::<toml::Value>().ok()?;
+        let store = match doc.get("cli_auth_credentials_store") {
+            None => "file",
+            Some(value) => value.as_str()?,
+        };
+        match store {
+            "file" => {}
+            "ephemeral" => return Some(false),
+            _ => return None,
+        }
+        let path = crate::codex_config::get_codex_auth_path();
+        if !path.exists() {
+            return Some(false);
+        }
+        let auth: Value = match crate::config::read_json_file(&path) {
+            Ok(auth) => auth,
+            Err(_) => {
+                log::warn!("Codex auth.json 不可读，接管配置按未登录处理");
+                return Some(false);
+            }
+        };
+        Some(
+            !Self::codex_auth_has_proxy_placeholder(&auth)
+                && crate::codex_config::codex_auth_has_openai_account_material(&auth),
+        )
+    }
+
     fn write_codex_takeover_live_for_provider(
         &self,
         config: &Value,
@@ -2295,6 +2325,14 @@ impl ProxyService {
                 let live_config =
                     crate::codex_config::prepare_codex_provider_live_config(auth, &prepared_config)
                         .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+                // The stored flag can outlive `codex logout`; only the actual
+                // login state may enable account UI beside the proxy bearer token.
+                let live_config = match Self::codex_live_login_state(&live_config) {
+                    Some(has_login) => crate::codex_config::align_codex_requires_openai_auth_with_login_preservation(
+                        &live_config, has_login,
+                    ).map_err(|e| format!("写入 Codex 配置失败: {e}"))?,
+                    None => live_config,
+                };
                 crate::codex_config::write_codex_live_config_atomic(Some(&live_config))
                     .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
                 return Ok(());
@@ -2671,10 +2709,10 @@ mod tests {
         assert_env_str(
             env,
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            Some("claude-sonnet-4-6"),
+            Some("claude-sonnet-5"),
         );
         assert_env_str(env, "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME", Some("gpt-5.4"));
-        assert_env_str(env, "ANTHROPIC_DEFAULT_OPUS_MODEL", Some("claude-opus-4-8"));
+        assert_env_str(env, "ANTHROPIC_DEFAULT_OPUS_MODEL", Some("claude-opus-5"));
         assert_env_str(env, "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME", Some("gpt-5.4"));
         // Codex 系只保留 AUTH_TOKEN；双键会触发 Claude Code 告警（#4919）
         assert_env_str(env, "ANTHROPIC_API_KEY", None);
@@ -3671,6 +3709,102 @@ wire_api = "responses"
 
     #[test]
     #[serial]
+    fn codex_takeover_aligns_account_state_without_changing_auth_file() {
+        for (store, auth, original_flag, expected) in [
+            (None, None, true, false),
+            (
+                Some("file"),
+                Some(r#"{"tokens":{"access_token":"oauth-access"}}"#),
+                false,
+                true,
+            ),
+            (
+                None,
+                Some(r#"{"bedrock_api_key":"bedrock","OPENAI_API_KEY":"stale"}"#),
+                true,
+                false,
+            ),
+            (
+                None,
+                Some(r#"{"OPENAI_API_KEY":"PROXY_MANAGED"}"#),
+                true,
+                false,
+            ),
+            (None, Some("{broken-json"), true, false),
+            (
+                Some("ephemeral"),
+                Some(r#"{"OPENAI_API_KEY":"old-key"}"#),
+                true,
+                false,
+            ),
+            (Some("keyring"), None, true, true),
+            (Some("auto"), None, true, true),
+            (
+                Some("auto"),
+                Some(r#"{"tokens":{"access_token":"oauth-access"}}"#),
+                false,
+                false,
+            ),
+        ] {
+            let _home = TempHome::new();
+            crate::settings::reload_settings().expect("reload settings");
+            crate::settings::update_settings(crate::settings::AppSettings {
+                preserve_codex_official_auth_on_switch: true,
+                ..Default::default()
+            })
+            .expect("preserve official auth");
+            let auth_path = crate::codex_config::get_codex_auth_path();
+            std::fs::create_dir_all(auth_path.parent().unwrap()).expect("create codex home");
+            if let Some(raw) = auth {
+                std::fs::write(&auth_path, raw).expect("seed auth file");
+            }
+            let store_config = store
+                .map(|store| format!("cli_auth_credentials_store = \"{store}\"\n"))
+                .unwrap_or_default();
+            let config = format!(
+                r#"{store_config}model_provider = "relay"
+model = "gpt-5.5"
+[model_providers.relay]
+name = "Relay"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+requires_openai_auth = {original_flag}
+"#
+            );
+            let service = ProxyService::new(Arc::new(Database::memory().expect("memory db")));
+            service
+                .write_codex_takeover_live_for_provider(
+                    &json!({
+                        "auth": {"OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER},
+                        "config": config,
+                    }),
+                    None,
+                )
+                .expect("write takeover config");
+            let live = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
+                .expect("read config");
+            let doc: toml::Value = live.parse().expect("parse config");
+            assert_eq!(
+                doc["model_providers"]["relay"]["requires_openai_auth"].as_bool(),
+                Some(expected),
+                "store={store:?}, auth={auth:?}"
+            );
+            assert_eq!(
+                doc["model_providers"]["relay"]["experimental_bearer_token"].as_str(),
+                Some(PROXY_TOKEN_PLACEHOLDER)
+            );
+            assert_eq!(
+                std::fs::read_to_string(&auth_path).ok().as_deref(),
+                auth,
+                "auth.json must remain byte-identical"
+            );
+        }
+        crate::settings::update_settings(crate::settings::AppSettings::default())
+            .expect("reset settings");
+    }
+
+    #[test]
+    #[serial]
     fn codex_takeover_cleanup_removes_config_placeholder_without_touching_oauth_auth() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
@@ -4338,7 +4472,7 @@ model = "gpt-5.1-codex"
             live_env
                 .get("ANTHROPIC_DEFAULT_SONNET_MODEL")
                 .and_then(|v| v.as_str()),
-            Some("claude-sonnet-4-6[1M]"),
+            Some("claude-sonnet-5[1M]"),
             "Sonnet role should carry the local 1M declaration for Claude Code"
         );
         assert_eq!(
@@ -4352,7 +4486,7 @@ model = "gpt-5.1-codex"
             live_env
                 .get("ANTHROPIC_DEFAULT_OPUS_MODEL")
                 .and_then(|v| v.as_str()),
-            Some("claude-opus-4-8[1M]"),
+            Some("claude-opus-5[1M]"),
             "Opus role should preserve the current provider 1M capability marker"
         );
         assert_eq!(

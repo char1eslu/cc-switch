@@ -27,6 +27,7 @@ pub mod streaming_responses;
 pub mod transform;
 pub mod transform_codex_anthropic;
 pub mod transform_codex_chat;
+pub mod transform_codex_chat_moonshot_schema;
 pub mod transform_responses;
 
 use crate::app_config::AppType;

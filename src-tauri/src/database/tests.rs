@@ -916,6 +916,71 @@ fn model_pricing_seed_repairs_sonnet_5_list_price_but_keeps_custom_price() {
 }
 
 #[test]
+fn model_pricing_seed_includes_september_models() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+    for (model, expected) in [
+        ("gpt-6-astra", ["10", "50", "1", "12.5"]),
+        ("glm-5.3", ["1.4", "4.4", "0.26", "0"]),
+        ("glm-5.3-flash", ["0.15", "0.50", "0.03", "0"]),
+        ("qwen3.8-flash", ["0.15", "0.47", "0.016", "0.20"]),
+        ("minimax-m2", ["0.30", "1.20", "0.03", "0.375"]),
+        ("minimax-m2.1", ["0.30", "1.20", "0.03", "0.375"]),
+        ("minimax-m2.5", ["0.30", "1.20", "0.03", "0.375"]),
+    ] {
+        let actual: [String; 4] = conn
+            .query_row(
+                "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = ?1",
+                [model],
+                |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?]),
+            )
+            .expect("query seeded price");
+        assert_eq!(actual, expected.map(str::to_string), "{model}");
+    }
+}
+
+#[test]
+fn model_pricing_repairs_minimax_history_without_overwriting_custom_prices() {
+    let db = Database::memory().expect("create memory db");
+    for (model, old_input, expected) in [
+        ("minimax-m2", "0.27", ["0.30", "1.20", "0.03", "0.375"]),
+        ("minimax-m2.1", "0.27", ["0.30", "1.20", "0.03", "0.375"]),
+        ("minimax-m2.5", "0.12", ["0.30", "1.20", "0.03", "0.375"]),
+        ("minimax-m2.5", "0.15", ["0.30", "1.20", "0.03", "0.375"]),
+        ("minimax-m2.5", "9", ["9", "0.95", "0.03", "0"]),
+    ] {
+        {
+            let conn = db.conn.lock().expect("lock conn");
+            conn.execute(
+                "UPDATE model_pricing SET input_cost_per_million = ?2,
+                    output_cost_per_million = '0.95', cache_read_cost_per_million = '0.03',
+                    cache_creation_cost_per_million = '0' WHERE model_id = ?1",
+                [model, old_input],
+            )
+            .expect("restore old or custom MiniMax price");
+        }
+        db.ensure_model_pricing_seeded().expect("repair pricing");
+        let conn = db.conn.lock().expect("lock conn");
+        let actual: [String; 4] = conn
+            .query_row(
+                "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = ?1",
+                [model],
+                |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?]),
+            )
+            .expect("query repaired price");
+        assert_eq!(
+            actual,
+            expected.map(str::to_string),
+            "{model} from {old_input}"
+        );
+    }
+}
+
+#[test]
 fn ensure_incremental_auto_vacuum_rebuilds_existing_file_db() {
     let temp = NamedTempFile::new().expect("create temp db file");
     let path = temp.path().to_path_buf();

@@ -35,7 +35,7 @@ pub(crate) const CODEX_WEB_SEARCH_DISABLED: &str = "disabled";
 ///
 /// Matched two ways so an aggregator (e.g. SiliconFlow) fronting these vendors'
 /// models is also caught:
-/// - `base_url` host substring, and
+/// - `base_url` host labels, and
 /// - the model id's brand prefix (after stripping any `vendor/` path segment).
 ///
 /// Verified 2026-06-27 doc audit — reject: MiMo (hard 400), LongCat (official
@@ -47,13 +47,34 @@ const CODEX_WEB_SEARCH_REJECT_HOSTS: &[&str] = &[
     "longcat.chat",   // Meituan LongCat (api.longcat.chat)
     "minimax.io",     // MiniMax global (api.minimax.io)
     "minimaxi.com",   // MiniMax CN (api.minimaxi.com)
+    "bigmodel.cn",    // GLM native Responses rejects the hosted web_search tool.
+    "z.ai",
 ];
 
 /// Brand prefixes of models whose native gateways reject `web_search`, matched
 /// against the model id's last `/`-segment so aggregator ids like
 /// `MiniMaxAI/MiniMax-M3` are caught. Exact brand names (not a fuzzy heuristic),
 /// so a supporting gateway is never wrongly matched.
-const CODEX_WEB_SEARCH_REJECT_MODEL_PREFIXES: &[&str] = &["mimo", "longcat", "minimax"];
+const CODEX_WEB_SEARCH_REJECT_MODEL_PREFIXES: &[&str] = &["mimo", "longcat", "minimax", "glm"];
+
+// Match DNS labels so short vendor names cannot capture unrelated hosts or URL paths.
+fn codex_url_host_matches_any(url_or_host: &str, hosts: &[&str]) -> bool {
+    let input = url_or_host.trim();
+    let parsed = if input.contains("://") {
+        url::Url::parse(input)
+    } else {
+        url::Url::parse(&format!("https://{input}"))
+    };
+    parsed
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            let host = host.trim_end_matches('.');
+            hosts
+                .iter()
+                .any(|candidate| host == *candidate || host.ends_with(&format!(".{candidate}")))
+        })
+}
 
 /// Top-level `model` id from a Codex `config.toml`.
 fn codex_top_level_model(config_text: &str) -> Option<String> {
@@ -70,11 +91,7 @@ fn codex_top_level_model(config_text: &str) -> Option<String> {
 /// the live `config.toml`, so it applies to existing providers without a re-save.
 fn codex_native_gateway_rejects_web_search(config_text: &str) -> bool {
     if let Some(base_url) = extract_codex_base_url(config_text) {
-        let base_url = base_url.to_ascii_lowercase();
-        if CODEX_WEB_SEARCH_REJECT_HOSTS
-            .iter()
-            .any(|host| base_url.contains(host))
-        {
+        if codex_url_host_matches_any(&base_url, CODEX_WEB_SEARCH_REJECT_HOSTS) {
             return true;
         }
     }
@@ -359,6 +376,52 @@ pub fn codex_auth_has_oauth_login_material(auth: &Value) -> bool {
             _ => true,
         }
     })
+}
+
+// Resolve the auth mode before probing credentials: Bedrock takes precedence
+// over a stale OpenAI key, and explicit modes override the implicit carriers.
+pub(crate) fn codex_auth_has_openai_account_material(auth: &Value) -> bool {
+    let Some(obj) = auth.as_object() else {
+        return false;
+    };
+    let present = |key: &str| obj.get(key).is_some_and(|value| !value.is_null());
+    let mode = if let Some(value) = obj.get("auth_mode").filter(|value| !value.is_null()) {
+        let Some(mode) = value.as_str() else {
+            return false;
+        };
+        mode
+    } else if present("personal_access_token") {
+        "personalAccessToken"
+    } else if present("bedrock_api_key") {
+        "bedrockApiKey"
+    } else if present("bedrock_access_keys") {
+        "bedrockAccessKeys"
+    } else if present("OPENAI_API_KEY") {
+        "apikey"
+    } else {
+        "chatgpt"
+    };
+    let value_present = |value: &Value| match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(map) => !map.is_empty(),
+        _ => true,
+    };
+    match mode {
+        "apikey" => extract_codex_auth_api_key(auth).is_some(),
+        "personalAccessToken" => obj.get("personal_access_token").is_some_and(value_present),
+        "agentIdentity" => obj.get("agent_identity").is_some_and(value_present),
+        "chatgpt" | "chatgptAuthTokens" => obj
+            .get("tokens")
+            .and_then(Value::as_object)
+            .is_some_and(|tokens| {
+                ["id_token", "access_token", "refresh_token"]
+                    .iter()
+                    .any(|key| tokens.get(*key).is_some_and(value_present))
+            }),
+        _ => false,
+    }
 }
 
 /// True only when the auth carries material Codex itself authenticates with
@@ -885,7 +948,10 @@ fn load_codex_model_template_static() -> Option<Value> {
 /// Codex 外部目录解析器要求必须存在（无 serde default）的字段：缺失时
 /// Codex 启动阶段会整份拒绝目录文件（"missing field ..."），CLI 与桌面端一起打不开。
 /// 当 Codex 新增必需字段时，这里和静态模板都要同步添加。
-const CODEX_CATALOG_PARSER_REQUIRED_FIELDS: &[&str] = &["supports_reasoning_summaries"];
+const CODEX_CATALOG_PARSER_REQUIRED_FIELDS: &[&str] = &[
+    "supports_reasoning_summaries",
+    "supports_parallel_tool_calls",
+];
 
 /// `models_cache.json` 由机器上所有 Codex 安装共享（npm CLI、桌面内置二进制等），
 /// 各版本序列化自己的 `ModelInfo` 结构——缓存的字段集取决于最后写入的那个进程，
@@ -1904,7 +1970,7 @@ fn normalize_codex_legacy_openai_reroute(config_text: &str) -> Result<Option<Str
 /// the preserved official OAuth login — the exact leak the safety gates
 /// refuse — and keyless header-auth or local-server tables must keep their
 /// user-authored shape (0.149 keeps them unauthenticated either way).
-fn align_codex_requires_openai_auth_with_login_preservation(
+pub(crate) fn align_codex_requires_openai_auth_with_login_preservation(
     config_text: &str,
     preserve_official_login: bool,
 ) -> Result<String, AppError> {
@@ -3626,6 +3692,8 @@ web_search = "disabled"
             ("LongCat-2.0-Preview", "https://api.longcat.chat/openai/v1"),
             ("MiniMax-M3", "https://api.minimax.io/v1"),
             ("MiniMax-M3", "https://api.minimaxi.com/v1"),
+            ("glm-5.3", "https://open.bigmodel.cn/api/v1"),
+            ("glm-5.3", "https://api.z.ai/api/v1"),
         ] {
             assert!(
                 codex_native_gateway_rejects_web_search(&cfg(model, host)),
@@ -3639,6 +3707,7 @@ web_search = "disabled"
             ("MiniMax-M3", "https://api.siliconflow.cn/v1"),
             ("MiniMaxAI/MiniMax-M3", "https://api.siliconflow.cn/v1"),
             ("mimo-v2.5-pro", "https://some-aggregator.example/v1"),
+            ("zai-org/glm-5.3", "https://some-aggregator.example/v1"),
         ] {
             assert!(
                 codex_native_gateway_rejects_web_search(&cfg(model, host)),
@@ -3665,6 +3734,32 @@ web_search = "disabled"
                 !codex_native_gateway_rejects_web_search(&cfg(model, host)),
                 "{model} @ {host} should NOT be blacklisted"
             );
+        }
+    }
+
+    #[test]
+    fn url_host_matcher_uses_label_boundaries() {
+        let hosts = &["z.ai", "bigmodel.cn"];
+        for url in [
+            "https://api.z.ai/api/v1",
+            "https://open.bigmodel.cn/api/v1",
+            "https://Open.BigModel.cn/api/coding/paas/v4",
+            "https://user:pw@api.z.ai:8443/api/v1?x=1#f",
+            "z.ai",
+            "api.z.ai.",
+        ] {
+            assert!(codex_url_host_matches_any(url, hosts), "{url}");
+        }
+        for url in [
+            "https://api.xyz.ai/v1",
+            "https://viz.ai/v1",
+            "https://z.ai.example.com/v1",
+            "https://notbigmodel.cn/v1",
+            "https://example.com/z.ai/v1",
+            "https://example.com/?next=https://api.z.ai",
+            "",
+        ] {
+            assert!(!codex_url_host_matches_any(url, hosts), "{url}");
         }
     }
 
@@ -4127,10 +4222,14 @@ model_catalog_json = "cc-switch-model-catalog.json"
         // 而不是静态模板里的值。
         assert!(template.get("supports_search_tool").is_none());
         assert!(template.get("web_search_tool_type").is_none());
+
+        let mut stale = json!({ "slug": "gpt-5.5" });
+        fill_template_fields_from_static(&mut stale);
+        assert_eq!(stale["supports_parallel_tool_calls"], json!(true));
     }
 
     #[test]
-    fn proxy_chat_catalog_entries_carry_reasoning_summaries_flag() {
+    fn proxy_chat_catalog_entries_carry_parser_required_fields() {
         // 端到端：过期的动态模板回填后，产出的目录项必须能被 codex 0.144.5+ 解析。
         let mut template = json!({ "slug": "gpt-5.5" });
         fill_template_fields_from_static(&mut template);
@@ -4142,6 +4241,10 @@ model_catalog_json = "cc-switch-model-catalog.json"
             default_reasoning_level: None,
         }];
         let catalog = codex_model_catalog_from_specs(&specs, &template);
+        assert_eq!(
+            catalog["models"][0]["supports_parallel_tool_calls"],
+            json!(true)
+        );
         assert_eq!(
             catalog["models"][0]
                 .get("supports_reasoning_summaries")
@@ -5167,6 +5270,85 @@ base_url = "https://bedrock.example/v1"
             text.contains("requires_openai_auth = false"),
             "env_key cards must be stamped like bearer cards; got:\n{text}"
         );
+    }
+
+    #[test]
+    fn openai_account_material_mirrors_codex_account_probe() {
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "OPENAI_API_KEY": "sk-test"
+        })));
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "chatgpt",
+            "tokens": { "access_token": "acc" }
+        })));
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "personal_access_token": "pat"
+        })));
+        // Bedrock credentials make account_state() fail on a
+        // requires_openai_auth provider, so they must not count as a login.
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "bedrock_api_key": "bedrock"
+        })));
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "last_refresh": "2026-09-01T00:00:00Z",
+            "tokens": { "account_id": "acct" }
+        })));
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "OPENAI_API_KEY": "   "
+        })));
+
+        // Precedence mirrors AuthDotJson::resolved_mode: an implicit Bedrock
+        // credential outranks a leftover OPENAI_API_KEY, so the pair is still
+        // Bedrock and must not be promoted to an OpenAI login.
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "OPENAI_API_KEY": "sk-stale",
+            "bedrock_api_key": "bedrock"
+        })));
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "OPENAI_API_KEY": "sk-stale",
+            "bedrock_access_keys": { "access_key_id": "a", "secret_access_key": "s" }
+        })));
+        // An explicit auth_mode wins outright, in both directions.
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "bedrockApiKey",
+            "OPENAI_API_KEY": "sk-stale",
+            "bedrock_api_key": "bedrock"
+        })));
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "apikey",
+            "OPENAI_API_KEY": "sk-live",
+            "bedrock_api_key": "bedrock"
+        })));
+        // personal_access_token outranks the API key even when blank: Codex
+        // then attempts PAT auth with nothing and ends up signed out.
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "personal_access_token": "",
+            "OPENAI_API_KEY": "sk-live"
+        })));
+        // agent_identity only counts under an explicit mode; implicitly the
+        // payload resolves to ChatGPT, which has no tokens here.
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "agent_identity": "jwt"
+        })));
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "agentIdentity",
+            "agent_identity": "jwt"
+        })));
+        // `auth_mode: null` is absent to serde; a string it rejects fails the
+        // whole load (exact-match, so casing matters); headers auth cannot be
+        // loaded from storage at all.
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "auth_mode": null,
+            "OPENAI_API_KEY": "sk-live"
+        })));
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "ApiKey",
+            "OPENAI_API_KEY": "sk-live"
+        })));
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "headers",
+            "OPENAI_API_KEY": "sk-live"
+        })));
     }
 
     #[test]

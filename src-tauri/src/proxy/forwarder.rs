@@ -1172,7 +1172,13 @@ impl RequestForwarder {
         let codex_anthropic_base_is_full_endpoint =
             codex_responses_to_anthropic && base_url_is_full_endpoint(&base_url, "/v1/messages");
 
+        let endpoint_path = split_endpoint_and_query(&effective_endpoint).0;
         let url = if is_full_url
+            && matches!(app_type, AppType::Codex)
+            && matches!(endpoint_path, "/images/generations" | "/images/edits")
+        {
+            rewrite_codex_images_full_url(&base_url, passthrough_query.as_deref(), endpoint_path)?
+        } else if is_full_url
             || codex_chat_base_is_full_endpoint
             || codex_anthropic_base_is_full_endpoint
         {
@@ -1272,6 +1278,12 @@ impl RequestForwarder {
         } else {
             mapped_body
         };
+
+        if codex_responses_to_chat
+            && super::providers::transform_codex_chat_moonshot_schema::upstream_requires_ref_sibling_all_of(&base_url)
+        {
+            super::providers::transform_codex_chat_moonshot_schema::wrap_ref_siblings_in_chat_tools(&mut request_body);
+        }
 
         if matches!(app_type, AppType::Codex) {
             self.apply_media_prevention(&mut request_body, provider);
@@ -2249,6 +2261,33 @@ fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
     }
 }
 
+// Full-URL mode cannot send image payloads to a Responses or Chat route.
+// Only known sibling paths are safe to derive; opaque URLs must fail closed.
+fn rewrite_codex_images_full_url(
+    base_url: &str,
+    request_query: Option<&str>,
+    endpoint: &str,
+) -> Result<String, ProxyError> {
+    let trimmed = base_url.trim();
+    let parsed = url::Url::parse(trimmed).map_err(|_| {
+        ProxyError::ConfigError("Codex Images requires a valid full URL".to_string())
+    })?;
+    let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
+    let (without_query, base_query) = split_endpoint_and_query(without_fragment);
+    let without_query = without_query.trim_end_matches('/');
+    let parsed_path = parsed.path().trim_end_matches('/');
+    let suffix = ["/images/generations", "/images/edits", "/chat/completions", "/responses/compact", "/responses"]
+        .into_iter().find(|suffix| parsed_path.ends_with(suffix))
+        .ok_or_else(|| ProxyError::ConfigError(format!("Codex Images cannot derive {endpoint} from an opaque full URL; use a base URL or a full Responses, Chat, or Images URL")))?;
+    let prefix_len = without_query
+        .len()
+        .checked_sub(suffix.len())
+        .ok_or_else(|| ProxyError::ConfigError("Invalid Codex full URL".to_string()))?;
+    let rewritten = format!("{}{endpoint}", &without_query[..prefix_len]);
+    let rewritten = append_query_to_full_url(&rewritten, base_query);
+    Ok(append_query_to_full_url(&rewritten, request_query))
+}
+
 fn build_codex_oauth_session_headers(
     session_id: &str,
 ) -> Vec<(http::HeaderName, http::HeaderValue)> {
@@ -2431,6 +2470,33 @@ fn value_for_log(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn images_full_urls_derive_only_known_sibling_routes() {
+        for endpoint in ["/images/generations", "/images/edits"] {
+            for suffix in [
+                "/responses",
+                "/responses/compact",
+                "/chat/completions",
+                "/images/generations",
+                "/images/edits",
+            ] {
+                let base = format!(
+                    "https://relay.example/custom/%2F/v1{suffix}/?api-version=2026-07#ignored"
+                );
+                assert_eq!(
+                    rewrite_codex_images_full_url(&base, Some("client_version=0.153.4"), endpoint).unwrap(),
+                    format!("https://relay.example/custom/%2F/v1{endpoint}?api-version=2026-07&client_version=0.153.4")
+                );
+            }
+            for base in ["https://relay.example/custom/rpc-endpoint", "invalid-url"] {
+                assert!(matches!(
+                    rewrite_codex_images_full_url(base, None, endpoint),
+                    Err(ProxyError::ConfigError(_))
+                ));
+            }
+        }
+    }
+
     use super::*;
     use crate::database::Database;
     use axum::http::header::{HeaderValue, ACCEPT};
