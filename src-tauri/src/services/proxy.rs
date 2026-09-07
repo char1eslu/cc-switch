@@ -3798,9 +3798,9 @@ requires_openai_auth = {original_flag}
                 auth,
                 "auth.json must remain byte-identical"
             );
+            crate::settings::update_settings(crate::settings::AppSettings::default())
+                .expect("reset settings");
         }
-        crate::settings::update_settings(crate::settings::AppSettings::default())
-            .expect("reset settings");
     }
 
     #[test]

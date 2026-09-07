@@ -2279,11 +2279,10 @@ fn rewrite_codex_images_full_url(
     let suffix = ["/images/generations", "/images/edits", "/chat/completions", "/responses/compact", "/responses"]
         .into_iter().find(|suffix| parsed_path.ends_with(suffix))
         .ok_or_else(|| ProxyError::ConfigError(format!("Codex Images cannot derive {endpoint} from an opaque full URL; use a base URL or a full Responses, Chat, or Images URL")))?;
-    let prefix_len = without_query
-        .len()
-        .checked_sub(suffix.len())
-        .ok_or_else(|| ProxyError::ConfigError("Invalid Codex full URL".to_string()))?;
-    let rewritten = format!("{}{endpoint}", &without_query[..prefix_len]);
+    let prefix = without_query.strip_suffix(suffix).ok_or_else(|| {
+        ProxyError::ConfigError("Codex Images requires an unambiguous full URL suffix".to_string())
+    })?;
+    let rewritten = format!("{prefix}{endpoint}");
     let rewritten = append_query_to_full_url(&rewritten, base_query);
     Ok(append_query_to_full_url(&rewritten, request_query))
 }
@@ -2488,7 +2487,11 @@ mod tests {
                     format!("https://relay.example/custom/%2F/v1{endpoint}?api-version=2026-07&client_version=0.153.4")
                 );
             }
-            for base in ["https://relay.example/custom/rpc-endpoint", "invalid-url"] {
+            for base in [
+                "https://relay.example/custom/rpc-endpoint",
+                "https://relay.example/中文/responses/.",
+                "invalid-url",
+            ] {
                 assert!(matches!(
                     rewrite_codex_images_full_url(base, None, endpoint),
                     Err(ProxyError::ConfigError(_))
