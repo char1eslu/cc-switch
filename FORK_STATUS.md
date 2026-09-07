@@ -9,8 +9,8 @@
 | 项 | 值 |
 | --- | --- |
 | 已完整评估到的上游基线 | `f3b18df1` |
-| 当前已验证代码 head | `d00bb0bd`（`dev`；本机前端验证、CI 与 macOS Ad Hoc 构建均通过） |
-| 最近一轮已适配的上游修复 | Codex catalog 必填字段、OAuth 客户端身份与并行工具、接管登录标志、Moonshot schema、Images 生成/编辑、Claude 5 接管别名、会话过滤、UTF-8 截断与九月定价（本轮 CI/构建待验证） |
+| 当前已验证代码 head | `c3cdf3e4`（`dev`；本机前端验证、完整 CI 与 macOS Ad Hoc 构建均通过） |
+| 最近一轮已适配的上游修复 | Codex catalog 必填字段、OAuth 客户端身份与并行工具、接管登录标志、Moonshot schema、Images 生成/编辑、Claude 5 接管别名、会话过滤、UTF-8 截断与九月定价 |
 
 **下次同步从这里开始**：
 
@@ -123,7 +123,7 @@ Alpha Search 注册，均不适用；`transform_responses.rs` 其余提交已在
 | | SCHEMA_VERSION |
 | --- | --- |
 | 本 fork | **18**（2026-08-28 跟进） |
-| 上游（`v3.20.1`） | **18**（`bcee61be` 会话日志字节游标引入） |
+| 上游（`v3.20.2`） | **18**（`bcee61be` 会话日志字节游标引入） |
 
 **v18 跟进记录（2026-08-28）。** 随 `bcee61be` / `f8d97348` 的 Claude 会话日志
 字节游标改造一起搬入：`session_log_sync` 新增 `last_byte_offset`（seek 增量读的
@@ -300,7 +300,23 @@ Images 适配时补齐了上游遗漏的请求体限制：新 handler 用 Axum `
 | `bd1265d2` | updater 错误提示；fork 已停用 updater |
 | `b6254432`、`f3b18df1` | 上游版本号与发行说明，不改变 fork 构建/分发流程 |
 
-本轮验证：待 dev CI 与 macOS Ad Hoc 构建完成后补记。
+验证（代码 head `c3cdf3e4`；主体适配 `46840629`）：本机 TypeScript、
+Prettier、renderer build 与前端 55 files / 341 tests 通过；Rust 格式由本轮隔离
+下载的 Rust 1.98.1 配套 rustfmt 检查。CI
+[`34163892654`](https://github.com/char1eslu/cc-switch/actions/runs/34163892654)
+全绿：前端 341 tests；Rust 主库 1624 passed / 2 ignored，其他目标 91 passed，
+合计 1715 passed / 0 failed / 2 ignored；Clippy 与 rustfmt 均通过。
+Ad Hoc [`34164112480`](https://github.com/char1eslu/cc-switch/actions/runs/34164112480)
+在同一代码 head 完成构建、签名和上传；artifact `CC-Switch-macOS-arm64-ad-hoc`
+为 11,558,837 bytes。下载的 app ZIP 为 11,587,401 bytes，本机 ZIP CRC、arm64
+架构与 `codesign --verify --deep --strict` 均通过；包内版本沿用 fork 的 3.16.3。
+
+ZIP SHA-256：`d20481c3bb8ac02806fbfaf42462db128150b3581aba9e6ede1371b5b97a38a4`。
+
+最终小修把认证测试的 settings 清理留在 `TempHome` 作用域内，并将 Images
+完整 URL 派生改为精确 `strip_suffix`，拒绝 URL 规范化后后缀与原文不一致的路径。
+该小修包含在上述最终 CI 和构建中。本轮被替代的首轮 CI 已删除，仅保留最终验证。
+
 
 ### 2026-09-03（`3217f725..92d52916`，25 个）
 
@@ -733,7 +749,8 @@ Clippy 零警告。CI 32041716595 / Ad Hoc 32041958536（run 已删，ID 记录�
 
 ## 验证手段
 
-本机默认不保留 Rust toolchain，也没有 pnpm；后端改动以 GitHub CI 为最终验证。
+本机默认不保留 Rust toolchain；后端改动以 GitHub CI 为最终验证。
+需要 pnpm 时按 `packageManager` 锁定版本放入隔离目录，验证后清理。
 本机跑前端用 `node_modules/.bin` 下的项目锁定版二进制（tsc / vitest / prettier），
 不要用 `npx prettier`——会拉最新版，与 CI 的 `format:check` 结果不一致。
 另注意 `format:check` 只覆盖 `src/**`，改了 `tests/**` 要单独跑一次 prettier。
