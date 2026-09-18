@@ -66,7 +66,8 @@ impl Database {
             description TEXT, homepage TEXT, docs TEXT, tags TEXT NOT NULL DEFAULT '[]',
             enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0,
             enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
-            enabled_opencode BOOLEAN NOT NULL DEFAULT 0, enabled_hermes BOOLEAN NOT NULL DEFAULT 0
+            enabled_opencode BOOLEAN NOT NULL DEFAULT 0, enabled_mcode BOOLEAN NOT NULL DEFAULT 0,
+            enabled_hermes BOOLEAN NOT NULL DEFAULT 0
         )",
             [],
         )
@@ -95,6 +96,7 @@ impl Database {
             enabled_gemini BOOLEAN NOT NULL DEFAULT 0,
             enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
             enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
+            enabled_mcode BOOLEAN NOT NULL DEFAULT 0,
             enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
             installed_at INTEGER NOT NULL DEFAULT 0,
             content_hash TEXT,
@@ -543,6 +545,11 @@ impl Database {
                         log::info!("迁移数据库从 v17 到 v18（会话日志字节游标列）");
                         Self::migrate_v17_to_v18(conn)?;
                         Self::set_user_version(conn, 18)?;
+                    }
+                    18 => {
+                        log::info!("迁移数据库从 v18 到 v19（上游 mcode 兼容列，本 fork 不适用）");
+                        Self::migrate_v18_to_v19(conn)?;
+                        Self::set_user_version(conn, 19)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1358,6 +1365,31 @@ impl Database {
         Ok(())
     }
 
+    /// v18 -> v19：上游为 MiniMax Code（mcode）引入 `enabled_mcode` 列。
+    ///
+    /// fork 不维护 mcode 应用，但**这一版必须跟进**：真实库跑过上游构建后
+    /// `user_version` 会落盘 19，而 fork 的启动守卫（`version > SCHEMA_VERSION`）
+    /// 会直接拒绝打开并报「数据库版本过新」。与 2026-08-21 的 v17 跟进是
+    /// 同一个场景——那次就是被真实库拒绝才补的版本号。
+    ///
+    /// 列本身是默认 0 的兼容占位，fork 业务代码不读取（同 `enabled_gemini`
+    /// 等已裁应用的列）。列名同时登记在 `ensure_upstream_schema_compatibility`
+    /// 的兼容列数组里：fork 历史库走 `is_legacy_fork_schema` 的"直接盖版本号"
+    /// 分支，不经过 `while version < SCHEMA_VERSION` 循环，只靠迁移链会漏掉它们。
+    fn migrate_v18_to_v19(conn: &Connection) -> Result<(), AppError> {
+        for table in ["mcp_servers", "skills"] {
+            if Self::table_exists(conn, table)? {
+                Self::add_column_if_missing(
+                    conn,
+                    table,
+                    "enabled_mcode",
+                    "BOOLEAN NOT NULL DEFAULT 0",
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// 幂等补齐 v18 的两个游标列。
     ///
     /// 除迁移链外还挂在 `ensure_upstream_schema_compatibility` 上：fork 历史库
@@ -1370,8 +1402,8 @@ impl Database {
         Ok(())
     }
 
-    /// 保持上游 schema 的列/表/约束（含 v17 的 `session_usage_dedup`，
-    /// 由迁移链或下方幂等补建）。fork 业务代码只读写
+    /// 保持上游 schema 的列/表/约束（含 v17 的 `session_usage_dedup`、
+    /// v19 的 `enabled_mcode`，由迁移链或下方幂等补建）。fork 业务代码只读写
     /// Claude/Codex 字段，其它列是默认为 0 的兼容占位。
     fn ensure_upstream_schema_compatibility(conn: &Connection) -> Result<(), AppError> {
         conn.execute(
@@ -1388,6 +1420,7 @@ impl Database {
                 "enabled_gemini",
                 "enabled_grokbuild",
                 "enabled_opencode",
+                "enabled_mcode",
                 "enabled_hermes",
             ] {
                 Self::add_column_if_missing(conn, table, column, "BOOLEAN NOT NULL DEFAULT 0")?;

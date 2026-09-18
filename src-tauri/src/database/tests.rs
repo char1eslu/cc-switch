@@ -1126,8 +1126,8 @@ fn upstream_v17_database_is_accepted() {
     );
 }
 
-/// 上游 v18 数据库（当前对齐版本）必须原样接受：版本号相等走不进迁移循环，
-/// 只补幂等兼容结构。
+/// 上游 v18 数据库（上一版对齐版本）必须能被 fork 打开：走一次 v18 → v19
+/// 迁移（补 mcode 兼容列）后收敛。
 #[test]
 fn upstream_v18_database_is_accepted() {
     let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -1140,6 +1140,68 @@ fn upstream_v18_database_is_accepted() {
         Database::get_user_version(&conn).expect("version"),
         SCHEMA_VERSION
     );
+}
+
+/// 上游 v19 数据库（当前对齐版本）必须原样接受：版本号相等走不进迁移循环，
+/// 只补幂等兼容结构。
+#[test]
+fn upstream_v19_database_is_accepted() {
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+    Database::set_user_version(&conn, 19).expect("set user_version=19");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("v19 db must be accepted");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version"),
+        SCHEMA_VERSION
+    );
+}
+
+/// v18 → v19：给存量 `mcp_servers` / `skills` 表补上上游 mcode 的
+/// `enabled_mcode` 兼容列，存量行默认为 0。
+///
+/// 现场场景：真实库跑过上游构建后落盘 v19，fork 的启动守卫会以
+/// 「数据库版本过新」拒绝打开——与 v17 跟进时踩到的是同一个坑。
+#[test]
+fn migration_v18_to_v19_adds_enabled_mcode_to_existing_tables() {
+    // 真实升级路径：v18 库带旧 DDL（无 enabled_mcode）与存量行。
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    conn.execute_batch(
+        "CREATE TABLE mcp_servers (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, server_config TEXT NOT NULL,
+            enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0
+         );
+         CREATE TABLE skills (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, directory TEXT NOT NULL,
+            enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0
+         );
+         INSERT INTO mcp_servers (id, name, server_config) VALUES ('m1', 'MCP 1', '{}');
+         INSERT INTO skills (id, name, directory) VALUES ('s1', 'Skill 1', '/tmp/s1');",
+    )
+    .expect("seed legacy v18 tables");
+    Database::set_user_version(&conn, 18).expect("set user_version=18");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate v18 -> v19");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version"),
+        SCHEMA_VERSION
+    );
+    for table in ["mcp_servers", "skills"] {
+        assert!(
+            Database::has_column(&conn, table, "enabled_mcode").expect("column"),
+            "{table} 必须补出 enabled_mcode 列"
+        );
+    }
+    let enabled: i64 = conn
+        .query_row(
+            "SELECT enabled_mcode FROM mcp_servers WHERE id = 'm1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read migrated row");
+    assert_eq!(enabled, 0, "存量行的 enabled_mcode 必须默认为 0");
 }
 
 /// v17 → v18：给存量 `session_log_sync` 表补上字节游标与尾部指纹列，
@@ -1224,6 +1286,7 @@ fn legacy_fork_v19_is_normalized_without_losing_core_rows() {
             "enabled_gemini",
             "enabled_grokbuild",
             "enabled_opencode",
+            "enabled_mcode",
             "enabled_hermes",
         ] {
             conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
@@ -1264,6 +1327,12 @@ fn legacy_fork_v19_is_normalized_without_losing_core_rows() {
         Database::has_column(&conn, "mcp_servers", "enabled_grokbuild")
             .expect("restored official column")
     );
+    // v19 新增的兼容列同样要由 `ensure_upstream_schema_compatibility` 补回：
+    // 历史 fork 库走"直接盖版本号"分支，不经过迁移循环。
+    assert!(
+        Database::has_column(&conn, "mcp_servers", "enabled_mcode")
+            .expect("restored v19 compatibility column")
+    );
 }
 
 #[test]
@@ -1275,6 +1344,7 @@ fn partially_normalized_fork_v19_is_completed() {
             "enabled_gemini",
             "enabled_grokbuild",
             "enabled_opencode",
+            "enabled_mcode",
             "enabled_hermes",
         ] {
             conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
@@ -1297,19 +1367,20 @@ fn partially_normalized_fork_v19_is_completed() {
 }
 
 #[test]
-fn future_v19_without_complete_legacy_fingerprint_is_rejected() {
+fn future_v20_without_complete_legacy_fingerprint_is_rejected() {
     let conn = Connection::open_in_memory().expect("open in-memory db");
     Database::create_tables_on_conn(&conn).expect("create current tables");
     for column in [
         "enabled_gemini",
         "enabled_grokbuild",
         "enabled_opencode",
+        "enabled_mcode",
         "enabled_hermes",
     ] {
         conn.execute(&format!("ALTER TABLE mcp_servers DROP COLUMN {column}"), [])
             .expect("simulate an incomplete or hand-edited future schema");
     }
-    Database::set_user_version(&conn, 19).expect("set future version");
+    Database::set_user_version(&conn, 20).expect("set future version");
 
     let error = Database::apply_schema_migrations_on_conn(&conn)
         .expect_err("incomplete legacy fingerprint must not be downgraded");
@@ -1317,7 +1388,7 @@ fn future_v19_without_complete_legacy_fingerprint_is_rejected() {
     assert!(error.to_string().contains("数据库版本过新"));
     assert_eq!(
         Database::get_user_version(&conn).expect("version after rejection"),
-        19
+        20
     );
 }
 
@@ -1330,6 +1401,7 @@ fn legacy_fork_v17_is_distinguished_from_future_upstream_v17() {
             "enabled_gemini",
             "enabled_grokbuild",
             "enabled_opencode",
+            "enabled_mcode",
             "enabled_hermes",
         ] {
             conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
@@ -1421,6 +1493,7 @@ fn fresh_database_migrates_to_current_schema_version() {
             "enabled_gemini",
             "enabled_grokbuild",
             "enabled_opencode",
+            "enabled_mcode",
             "enabled_hermes",
         ] {
             assert!(Database::has_column(&conn, table, column).expect("compatibility column"));
