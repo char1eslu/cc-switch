@@ -282,8 +282,12 @@ fn known_text_only_model(model: &str) -> bool {
         "ark-code-latest",
         "deepseek-chat",
         "deepseek-reasoner",
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
+        // `deepseek-v4-flash` 故意不在名单：它是供应商仍接受、但会路由到识图的
+        // `deepseek-flash` 的 legacy 别名（api-docs.deepseek.com/guides/vision），
+        // 继续按纯文本硬拦会把用户的图片剥掉，因此必须 fail-open。
+        // `deepseek-v4-pro` 同理：2026-09-14 12:00 北京时间起，官方把所有
+        // deepseek-v4-pro 请求路由到识图的 V4.1 Flash
+        // （api-docs.deepseek.com/quick_start/pricing 注(2)）。
         "glm-5.1",
         // 精确匹配而非 TAIL_PREFIXES：智谱视觉版沿用 4v/5v 命名（glm-5.2v），
         // 前缀匹配会误剥未来多模态变体的图片。
@@ -464,7 +468,7 @@ mod tests {
     fn known_text_only_models_replace_images_before_send() {
         let provider = provider(json!({}));
         let mut body = json!({
-            "model": "deepseek/deepseek-v4-pro",
+            "model": "qwen/qwen3-coder-plus",
             "messages": [{
                 "role": "user",
                 "content": [
@@ -486,7 +490,7 @@ mod tests {
     fn known_text_only_models_replace_chat_image_url_before_send() {
         let provider = provider(json!({}));
         let mut body = json!({
-            "model": "deepseek-v4-flash",
+            "model": "qwen3-coder-plus",
             "messages": [{
                 "role": "user",
                 "content": [
@@ -510,7 +514,7 @@ mod tests {
     fn known_text_only_models_replace_codex_input_image_before_send() {
         let provider = provider(json!({}));
         let mut body = json!({
-            "model": "deepseek-v4-flash",
+            "model": "qwen3-coder-plus",
             "input": [{
                 "role": "user",
                 "content": [
