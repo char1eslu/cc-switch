@@ -306,6 +306,8 @@ struct ApiExtraUsage {
 /// 已知的 Claude 用量窗口名称。`QuotaTier::name` 会是其中之一。
 pub const TIER_FIVE_HOUR: &str = "five_hour";
 pub const TIER_SEVEN_DAY: &str = "seven_day";
+/// 内部统一名称：Fable 实际由 `limits[].scope.model` 标识。
+pub const TIER_SEVEN_DAY_FABLE: &str = "seven_day_fable";
 pub const TIER_SEVEN_DAY_OPUS: &str = "seven_day_opus";
 pub const TIER_SEVEN_DAY_SONNET: &str = "seven_day_sonnet";
 
@@ -316,6 +318,7 @@ pub const TIER_WEEKLY_LIMIT: &str = "weekly_limit";
 const KNOWN_TIERS: &[&str] = &[
     TIER_FIVE_HOUR,
     TIER_SEVEN_DAY,
+    TIER_SEVEN_DAY_FABLE,
     TIER_SEVEN_DAY_OPUS,
     TIER_SEVEN_DAY_SONNET,
 ];
