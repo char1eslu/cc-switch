@@ -165,6 +165,31 @@ DDL 与上游逐字一致，fork 业务代码不读写该列。**两处落点都
 只写迁移链会漏掉它们（与 v18 的 `last_byte_offset` 同一坑）。备份守卫已是
 `(17..=19).contains(&version)`，无需改动。
 
+**v19 真实库干跑（2026-09-18 完成，两条路径都验过）。** 用
+`~/.cc-switch/cc-switch.db` 的副本验证（**源库全程只读打开，未改动**）。该库实测：
+`user_version = 18`、`settings.fork_schema_version = 1`、`integrity_check = ok`，
+`enabled_mcode` 在 `mcp_servers` / `skills` 两表**均缺失** —— 正是本轮的适用场景。
+
+- **实际走的是迁移循环，不是"直接盖版本号"。** 该库 `enabled_gemini` /
+  `enabled_grokbuild` / `enabled_opencode` / `enabled_hermes` 四列俱全，于是
+  `lacks_upstream_app_columns = false` → `is_legacy_fork_schema = false` → 走
+  `while 18 < 19` → `migrate_v18_to_v19`。⚠️ **不能想当然认为真实库一定走
+  legacy 分支** —— 取决于那四列是否齐备，两种库都要能正确处理。
+- 干跑结果：`user_version` 18→19；两表各追加 `enabled_mcode BOOLEAN NOT NULL
+  DEFAULT 0`；`sqlite_master` 仅这两条 CREATE 变化，无新增/删除对象；10 张业务表
+  行数逐一比对**零变化**（providers 30、mcp_servers 12、skills 27、settings 9、
+  session_log_sync 1009、proxy_request_logs 22752、model_pricing 212、
+  proxy_config 4、profiles 0、session_usage_dedup 0）；存量行 `enabled_mcode`
+  全为 0 且无 NULL；`integrity_check = ok`、`foreign_key_check` 无违规；
+  重复执行被 `has_column` 拦截，幂等。
+- **legacy 分支单独验证**（合成 v18 fork 历史库：有 `settings`、只有
+  `enabled_claude` / `enabled_codex`、无任何上游应用列）：判定
+  `is_legacy_fork_schema = true` → 兼容列循环一次补上 5 列（含 `enabled_mcode`），
+  行数无损、`integrity_check = ok`。
+- **反事实对照（证明该登记必要，不是冗余）**：把兼容列数组退回本轮之前的 4 列，
+  同一合成库上 `enabled_mcode` **两表都漏掉**。即若只改迁移链不加这一行，
+  历史 fork 库升级后 DAO 一旦 SELECT 该列，整表查询就会因缺列失败。
+
 **v18 跟进记录（2026-08-28）。** 随 `bcee61be` / `f8d97348` 的 Claude 会话日志
 字节游标改造一起搬入：`session_log_sync` 新增 `last_byte_offset`（seek 增量读的
 字节游标）与 `last_tail_fingerprint`（游标边界前 4 KiB 的指纹，识别同尺寸/更大的
@@ -923,8 +948,12 @@ Clippy 零警告。CI 32041716595 / Ad Hoc 32041958536（run 已删，ID 记录�
      基线既有测试守护的「归一化路径命中但原始串不匹配」场景开始返回垃圾 URL
      （`dd822e85`）。
 
-- `db114b07` 的 v19 迁移**仍建议先用真实库副本干跑**，确认 v19 库原样打开、
-  零迁移。CI 只覆盖到 `database/tests.rs` 里的合成库，覆盖不到真实用户的库。
+- ~~`db114b07` 的 v19 迁移需用真实库副本干跑~~ —— **2026-09-18 已完成**。两条路径
+  都验过（真实库走迁移循环、合成 fork 历史库走 legacy 分支），10 张业务表行数
+  零损失、`integrity_check = ok`、重复执行幂等；反事实对照确认兼容列登记是必要的。
+  详见「数据库版本与上游对齐，fork 迁移单独记账」的 v19 跟进记录。
+  注意 CI 只覆盖 `database/tests.rs` 里的合成库，覆盖不到真实用户的库，
+  所以这类改动仍应保留手工干跑这一步。
 
 ## 验证手段
 
@@ -957,7 +986,24 @@ upstream remote 已配置为只跟踪 `main`（2026-08-21：fetch refspec 收紧
 若临时在本机验证 Rust，必须使用隔离目录并在完成后删除 Rustup/Cargo/target 缓存
 （2026-08-17 那轮用 `/private/tmp` 一次性工具链，结束即删）。
 
-数据库迁移改动，建议先用真实库的副本干跑验证，确认列/行变化与数据无损。
+数据库迁移改动必须先用真实库的副本干跑，确认列/行变化与数据无损。
+本机真实库在 `~/.cc-switch/cc-switch.db`（**只读打开，绝不直接改**），
+`.fork-sync-tools/` 下有两个可复用的干跑脚本（未跟踪，仅本机工具）：
+
+- `dryrun-schema-migration.py` —— 从只读源库备份出可写副本，逐字复现目标迁移的
+  `ALTER TABLE`，然后比对：`user_version`、10 张业务表行数、新列的类型/NOT NULL/
+  DEFAULT、存量行取值、`sqlite_master` 差异（只应多目标列）、`integrity_check`、
+  `foreign_key_check`、以及重复执行的幂等性。
+- `dryrun-legacy-fork-schema.py` —— 合成一个"fork 历史库"（有 `settings`、只有
+  `enabled_claude`/`enabled_codex`、无任何上游应用列），复现
+  `is_legacy_fork_schema` 判定与 `ensure_upstream_schema_compatibility` 的兼容列
+  循环；并做**反事实对照**（把兼容列数组退回改动前），证明新列登记是必要的。
+
+⚠️ 关键点：**真实库未必走 legacy 分支。** 走哪条取决于
+`enabled_gemini`/`enabled_grokbuild`/`enabled_opencode`/`enabled_hermes` 四列是否
+齐备 —— 齐备则 `lacks_upstream_app_columns = false`，走迁移循环。**两种库都要验。**
+
+副本可能含 provider 密钥与请求日志，**用完立即删除**，不要留在 `/tmp`。
 
 ### 2026-08-21 本机验证补记
 
