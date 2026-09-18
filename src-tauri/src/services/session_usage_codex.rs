@@ -390,19 +390,24 @@ fn sync_single_codex_file(db: &Database, file_path: &Path) -> Result<(u32, u32),
     let metadata = fs::metadata(file_path)
         .map_err(|e| AppError::Config(format!("无法读取文件元数据: {e}")))?;
     let file_modified = metadata_modified_nanos(&metadata);
+    let file_size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
 
     // 检查同步状态
     let (last_modified, last_offset) = get_sync_state(db, &file_path_str)?;
+    let last_byte_offset = get_codex_byte_offset(db, &file_path_str)?;
 
-    // 文件未变化则跳过
-    if file_modified <= last_modified {
+    // 文件未变化则跳过。Codex 会全程持有 rollout 的追加句柄，Windows NTFS 上
+    // 文件增长时 mtime 不推进，纯 mtime 门控会让增长中的 rollout 永远被跳过，
+    // 因此必须 mtime 与字节长度**同时**未变才跳过。升级前的行没有字节记录
+    // （NULL），会重扫一次以补上游标。
+    if file_modified == last_modified && last_byte_offset == Some(file_size) {
         return Ok((0, 0));
     }
 
     // 打开文件逐行解析
     let file =
         fs::File::open(file_path).map_err(|e| AppError::Config(format!("无法打开文件: {e}")))?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
 
     let mut state = FileParseState {
         session_id: None,
@@ -414,15 +419,34 @@ fn sync_single_codex_file(db: &Database, file_path: &Path) -> Result<(u32, u32),
     };
 
     let mut line_offset: i64 = 0;
+    let mut observed_bytes: i64 = 0;
     let mut imported: u32 = 0;
     let mut skipped: u32 = 0;
 
-    for line_result in reader.lines() {
+    loop {
+        let mut bytes = Vec::new();
+        let read = reader
+            .read_until(b'\n', &mut bytes)
+            .map_err(|e| AppError::Config(format!("无法读取 Codex 日志: {e}")))?;
+        if read == 0 {
+            break;
+        }
+        // 不完整的尾部记录也计入已观测字节：否则崩掉后未续写的 rollout 永远比
+        // 文件小，每次同步都要整份重解析。但它的行号游标不推进，文件一旦增长
+        // 就会重试该记录。
+        observed_bytes += read as i64;
+        // 写入方可能只写了最后一条 JSON 记录的一部分：留待下次重试；同时兼容
+        // 没有换行符的完整末行（含已关闭的历史文件）。
+        if bytes.last() != Some(&b'\n')
+            && serde_json::from_slice::<serde_json::Value>(&bytes).is_err()
+        {
+            break;
+        }
         line_offset += 1;
 
-        let line = match line_result {
-            Ok(l) => l,
-            Err(_) => continue, // 容忍不完整的最后一行
+        let line = match String::from_utf8(bytes) {
+            Ok(line) => line,
+            Err(_) => continue, // 容忍非 UTF-8 行
         };
 
         if line.trim().is_empty() {
@@ -609,9 +633,44 @@ fn sync_single_codex_file(db: &Database, file_path: &Path) -> Result<(u32, u32),
     }
 
     // 更新同步状态
-    update_sync_state(db, &file_path_str, file_modified, line_offset)?;
+    update_codex_sync_state(db, &file_path_str, file_modified, line_offset, observed_bytes)?;
 
     Ok((imported, skipped))
+}
+
+/// 读取 Codex 路径已记录的字节游标（`session_log_sync.last_byte_offset`）。
+///
+/// 只用于判断文件是否真的变化，**不作 seek 位置**：解析始终从头开始，由
+/// `last_line_offset` 负责去重，这样不完整的尾记录可以在文件增长后被重试。
+fn get_codex_byte_offset(db: &Database, file_path: &str) -> Result<Option<i64>, AppError> {
+    let conn = lock_conn!(db.conn);
+    let result = conn.query_row(
+        "SELECT last_byte_offset FROM session_log_sync WHERE file_path = ?1",
+        rusqlite::params![file_path],
+        |row| row.get::<_, Option<i64>>(0),
+    );
+    Ok(result.unwrap_or(None))
+}
+
+/// 写入 Codex 路径的同步游标。
+///
+/// 先由 `update_sync_state` 落 mtime 与行号游标（其 INSERT OR REPLACE 的列清单
+/// 不含 `last_byte_offset`），再补一条 UPDATE 写字节游标。
+fn update_codex_sync_state(
+    db: &Database,
+    file_path: &str,
+    last_modified: i64,
+    line_offset: i64,
+    observed_bytes: i64,
+) -> Result<(), AppError> {
+    update_sync_state(db, file_path, last_modified, line_offset)?;
+    let conn = lock_conn!(db.conn);
+    conn.execute(
+        "UPDATE session_log_sync SET last_byte_offset = ?1 WHERE file_path = ?2",
+        rusqlite::params![observed_bytes, file_path],
+    )
+    .map_err(|e| AppError::Database(format!("更新字节游标失败: {e}")))?;
+    Ok(())
 }
 
 /// 插入单条 Codex 会话记录到 proxy_request_logs
@@ -1153,5 +1212,102 @@ mod tests {
         // 实际钳制在调用侧：delta.cached_input.min(delta.input)
         let clamped = delta.cached_input.min(delta.input);
         assert_eq!(clamped, 10);
+    }
+
+    /// 一行合法但不产生任何 token 事件的 rollout 记录：解析器会读它、更新
+    /// session_id，但不会写 proxy_request_logs，因此测试只需一个内存库。
+    const MINIMAL_ROLLOUT_LINE: &str =
+        "{\"timestamp\":\"2026-09-18T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"session-1\"}}\n";
+
+    /// `total_changes()` 累计值，用来区分「真的跳过了」与「重解析了一遍只是没
+    /// 导入任何行」——后者同样返回 `(0, 0)`。
+    fn total_changes(db: &Database) -> i64 {
+        let conn = lock_conn!(db.conn);
+        conn.query_row("SELECT total_changes()", [], |row| row.get(0))
+            .expect("read total_changes")
+    }
+
+    #[test]
+    fn codex_sync_counts_incomplete_tail_bytes_but_not_its_line() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("rollout-2026-09-18T00-00-00-tail.jsonl");
+        // 两行完整记录 + 一段没有换行的残缺 JSON（模拟崩溃后未续写的 rollout）
+        let incomplete = "{\"timestamp\":\"2026-09-18T00:00:02Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"x\"";
+        let content = format!("{MINIMAL_ROLLOUT_LINE}{MINIMAL_ROLLOUT_LINE}{incomplete}");
+        fs::write(&file, &content).expect("write rollout");
+        let db = Database::memory().expect("memory database");
+        let path = file.to_string_lossy().to_string();
+
+        sync_single_codex_file(&db, &file).expect("first sync");
+        assert_eq!(
+            get_codex_byte_offset(&db, &path).expect("byte offset"),
+            Some(content.len() as i64),
+            "残缺尾部也要计入已观测字节，否则每次同步都会整份重解析"
+        );
+        let (_, line_offset) = get_sync_state(&db, &path).expect("sync state");
+        assert_eq!(line_offset, 2, "残缺尾部不应消耗行号游标");
+
+        // 文件未再变化 → 必须跳过（不是「重解析后导入 0 行」）
+        let before = total_changes(&db);
+        assert_eq!(sync_single_codex_file(&db, &file).unwrap(), (0, 0));
+        assert_eq!(
+            total_changes(&db),
+            before,
+            "未变化的文件必须真正跳过，不得重解析"
+        );
+
+        // 追加把残缺记录补完 → 必须重扫并消费该行
+        fs::write(&file, format!("{content}}}}}\n")).expect("complete rollout");
+        sync_single_codex_file(&db, &file).expect("second sync");
+        let (_, line_offset) = get_sync_state(&db, &path).expect("sync state");
+        assert_eq!(line_offset, 3, "补完后的记录必须被消费");
+    }
+
+    #[test]
+    fn codex_sync_gate_needs_both_mtime_and_byte_length() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("rollout-2026-09-18T00-00-00-grow.jsonl");
+        fs::write(&file, MINIMAL_ROLLOUT_LINE).expect("write rollout");
+        let db = Database::memory().expect("memory database");
+        let path = file.to_string_lossy().to_string();
+
+        sync_single_codex_file(&db, &file).expect("first sync");
+        let size = fs::metadata(&file).expect("metadata").len() as i64;
+        let mtime = metadata_modified_nanos(&fs::metadata(&file).expect("metadata"));
+        assert_eq!(
+            get_codex_byte_offset(&db, &path).expect("byte offset"),
+            Some(size)
+        );
+
+        // mtime 与长度都没变 → 跳过
+        let before = total_changes(&db);
+        assert_eq!(sync_single_codex_file(&db, &file).unwrap(), (0, 0));
+        assert_eq!(total_changes(&db), before, "mtime 与长度都没变时必须跳过");
+
+        // 模拟 Windows 上「文件增长但 mtime 不推进」：mtime 仍与文件一致，但字节
+        // 游标落后于文件长度 → 必须重扫并补上游标
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "UPDATE session_log_sync SET last_byte_offset = ?1 WHERE file_path = ?2",
+                rusqlite::params![size - 1, path.clone()],
+            )
+            .expect("stale byte cursor");
+        }
+        assert_eq!(
+            metadata_modified_nanos(&fs::metadata(&file).expect("metadata")),
+            mtime,
+            "mtime 未变，只有长度对不上"
+        );
+        sync_single_codex_file(&db, &file).expect("rescan");
+        assert!(
+            total_changes(&db) > before,
+            "长度不一致必须触发重扫（mtime 门控单独会漏掉增长中的 rollout）"
+        );
+        assert_eq!(
+            get_codex_byte_offset(&db, &path).expect("byte offset"),
+            Some(size),
+            "重扫后字节游标必须收敛到文件长度"
+        );
     }
 }
