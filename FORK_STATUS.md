@@ -2,25 +2,25 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-09-07
+最后更新：2026-09-18
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `f3b18df1` |
-| 当前已验证代码 head | `c3cdf3e4`（`dev`；本机前端验证、完整 CI 与 macOS Ad Hoc 构建均通过） |
-| 最近一轮已适配的上游修复 | Codex catalog 必填字段、OAuth 客户端身份与并行工具、接管登录标志、Moonshot schema、Images 生成/编辑、Claude 5 接管别名、会话过滤、UTF-8 截断与九月定价 |
+| 已完整评估到的上游基线 | `06082e18` |
+| 当前已验证代码 head | `c3cdf3e4`（`dev`；本机前端验证、完整 CI 与 macOS Ad Hoc 构建均通过）。本轮 `sync-2026-09-18` 分支（19 个提交）**尚未验证**，见「同步审计日志」2026-09-18 条目 |
+| 最近一轮已适配的上游修复 | Fable 周限额改读 `limits[]`、统一同步保留子供应商元数据、Images 编辑与 Images API 后续、Codex rollout 持久化字节游标、空 `reasoning_content` 占位符、相邻 commentary 合并、按应用保留代理配置、npm dist-tags 专用端点、智谱 Responses 模型列表、DeepSeek V4.1 定价与识图解除门控、v19 mcode 迁移 |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline f3b18df1..upstream/main
+git log --oneline 06082e18..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-  用 `f3b18df1..upstream/main` 才是真实增量。
+  **用上表第一行那个基线值起算**（本轮是 `06082e18..upstream/main`）才是真实增量。
 - ⚠️ 代码块里的基线值和上表第一行必须一起改。2026-08-18 曾发现两处不一致
   （表写 `1f38c838`，审计节已到 `a98829ba`），按表起算会把 35 个已审提交重算一遍。
 - 历轮增量范围与结论见下方「同步审计日志」，从新到旧。
@@ -118,12 +118,52 @@ Responses SSE 由它解析。fork 版本曾冻结在 2026-05-11（`aec055a1`）�
 计费回退到 `transform_responses.rs`。`server.rs` 区间内仅 Grok 路由与
 Alpha Search 注册，均不适用；`transform_responses.rs` 其余提交已在 fork 或属放弃区。
 
+### ⚠️ 未登记的漂移区（2026-09-18 发现，**尚未处理**）
+
+与 `streaming_responses.rs` 同性质、但此前没有登记的文件：
+
+| 文件 | fork | 上游 `f3b18df1` | 上游 `06082e18` | 说明 |
+| --- | --- | --- | --- | --- |
+| `proxy/providers/transform_responses.rs` | **2294** | 5364 | 5475 | 活路径：承载 `api_format == "openai_responses"` 供应商的请求转换 |
+| `services/session_usage_codex.rs` | **1157** | 3218 | 3218 | 活路径：Codex 会话用量解析 |
+| `services/subscription.rs` | 827 → **893** | 1597 | 1597 | 本轮已搬 `bfbbf15c`，但漂移仍在 |
+| `proxy/providers/transform.rs` | 1797 | 1987 | 2034 | — |
+
+`transform_responses.rs` 此前只被标为「websearch 部分属放弃区」，**整文件级漂移
+从未记录**。后果：本轮就有 3 个上游提交动该文件（`bd247a4a`、`746e2288`、
+`7726c834`），全部无法 `git apply -3`，只能逐 hunk 手工适配；漂移继续扩大则
+成本线性上升。
+
+`session_usage_codex.rs` 是本轮新发现的：fork 1157 行 vs 上游 3218 行，
+且架构不同 —— 上游有 `ParsedCodexFile` / `CodexSyncPass` / byte-seek 三层，
+fork 没有。因此 `45f9e819` + `45b9a952` 无法 cherry-pick，只能按语义等价实现
+（见本轮审计条目 `b9922e2f`）。
+
+**建议**：把这两个文件与 `streaming_responses.rs` 并列登记为漂移区，并在
+下一轮开工前单独立项评估是否整体追平（参照 2026-08-21 对
+`streaming_responses.rs` 的做法：先核实 fork 版本无独有定制，再整体替换到
+某个上游时点）。**在追平之前，凡涉及这两个文件的上游提交都要预留逐 hunk
+适配的工时。**
+
 ## 数据库版本与上游对齐，fork 迁移单独记账
 
 | | SCHEMA_VERSION |
 | --- | --- |
-| 本 fork | **18**（2026-08-28 跟进） |
-| 上游（`v3.20.2`） | **18**（`bcee61be` 会话日志字节游标引入） |
+| 本 fork | **19**（2026-09-18 跟进） |
+| 上游（`06082e18`） | **19**（`06082e18` MiniMax Code harness 为 `mcp_servers` / `skills` 引入 `enabled_mcode`） |
+
+**v19 跟进记录（2026-09-18）。** 随 `06082e18`（MiniMax Code harness）搬入：
+上游把 `SCHEMA_VERSION` 从 18 抬到 19，为 `mcp_servers` / `skills` 两表各补一列
+`enabled_mcode BOOLEAN NOT NULL DEFAULT 0`。与 v17 跟进完全同构 —— 真实库一旦
+跑过上游构建就会落盘 19，fork 的启动守卫（`version > SCHEMA_VERSION`）会直接
+拒绝打开并报「数据库版本过新」。
+
+fork 只搬迁移、不搬 harness 本体（vendor 门控）：新迁移 `migrate_v18_to_v19` 的
+DDL 与上游逐字一致，fork 业务代码不读写该列。**两处落点都要改**：迁移链新增
+`18 => { ... }` 分支，并把 `"enabled_mcode"` 加进 `ensure_upstream_schema_compatibility`
+的兼容列数组 —— 历史 fork 库走 `is_legacy_fork_schema` 分支时不经过迁移循环，
+只写迁移链会漏掉它们（与 v18 的 `last_byte_offset` 同一坑）。备份守卫已是
+`(17..=19).contains(&version)`，无需改动。
 
 **v18 跟进记录（2026-08-28）。** 随 `bcee61be` / `f8d97348` 的 Claude 会话日志
 字节游标改造一起搬入：`session_log_sync` 新增 `last_byte_offset`（seek 增量读的
@@ -257,10 +297,99 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
    早期条目先把历史形态收敛到同一旧值，末尾新条目才能单守卫命中；挪到前面
    会让老库停在中间价位。有测试锁住顺序（两跳断言），详见 schema.rs 内注释。
 
+8. **预设只有官方条目，第三方/赞助商预设一律不搬（2026-09-18 首次书面化）。**
+   此前只体现在守则 4 的一句「赞助商预设天然不搬」，本轮核实后确认它已被
+   裁剪到文件级，且**由测试强制**：
+
+   | 文件 | fork | 上游 `06082e18` |
+   | --- | --- | --- |
+   | `src/config/claudeProviderPresets.ts` | 106 行，仅 `Claude Official` / `Codex` | 1873 行 |
+   | `src/config/claudeDesktopProviderPresets.ts` | 126 行，仅 `Claude Desktop Official` / `Codex` | 1518 行 |
+   | `src/config/codexProviderPresets.ts` | 56 行，仅 `OpenAI Official` | 2906 行 |
+   | `src/icons/extracted/` | 仅 `anthropic` / `claude` / `openai` | 另有 `qianwenai`、`qwencloud` 等 |
+   | `src/i18n/locales/` | 仅 `en` / `zh` | 另有 `ja` / `zh-TW` |
+
+   不变量由 `tests/config/{claudeProviderPresets,codexChatProviderPresets}.test.ts`
+   断言（如 `expect(codexProviderPresets.map(p => p.name)).toEqual(["OpenAI Official"])`）。
+   **因此凡只动这些文件的上游提交，一律跳过，且不要重新评估** ——
+   上游每轮都会改 vendor 预设（本轮 33 个里就有 6 个），逐个评估是纯浪费。
+   例外：文件里除 vendor 预设外还有别的改动时（如 `userAgentPresets.ts`），
+   只取那部分。
+
 ## 同步审计日志
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-09-18（`f3b18df1..06082e18`，33 个）
+
+上游 head `06082e18`（MiniMax Code harness）。按三应用边界逐提交核对：
+**搬 20 个、跳过 12 个、延期 1 个**。分支 `sync-2026-09-18`（基于 `cf437559`），
+19 个提交，28 个文件，+1868 / −108。
+
+本轮**唯一强制项**是 `06082e18` 带 `SCHEMA_VERSION` 18→19 迁移 ——
+按守则 5，vendor 门控不能豁免版本号迁移，已单独提交 `db114b07`。
+
+已搬运（20 个上游提交 → 19 个 fork 提交）：
+
+| 上游提交 | fork 提交 | 本轮适配 |
+| --- | --- | --- |
+| `06082e18`（部分） | `db114b07` | 只搬 v19 迁移：`SCHEMA_VERSION` 18→19、`migrate_v18_to_v19` 为 `mcp_servers` / `skills` 补 `enabled_mcode`，并登记进 `ensure_upstream_schema_compatibility`。MiniMax Code harness 本体按 vendor 门控不搬 |
+| `bd247a4a` | `bf90a48f` | 工具 `description` 缺失时省略而非序列化成 `null`。**fork 两处都有该 bug**（`transform.rs` + `transform_responses.rs`） |
+| `c6286e14`（部分） | `0c8270c1` | 只取 `resolve_reasoning_effort` 的 `"xhigh"` 分支。fork 原只有 `"max" => xhigh`，Claude Code 发 `/effort xhigh` 会落进 `_ => None` 被静默丢弃 |
+| `7726c834` + `746e2288`（部分） | `b060a3dc` | 从 `media_sanitizer.rs` 的 `known_text_only_model` 移除 `deepseek-v4-flash` / `-pro`，二者会路由到识图模型，保留会静默剥掉用户图片 |
+| `746e2288`（部分） | `6a57d214` | DeepSeek V4 家族迁到 V4.1 Flash 档位（0.3 / 1.2 / 0.006），新条目追加在 `pricing_fixes` 末尾，守卫旧值按 fork 自身历史写 |
+| `99f9dd2c` | `6f16b8b9` | `model_provider` 缺失时按 Codex 默认 `openai` 走代理 URL，不再回落顶层 `base_url` |
+| `b78192e8` | `2d5391e7` | Anthropic SSE 跳过空的 `reasoning_content` 占位符，避免空 thinking 块切碎正文 |
+| `5e0f3442` | `7c98d4df` | `transform_codex_chat.rs` 相邻 commentary 与待处理 tool call 合并，含 reasoning 夹在中间的三种排布 |
+| `11317c62` | `c03fa2da` | 关机与端口分配保留各应用 `proxy_config`，临时端口不覆盖既有配置 |
+| `e0982799` | `c89f273e` | Images 编辑与 Images API 后续：`forwarder.rs` 大小写不敏感的后缀匹配、`usage/parser.rs` 的 Images 流式用量分支 |
+| `45f9e819` + `45b9a952` | `b9922e2f` | Codex rollout 用持久化字节游标（复用已有 `session_log_sync.last_byte_offset` 列，**不新增迁移**），mtime 不变也能追上增量；未变更的未完成尾部直接跳过 |
+| `556bb2ca` | `ba8c384b` | npm dist-tags 改走 `registry.npmjs.org/-/package/{pkg}/dist-tags` 专用端点，并给三个版本探测统一加 15s 超时 |
+| `f49c7d68` | `ff9bd17c` | 智谱 OpenAI Responses 模型列表：`models[].slug` 回退 |
+| `5c053626` | `e8ebdce9` | 快捷模型选择顺序对齐表单顺序 |
+| `deb0e874` | `27f88c06` | 「禁用 Artifact 工具」快捷开关，写 `CLAUDE_CODE_DISABLE_ARTIFACT = "1"` |
+| `dc0febe5`（部分） | `bc598c40` | 请求日志显示输出 tokens/秒。`RequestDetailPanel.tsx` 在 fork 不存在，跳过该 hunk |
+| `e0c2fd2b` | `6041dace` | 统一同步保留子供应商的 `meta` / `created_at` / `sort_index`。fork 无 gemini 分支，生产改动 8 行而非 12 行 |
+| `08984ba5`（部分） | `4d595115` | 只搬 `userAgentPresets.ts` 的 3 行文档更正（Kimi 的 403 结论只对当年的 Chat/Anthropic 路径成立）。预设本体不搬 |
+| `bfbbf15c` | `02bcef4f` | Claude Fable 周限额改从用量 API 的 `limits[]` 数组读取；`tray.rs` 给 Fable 单列标签组；前端与 i18n 加 `seven_day_fable` |
+
+跳过（12 个）：
+
+| 跳过提交 | 核实结论 |
+| --- | --- |
+| `2d54e261`、`2f3c0262`、`5e129273`、`6867b64d`、`f874803f` | **本轮新识别的判定修正**。5 个均为第三方/赞助商预设数据（MiniMax M3、DashScope 改名、聚合商 catalog、Token Plan 纯文本、DouBaoSeed 改名）。本轮首次核实：fork 的预设文件已按守则 4 裁到只剩官方条目 —— `claudeProviderPresets` 仅 `Claude Official` / `Codex`（106 行 vs 上游 1873）、`claudeDesktopProviderPresets` 仅两条（126 vs 1518）、`codexProviderPresets` 仅 `OpenAI Official`（56 vs 2906），图标注册表仅 `anthropic` / `claude` / `openai`（上游有 `qianwenai` / `qwencloud`），且上述不变量由 `tests/config/` 下三个测试**强制断言**。搬运等于把裁掉的预设加回来，与裁剪边界冲突。详见「已知的隐性约束」新增条目 |
+| `15884b20` | 全量依赖 managed OAuth。`CodexLiveAuthSwitchGuard`、`ensure_account_exists`、`get_valid_token_bundle_for_account`、`managed_oauth_live_auth_marker` 在 fork 命中数均为 0 |
+| `3b1292fe` | managed Codex 卡片额度。依赖 `usage_cache.put_codex_oauth`（fork 无，fork 按 `AppType` 缓存而非按账号），且 `tray.rs` 无 managed 卡片概念 |
+| `6e4b0e6e` | **fork 已有等价实现**：`transform_responses.rs` 的 `anthropic_max_tokens_to_responses_max_output_tokens` + `MIN_RESPONSES_MAX_OUTPUT_TOKENS`。细微语义差：fork 把 `max_tokens: 0` 也抬到 16，上游限定 `1..16` 保留 0 透传；Anthropic 侧 0 本身非法，无实际影响，仅记录 |
+| `1a725016`、`d695a2d7` | `chore(release)` 版本号与 v3.20.3 发行说明。政策：updater / release 流程不搬，包内版本沿用 fork 的 3.16.3 |
+| `1d5d90f4` | APIKEY.FUN → apikey.fan 域名刷新，守则 4「域名刷新同理（上游商业合作内容）」 |
+| `f21e0944` | 移除 Atlas Cloud 赞助商状态，赞助商内容不搬 |
+
+延期（1 个）：
+
+| 提交 | 说明 |
+| --- | --- |
+| `42ac174d` | ClaudeDesktop Linux 三方配置。改动全部 `cfg(target_os = "linux")` 门控，本机是 macOS，搬入等于引入死代码。除非以后要出 Linux 构建 |
+
+本轮发现的两处流程问题（均已修正）：
+
+1. **`PORT_PLAN_2026-09-18.md` 把 5 个预设提交误判为「完整搬运」。** 该节按
+   commit message 归类，未核实 fork 的预设文件实际已被裁空 —— 正是守则 1
+   （「判断依据不能只看 commit message」）的反面案例，只是这次反面出现在
+   *计划* 阶段而非搬运阶段。已同步修正计划文档。
+2. **`bfbbf15c` 在执行中漏搬。** 它在计划里列为完整搬运项，但本轮前半程
+   只搬了 `services/provider/mod.rs` 等条目，`bfbbf15c` 未进入任何提交。
+   收尾做 33 提交全量对照审计时才发现，已补为 `02bcef4f`。
+   教训：**计划里的「完整搬运」项要在收尾时按 SHA 逐一对照提交消息，
+   不能只按主题回忆**。
+
+验证：本机无 cargo / rustc / pnpm，且沙箱拦截 `npm install`，因此
+**本轮 19 个提交全部未执行编译与测试**，仅做逐行对照上游 diff。
+Rust 与 TypeScript 改动均按 rustfmt 的 100 列换行规则手工排版
+（新增行仅一处 >100 列，位于 `json!` 宏体内，rustfmt 不处理宏体，
+与上游原文一致）。**编译、Clippy、rustfmt、前端 vitest 全部留给 CI**；
+合并前必须先跑 `gh workflow run "CI" --ref sync-2026-09-18`。
 
 ### 2026-09-07（`92d52916..f3b18df1`，29 个）
 
@@ -746,6 +875,26 @@ Clippy 零警告。CI 32041716595 / Ad Hoc 32041958536（run 已删，ID 记录�
   另：缓存未命中可能是该中转不支持 prompt caching，也可能是测试 prompt 未达
   1024 token 下限。只影响成本，不影响功能。
 - **Skill 备份新策略未在真实备份目录上观察过收敛**（见「fork 侧改造记录」）。
+- **`sync-2026-09-18` 分支（19 个提交）完全未验证，合并前必须过 CI。**
+  本机无 cargo / rustc / pnpm，且沙箱拦截 `npm install`，所以 19 个提交
+  一次编译、一次测试都没跑过，全部只做了逐行对照上游 diff。
+  优先跑：
+
+  ```bash
+  gh workflow run "CI" --ref sync-2026-09-18 -R char1eslu/cc-switch
+  ```
+
+  预期最先暴露的三处（按风险排序）：
+  1. `b9922e2f`（`session_usage_codex.rs`）—— fork 与上游架构不同，是**语义
+     等价重写**而非移植，且依赖已有的 `session_log_sync.last_byte_offset` 列。
+     两个新测试用 `total_changes()` 区分「真跳过」与「重解析但导入 0 行」，
+     该断言语义需要 CI 确认。
+  2. `02bcef4f`（`subscription.rs`）—— 本轮为该文件**新建了测试模块**
+     （fork 原本没有），5 个解析器测试是本轮首次在该文件跑起来的用例。
+  3. `c89f273e`（`proxy/server.rs`）—— 上游那 163 行全是测试，且引用
+     `CodexStandaloneEndpoint` / `/v1/alpha/search`（fork 均无），已按 fork 自己的
+     `image_upstream` + `CapturedImageRequest` 脚手架重写为 5 个用例。
+  另外 `db114b07` 的 v19 迁移建议先用真实库副本干跑，确认 v19 库原样打开、零迁移。
 
 ## 验证手段
 
