@@ -2417,6 +2417,7 @@
     "title": "Subscription Quota",
     "fiveHour": "5-Hour",
     "sevenDay": "7-Day",
+    "sevenDayFable": "Fable",
     "sevenDayOpus": "7-Day (Opus)",
     "sevenDaySonnet": "7-Day (Sonnet)",
     "weeklyLimit": "Weekly",

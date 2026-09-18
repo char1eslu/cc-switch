@@ -19,7 +19,13 @@ const W_TIER_NAMES: &[&str] = &[
     crate::services::subscription::TIER_SEVEN_DAY_OPUS,
     crate::services::subscription::TIER_SEVEN_DAY_SONNET,
 ];
-const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[("h", H_TIER_NAMES), ("w", W_TIER_NAMES)];
+// Fable 单列显示，不能被周分组的最大值合并掉。
+const FABLE_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_SEVEN_DAY_FABLE];
+const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[
+    ("h", H_TIER_NAMES),
+    ("w", W_TIER_NAMES),
+    ("Fable", FABLE_TIER_NAMES),
+];
 
 /// 每个 app 分区的子菜单句柄，用于 usage 更新时就地改 label 而非整菜单重建。
 /// `create_tray_menu` 每次重建都会整表覆盖写入，保证句柄始终指向当前活跃菜单。
@@ -830,7 +836,7 @@ mod tests {
     use crate::provider::{UsageData, UsageResult};
     use crate::services::subscription::{
         CredentialStatus, QuotaTier, SubscriptionQuota, TIER_FIVE_HOUR, TIER_SEVEN_DAY,
-        TIER_SEVEN_DAY_OPUS, TIER_SEVEN_DAY_SONNET, TIER_WEEKLY_LIMIT,
+        TIER_SEVEN_DAY_FABLE, TIER_SEVEN_DAY_OPUS, TIER_SEVEN_DAY_SONNET, TIER_WEEKLY_LIMIT,
     };
 
     #[test]
@@ -872,6 +878,45 @@ mod tests {
         let s = format_subscription_summary(&quota).expect("should format");
         assert!(s.contains("h9%"), "expected h9% in {s}");
         assert!(s.contains("w27%"), "expected w27% in {s}");
+    }
+
+    #[test]
+    fn claude_fable_summary_keeps_weekly_total_and_model_limit_separate() {
+        let quota = make_quota(
+            "claude",
+            true,
+            vec![
+                tier(TIER_FIVE_HOUR, 12.0),
+                tier(TIER_SEVEN_DAY, 25.0),
+                tier(TIER_SEVEN_DAY_FABLE, 95.0),
+            ],
+        );
+        assert_eq!(
+            format_subscription_summary(&quota).as_deref(),
+            Some("🔴 h12% w25% Fable95%")
+        );
+        // 模板查询扁平化后的 UsageData 也必须生成相同摘要。
+        let result = usage_result(
+            true,
+            vec![
+                usage_data(Some(TIER_FIVE_HOUR), 12.0),
+                usage_data(Some(TIER_SEVEN_DAY), 25.0),
+                usage_data(Some(TIER_SEVEN_DAY_FABLE), 95.0),
+            ],
+        );
+        assert_eq!(
+            format_script_summary(&result),
+            format_subscription_summary(&quota)
+        );
+    }
+
+    #[test]
+    fn claude_fable_summary_shows_unused_model_limit() {
+        let quota = make_quota("claude", true, vec![tier(TIER_SEVEN_DAY_FABLE, 0.0)]);
+        assert_eq!(
+            format_subscription_summary(&quota).as_deref(),
+            Some("🟢 Fable0%")
+        );
     }
 
     #[test]
