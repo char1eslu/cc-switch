@@ -123,6 +123,20 @@ fn test_pick_latest_version_filters_dirty_prerelease() {
     );
 }
 
+#[test]
+fn test_npm_dist_tags_url() {
+    // 普通包名直接拼进路径
+    assert_eq!(
+        npm_dist_tags_url("openclaw"),
+        "https://registry.npmjs.org/-/package/openclaw/dist-tags"
+    );
+    // scoped 包名的 `/` 按 registry 约定转义成 %2f
+    assert_eq!(
+        npm_dist_tags_url("@openai/codex"),
+        "https://registry.npmjs.org/-/package/@openai%2fcodex/dist-tags"
+    );
+}
+
 /// `parent_dir` 是锚定层"由 bin 路径推导同目录绝对路径"的基石,跨平台共用——
 /// 这里固化 `\`/`/`/混合分隔符/根边界四种情况,避免未来重构悄悄改语义。
 mod parent_dir_cases {
