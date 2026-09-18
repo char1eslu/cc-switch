@@ -1401,10 +1401,8 @@ fn legacy_fork_v19_is_normalized_without_losing_core_rows() {
     );
     // v19 新增的兼容列同样要由 `ensure_upstream_schema_compatibility` 补回：
     // 历史 fork 库走"直接盖版本号"分支，不经过迁移循环。
-    assert!(
-        Database::has_column(&conn, "mcp_servers", "enabled_mcode")
-            .expect("restored v19 compatibility column")
-    );
+    assert!(Database::has_column(&conn, "mcp_servers", "enabled_mcode")
+        .expect("restored v19 compatibility column"));
 }
 
 #[test]

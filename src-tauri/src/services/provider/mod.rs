@@ -92,9 +92,9 @@ mod tests {
     use crate::claude_desktop_config::PROFILE_ID;
     use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
     use crate::database::Database;
-    use crate::provider::{ProviderMeta, UniversalProvider};
     #[cfg(any(target_os = "macos", windows))]
     use crate::provider::{ClaudeDesktopMode, ClaudeDesktopModelRoute};
+    use crate::provider::{ProviderMeta, UniversalProvider};
     use crate::proxy::types::ProxyConfig;
     use crate::store::AppState;
     use serde_json::json;

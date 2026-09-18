@@ -2304,9 +2304,14 @@ fn rewrite_codex_images_full_url(
         .copied()
         .find(|suffix| parsed_path.ends_with(suffix))
         .ok_or_else(|| ProxyError::ConfigError(format!("Codex Images cannot derive {endpoint} from an opaque full URL; use a base URL or a full Responses, Chat, or Images URL")))?;
-    let prefix_len = without_query.len().checked_sub(suffix.len()).ok_or_else(|| {
-        ProxyError::ConfigError("Codex Images requires an unambiguous full URL suffix".to_string())
-    })?;
+    let prefix_len = without_query
+        .len()
+        .checked_sub(suffix.len())
+        .ok_or_else(|| {
+            ProxyError::ConfigError(
+                "Codex Images requires an unambiguous full URL suffix".to_string(),
+            )
+        })?;
     let rewritten = format!("{}{}", &without_query[..prefix_len], endpoint);
     let rewritten = append_query_to_full_url(&rewritten, base_query);
     Ok(append_query_to_full_url(&rewritten, request_query))

@@ -633,7 +633,13 @@ fn sync_single_codex_file(db: &Database, file_path: &Path) -> Result<(u32, u32),
     }
 
     // 更新同步状态
-    update_codex_sync_state(db, &file_path_str, file_modified, line_offset, observed_bytes)?;
+    update_codex_sync_state(
+        db,
+        &file_path_str,
+        file_modified,
+        line_offset,
+        observed_bytes,
+    )?;
 
     Ok((imported, skipped))
 }
