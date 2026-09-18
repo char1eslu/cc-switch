@@ -2304,9 +2304,19 @@ fn rewrite_codex_images_full_url(
         .copied()
         .find(|suffix| parsed_path.ends_with(suffix))
         .ok_or_else(|| ProxyError::ConfigError(format!("Codex Images cannot derive {endpoint} from an opaque full URL; use a base URL or a full Responses, Chat, or Images URL")))?;
+    // 匹配用大小写不敏感（网关会写 `/v1/Responses/Compact`），但**原始串**也必须
+    // 真的以该后缀结尾，否则前缀长度无从确定。两者都满足才切片，否则 fail closed：
+    // 例如 `https://relay.example/中文/responses/.` 的路径经 URL 归一化（点段消除）
+    // 后会命中 `/responses`，原始串却以 `/.` 结尾，按长度硬切会拼出垃圾 URL。
     let prefix_len = without_query
         .len()
         .checked_sub(suffix.len())
+        .filter(|&len| {
+            without_query
+                .as_bytes()
+                .get(len..)
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix.as_bytes()))
+        })
         .ok_or_else(|| {
             ProxyError::ConfigError(
                 "Codex Images requires an unambiguous full URL suffix".to_string(),
@@ -3095,7 +3105,7 @@ mod tests {
     fn prevention_replaces_when_all_switches_on_and_model_in_heuristic_list() {
         let fwd = forwarder_with_rectifier(RectifierConfig::default());
         let provider = provider_with_settings(json!({}));
-        let mut body = body_with_image("deepseek-v4-pro");
+        let mut body = body_with_image("qwen3-coder-plus");
 
         let replaced = fwd.apply_media_prevention(&mut body, &provider);
 
@@ -3111,7 +3121,7 @@ mod tests {
             ..RectifierConfig::default()
         });
         let provider = provider_with_settings(json!({}));
-        let mut body = body_with_image("deepseek-v4-pro");
+        let mut body = body_with_image("qwen3-coder-plus");
 
         let replaced = fwd.apply_media_prevention(&mut body, &provider);
 
@@ -3126,7 +3136,7 @@ mod tests {
             ..RectifierConfig::default()
         });
         let provider = provider_with_settings(json!({}));
-        let mut body = body_with_image("deepseek-v4-pro");
+        let mut body = body_with_image("qwen3-coder-plus");
 
         assert_eq!(fwd.apply_media_prevention(&mut body, &provider), 0);
         assert_eq!(body["messages"][0]["content"][0]["type"], "image");
@@ -3142,7 +3152,7 @@ mod tests {
 
         // (a) 名单内模型、无显式声明 → 不再预替换
         let bare_provider = provider_with_settings(json!({}));
-        let mut list_body = body_with_image("deepseek-v4-pro");
+        let mut list_body = body_with_image("qwen3-coder-plus");
         assert_eq!(
             fwd.apply_media_prevention(&mut list_body, &bare_provider),
             0,
