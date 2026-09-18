@@ -1173,10 +1173,18 @@ impl RequestForwarder {
             codex_responses_to_anthropic && base_url_is_full_endpoint(&base_url, "/v1/messages");
 
         let endpoint_path = split_endpoint_and_query(&effective_endpoint).0;
-        let url = if is_full_url
-            && matches!(app_type, AppType::Codex)
-            && matches!(endpoint_path, "/images/generations" | "/images/edits")
-        {
+        let codex_images_endpoint = matches!(app_type, AppType::Codex)
+            && matches!(endpoint_path, "/images/generations" | "/images/edits");
+        // 与 `codex_chat_base_is_full_endpoint` 对称的防御性兜底：用户粘贴的 base URL
+        // 已经以某个已知端点结尾、却没打开「完整 URL」开关时，也按兄弟路径派生，
+        // 否则会拼成 `.../v1/responses/v1/images/edits`（不可重试的 404）。
+        // 只认已知后缀；不透明 URL 由 rewrite_codex_images_full_url 拒绝（fail closed）。
+        let codex_images_base_is_full_endpoint = codex_images_endpoint
+            && CODEX_IMAGES_SOURCE_SUFFIXES
+                .iter()
+                .any(|suffix| base_url_is_full_endpoint(&base_url, suffix));
+
+        let url = if codex_images_endpoint && (is_full_url || codex_images_base_is_full_endpoint) {
             rewrite_codex_images_full_url(&base_url, passthrough_query.as_deref(), endpoint_path)?
         } else if is_full_url
             || codex_chat_base_is_full_endpoint
@@ -2261,6 +2269,18 @@ fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
     }
 }
 
+/// Codex Images 可从 base URL 派生兄弟路径的已知后缀（完整 URL 形态）。
+///
+/// 顺序即匹配优先级：`/responses/compact` 必须排在 `/responses` 之前，
+/// 否则会被短后缀先命中而截错前缀。
+const CODEX_IMAGES_SOURCE_SUFFIXES: [&str; 5] = [
+    "/images/generations",
+    "/images/edits",
+    "/chat/completions",
+    "/responses/compact",
+    "/responses",
+];
+
 // Full-URL mode cannot send image payloads to a Responses or Chat route.
 // Only known sibling paths are safe to derive; opaque URLs must fail closed.
 fn rewrite_codex_images_full_url(
@@ -2275,14 +2295,19 @@ fn rewrite_codex_images_full_url(
     let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
     let (without_query, base_query) = split_endpoint_and_query(without_fragment);
     let without_query = without_query.trim_end_matches('/');
-    let parsed_path = parsed.path().trim_end_matches('/');
-    let suffix = ["/images/generations", "/images/edits", "/chat/completions", "/responses/compact", "/responses"]
-        .into_iter().find(|suffix| parsed_path.ends_with(suffix))
+    // 大小写不敏感只用于**匹配**：网关常把路径段写成 `/v1/Responses/Compact`
+    // 这类混合大小写。重写必须保留用户原本的 URL 前缀与查询串，因此下面按
+    // 后缀**长度**切片，而不是 `strip_suffix`（后者在大小写不一致时会失败）。
+    let parsed_path = parsed.path().trim_end_matches('/').to_ascii_lowercase();
+    let suffix = CODEX_IMAGES_SOURCE_SUFFIXES
+        .iter()
+        .copied()
+        .find(|suffix| parsed_path.ends_with(suffix))
         .ok_or_else(|| ProxyError::ConfigError(format!("Codex Images cannot derive {endpoint} from an opaque full URL; use a base URL or a full Responses, Chat, or Images URL")))?;
-    let prefix = without_query.strip_suffix(suffix).ok_or_else(|| {
+    let prefix_len = without_query.len().checked_sub(suffix.len()).ok_or_else(|| {
         ProxyError::ConfigError("Codex Images requires an unambiguous full URL suffix".to_string())
     })?;
-    let rewritten = format!("{prefix}{endpoint}");
+    let rewritten = format!("{}{}", &without_query[..prefix_len], endpoint);
     let rewritten = append_query_to_full_url(&rewritten, base_query);
     Ok(append_query_to_full_url(&rewritten, request_query))
 }
@@ -2497,6 +2522,41 @@ mod tests {
                     Err(ProxyError::ConfigError(_))
                 ));
             }
+        }
+    }
+
+    #[test]
+    fn images_full_urls_match_source_suffixes_case_insensitively() {
+        // 网关常把路径段写成混合大小写（`/v1/Responses/Compact`）。匹配必须
+        // 大小写不敏感，但重写要保留用户原本的 URL 前缀与查询串。
+        for (base, endpoint, expected) in [
+            (
+                "https://relay.example/Gateway/v1/Images/Edits/?api-version=CaseValue#fragment",
+                "/images/generations",
+                "https://relay.example/Gateway/v1/images/generations?api-version=CaseValue&client_version=0.145.0",
+            ),
+            (
+                "https://relay.example/Gateway/v1/Chat/Completions/?api-version=CaseValue#fragment",
+                "/images/edits",
+                "https://relay.example/Gateway/v1/images/edits?api-version=CaseValue&client_version=0.145.0",
+            ),
+            (
+                "https://relay.example/v1/Responses/Compact/?api-version=CaseValue#fragment",
+                "/images/edits",
+                "https://relay.example/v1/images/edits?api-version=CaseValue&client_version=0.145.0",
+            ),
+            (
+                "https://relay.example/v1/RESPONSES/",
+                "/images/generations",
+                "https://relay.example/v1/images/generations?client_version=0.145.0",
+            ),
+        ] {
+            assert_eq!(
+                rewrite_codex_images_full_url(base, Some("client_version=0.145.0"), endpoint)
+                    .unwrap(),
+                expected,
+                "{base} -> {endpoint}"
+            );
         }
     }
 

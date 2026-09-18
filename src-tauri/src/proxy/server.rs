@@ -546,6 +546,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codex_images_pasted_full_base_url_derives_sibling_route() {
+        // 「完整 URL」开关关闭、但 base URL 已被粘贴成完整端点时，Images 请求必须
+        // 派生兄弟路径，而不是把端点再拼一次（`.../v1/responses/v1/images/edits`）。
+        // 网关常把路径段写成混合大小写，匹配必须大小写不敏感。
+        let captured = Arc::new(Mutex::new(Vec::<CapturedImageRequest>::new()));
+        let mock = Router::new()
+            .route("/v1/images/generations", post(image_upstream))
+            .route("/v1/images/edits", post(image_upstream))
+            .route("/Gateway/v1/images/generations", post(image_upstream))
+            .route("/Gateway/v1/images/edits", post(image_upstream))
+            .with_state(captured.clone());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        let db = Arc::new(Database::memory().expect("memory database"));
+        let proxy = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                non_streaming_timeout: 10,
+                ..ProxyConfig::default()
+            },
+            db.clone(),
+            None,
+        );
+        let info = proxy.start().await.expect("start proxy");
+        let client = reqwest::Client::new();
+
+        for (label, base_url, local_path, expected_upstream) in [
+            (
+                "pasted-mixed-case-chat-completions",
+                format!("http://{address}/v1/Chat/Completions?api-version=CaseValue"),
+                "/v1/images/edits",
+                "/v1/images/edits?api-version=CaseValue&client_version=0.145.0",
+            ),
+            (
+                "pasted-mixed-case-images-generations",
+                format!("http://{address}/Gateway/v1/Images/Generations/?api-version=CaseValue#fragment"),
+                "/v1/images/edits",
+                "/Gateway/v1/images/edits?api-version=CaseValue&client_version=0.145.0",
+            ),
+            (
+                "pasted-mixed-case-images-edits",
+                format!("http://{address}/v1/Images/Edits/"),
+                "/v1/images/generations",
+                "/v1/images/generations?client_version=0.145.0",
+            ),
+            (
+                "pasted-chat-completions",
+                format!("http://{address}/v1/chat/completions"),
+                "/v1/images/generations",
+                "/v1/images/generations?client_version=0.145.0",
+            ),
+            (
+                "pasted-images-generations",
+                format!("http://{address}/v1/images/generations?api-version=test"),
+                "/v1/images/edits",
+                "/v1/images/edits?api-version=test&client_version=0.145.0",
+            ),
+        ] {
+            let provider = Provider::with_id(
+                label.to_string(),
+                label.to_string(),
+                json!({
+                    "base_url": base_url,
+                    "auth": {"OPENAI_API_KEY": "upstream-secret"}
+                }),
+                None,
+            );
+            db.save_provider("codex", &provider).unwrap();
+            db.set_current_provider("codex", &provider.id).unwrap();
+
+            let response = client
+                .post(format!(
+                    "http://127.0.0.1:{}{local_path}?client_version=0.145.0",
+                    info.port
+                ))
+                .header(header::AUTHORIZATION, "Bearer client-secret")
+                .json(&json!({"model": "gpt-image-1", "prompt": "pasted base URL"}))
+                .send()
+                .await
+                .expect("image request");
+
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{local_path} via {base_url}"
+            );
+            let requests = captured.lock().await;
+            let request = requests.last().expect("upstream request captured");
+            assert_eq!(
+                request.path, expected_upstream,
+                "{local_path} via {base_url}"
+            );
+            assert_eq!(
+                request.authorization.as_deref(),
+                Some("Bearer upstream-secret")
+            );
+        }
+        assert_eq!(captured.lock().await.len(), 5);
+
+        proxy.stop().await.expect("stop proxy");
+        upstream_task.abort();
+    }
+
+    #[tokio::test]
     async fn codex_images_reject_invalid_json_and_enforce_router_body_limit() {
         let proxy = ProxyServer::new(
             ProxyConfig::default(),
