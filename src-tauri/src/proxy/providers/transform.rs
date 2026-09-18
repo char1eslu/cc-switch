@@ -72,7 +72,8 @@ pub fn supports_reasoning_effort(model: &str) -> bool {
 ///
 /// Priority:
 /// 1. Explicit `output_config.effort` — preserves the user's intent directly.
-///    `low`/`medium`/`high` map 1:1; `max` maps to `xhigh`
+///    `low`/`medium`/`high`/`xhigh` map 1:1 (`xhigh` is what Claude Code's
+///    `/effort xhigh` sends); `max` maps to `xhigh`
 ///    (supported by mainstream GPT models). Unknown values are ignored.
 /// 2. Fallback: `thinking.type` + `budget_tokens`:
 ///    - `adaptive` → `xhigh` (adaptive = maximum reasoning effort)
@@ -89,6 +90,7 @@ pub fn resolve_reasoning_effort(body: &Value) -> Option<&'static str> {
             "low" => Some("low"),
             "medium" => Some("medium"),
             "high" => Some("high"),
+            "xhigh" => Some("xhigh"),
             "max" => Some("xhigh"), // OpenAI xhigh = maximum reasoning effort
             _ => None,              // unknown value — do not inject
         };
@@ -1607,6 +1609,13 @@ mod tests {
     #[test]
     fn test_output_config_max_maps_to_reasoning_effort_xhigh() {
         let body = json!({"output_config": {"effort": "max"}});
+        assert_eq!(resolve_reasoning_effort(&body), Some("xhigh"));
+    }
+
+    #[test]
+    fn test_output_config_xhigh_maps_verbatim() {
+        // Claude Code's `/effort xhigh` sends output_config.effort="xhigh"
+        let body = json!({"output_config": {"effort": "xhigh"}});
         assert_eq!(resolve_reasoning_effort(&body), Some("xhigh"));
     }
 

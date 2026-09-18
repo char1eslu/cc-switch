@@ -1566,6 +1566,21 @@ mod tests {
     }
 
     #[test]
+    fn test_responses_output_config_xhigh_sets_reasoning_xhigh() {
+        // Claude Code's `/effort xhigh` sends output_config.effort="xhigh";
+        // previously it fell into the unknown-value branch and was dropped.
+        let input = json!({
+            "model": "gpt-5.4",
+            "max_tokens": 1024,
+            "output_config": {"effort": "xhigh"},
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+        assert_eq!(result["reasoning"]["effort"], "xhigh");
+    }
+
+    #[test]
     fn test_responses_output_config_takes_priority_over_thinking() {
         let input = json!({
             "model": "gpt-5.4",
