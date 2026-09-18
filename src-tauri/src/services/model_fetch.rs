@@ -17,16 +17,26 @@ pub struct FetchedModel {
     pub owned_by: Option<String>,
 }
 
-/// OpenAI 兼容的 /v1/models 响应格式
+/// 模型列表响应的兼容格式。
+///
+/// OpenAI 兼容接口和 Anthropic 接口使用 `data` 字段，智谱 OpenAI Responses
+/// 接口使用 `models` 字段，此结构同时兼容这两种格式。
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
     data: Option<Vec<ModelEntry>>,
+    models: Option<Vec<ZhipuModelEntry>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ModelEntry {
     id: String,
     owned_by: Option<String>,
+}
+
+/// 智谱 OpenAI Responses 端点的模型条目：只带 `slug`，没有 `id` / `owned_by`。
+#[derive(Debug, Deserialize)]
+struct ZhipuModelEntry {
+    slug: String,
 }
 
 const FETCH_TIMEOUT_SECS: u64 = 15;
@@ -92,15 +102,25 @@ pub async fn fetch_models(
                 .await
                 .map_err(|e| format!("Failed to parse response: {e}"))?;
 
-            let mut models: Vec<FetchedModel> = resp
-                .data
-                .unwrap_or_default()
-                .into_iter()
-                .map(|m| FetchedModel {
-                    id: m.id,
-                    owned_by: m.owned_by,
-                })
-                .collect();
+            let mut models: Vec<FetchedModel> = if let Some(data) = resp.data {
+                data.into_iter()
+                    .map(|m| FetchedModel {
+                        id: m.id,
+                        owned_by: m.owned_by,
+                    })
+                    .collect()
+            } else {
+                // 智谱 OpenAI Responses 端点（open.bigmodel.cn/api/v1）按 Codex
+                // 远端 catalog 的形态返回 models[].slug，而不是 data[].id。
+                resp.models
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|m| FetchedModel {
+                        id: m.slug,
+                        owned_by: None,
+                    })
+                    .collect()
+            };
 
             models.sort_by(|a, b| a.id.cmp(&b.id));
             return Ok(models);
@@ -473,5 +493,27 @@ mod tests {
         let json = r#"{"object":"list","data":[]}"#;
         let resp: ModelsResponse = serde_json::from_str(json).unwrap();
         assert!(resp.data.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_response_zhipu_models_slug() {
+        // 智谱 OpenAI Responses 端点（open.bigmodel.cn/api/v1）按 Codex 远端
+        // catalog 的形态返回 models[].slug，没有 data 字段 —— 生产分支正是靠
+        // `resp.data` 为 None 才会落到 models 这条路径
+        let json = r#"{"object":"list","models":[{"slug":"glm-5.1"},{"slug":"glm-4.6"}]}"#;
+        let resp: ModelsResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.data.is_none(), "智谱形态不带 data 字段");
+        let models = resp.models.expect("models 形态必须解析成功");
+        assert_eq!(models[0].slug, "glm-5.1");
+        assert_eq!(models[1].slug, "glm-4.6");
+    }
+
+    #[test]
+    fn test_parse_response_prefers_data_when_both_present() {
+        // 两个字段同时出现时 data 优先（OpenAI / Anthropic 兼容形态）
+        let json = r#"{"data":[{"id":"a","owned_by":"x"}],"models":[{"slug":"b"}]}"#;
+        let resp: ModelsResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.data.as_ref().unwrap()[0].id, "a");
+        assert!(resp.models.is_some(), "models 字段应被忽略而非报错");
     }
 }
