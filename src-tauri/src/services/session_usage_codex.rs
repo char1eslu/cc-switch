@@ -1228,7 +1228,9 @@ mod tests {
     /// `total_changes()` 累计值，用来区分「真的跳过了」与「重解析了一遍只是没
     /// 导入任何行」——后者同样返回 `(0, 0)`。
     fn total_changes(db: &Database) -> i64 {
-        let conn = lock_conn!(db.conn);
+        // 这里刻意不用 `lock_conn!`：它内部带 `?`，要求调用方返回 Result，
+        // 而本辅助函数要保持 i64 签名以便断言直接比较。
+        let conn = db.conn.lock().expect("lock test database");
         conn.query_row("SELECT total_changes()", [], |row| row.get(0))
             .expect("read total_changes")
     }
@@ -1293,7 +1295,7 @@ mod tests {
         // 模拟 Windows 上「文件增长但 mtime 不推进」：mtime 仍与文件一致，但字节
         // 游标落后于文件长度 → 必须重扫并补上游标
         {
-            let conn = lock_conn!(db.conn);
+            let conn = db.conn.lock().expect("lock test database");
             conn.execute(
                 "UPDATE session_log_sync SET last_byte_offset = ?1 WHERE file_path = ?2",
                 rusqlite::params![size - 1, path.clone()],
