@@ -3996,6 +3996,53 @@ requires_openai_auth = true
     }
 
     #[test]
+    fn codex_takeover_without_provider_selects_a_local_authenticated_route() {
+        // `model_provider` 缺失时，接管必须把本地地址写到 Codex 真正会读的
+        // 位置——内置 openai 的 `openai_base_url`，而不是被忽略的顶层
+        // `base_url`。随后 prepare 阶段要把它升级成带 bearer token 的显式
+        // provider 表，否则第三方 key 无处安放。
+        for input in [
+            "",
+            "model = \"gpt-5\"\nbase_url = \"https://old.example/v1\"\n",
+            "model_providers = { cc-switch = { name = \"Existing\", base_url = \"https://keep.example/v1\" } }\n",
+        ] {
+            let url = "http://127.0.0.1:15721/v1";
+            let projected =
+                ProxyService::apply_codex_proxy_toml_config_for_provider(input, url, None);
+            let auth = json!({"OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER});
+            let live = crate::codex_config::prepare_codex_provider_live_config(&auth, &projected)
+                .expect("prepare live config");
+            let doc: toml::Value = toml::from_str(&live).expect("live config should be valid TOML");
+
+            let id = doc["model_provider"]
+                .as_str()
+                .expect("an explicit provider must be selected");
+            assert_ne!(id, "openai", "the reserved built-in id must never be claimed");
+            let table = &doc["model_providers"][id];
+            assert_eq!(table["base_url"].as_str(), Some(url));
+            assert_eq!(table["wire_api"].as_str(), Some("responses"));
+            assert_eq!(
+                table["experimental_bearer_token"].as_str(),
+                Some(PROXY_TOKEN_PLACEHOLDER)
+            );
+            if input.contains("Existing") {
+                // 用户自建的 `cc-switch` 表不能被抢占或覆盖。
+                assert_eq!(
+                    doc["model_providers"]["cc-switch"]["base_url"].as_str(),
+                    Some("https://keep.example/v1")
+                );
+            }
+
+            // 幂等：对已接管的配置再跑一遍不应产生任何变化。
+            let repeated =
+                ProxyService::apply_codex_proxy_toml_config_for_provider(&live, url, None);
+            let repeated = crate::codex_config::prepare_codex_provider_live_config(&auth, &repeated)
+                .expect("prepare live config");
+            assert_eq!(toml::from_str::<toml::Value>(&repeated).unwrap(), doc);
+        }
+    }
+
+    #[test]
     fn apply_codex_proxy_toml_config_forces_local_responses_wire_api() {
         let input = r#"
 model_provider = "chat_only"
@@ -4159,21 +4206,22 @@ wire_api = "responses"
     }
 
     #[test]
-    fn update_toml_base_url_falls_back_to_top_level_base_url() {
+    fn update_toml_base_url_uses_implicit_openai_override() {
         let input = r#"
 model = "gpt-5.1-codex"
 "#;
 
         let new_url = "http://127.0.0.1:5000/v1";
-        let output = ProxyService::update_toml_base_url(input, new_url);
+        let output = crate::codex_config::update_codex_toml_field(input, "base_url", new_url)
+            .expect("update implicit openai base_url");
 
         let parsed: toml::Value =
             toml::from_str(&output).expect("updated config should be valid TOML");
 
         let base_url = parsed
-            .get("base_url")
+            .get("openai_base_url")
             .and_then(|v| v.as_str())
-            .expect("base_url should exist");
+            .expect("openai_base_url should exist");
 
         assert_eq!(base_url, new_url);
     }

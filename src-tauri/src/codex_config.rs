@@ -2649,9 +2649,9 @@ pub fn restore_codex_settings_for_backfill(
 ///
 /// Supported fields:
 /// - `"base_url"`: writes to `[model_providers.<current>].base_url` if `model_provider` exists,
-///   otherwise falls back to top-level `base_url`.
+///   otherwise uses `openai_base_url` for Codex's default built-in provider.
 /// - `"wire_api"`: writes to `[model_providers.<current>].wire_api` if `model_provider` exists,
-///   otherwise falls back to top-level `wire_api`.
+///   otherwise leaves the built-in provider's Responses protocol unchanged.
 /// - `"model"` / `"model_catalog_json"`: writes to top-level field.
 ///
 /// Empty value removes the field.
@@ -2667,7 +2667,9 @@ pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Resu
             let model_provider = doc
                 .get("model_provider")
                 .and_then(|item| item.as_str())
-                .map(str::to_string);
+                .map(str::to_string)
+                // Codex defaults to openai when the selector is absent.
+                .or_else(|| (!doc.contains_key("model_provider")).then(|| "openai".to_string()));
 
             if let Some(provider_key) = model_provider {
                 // validate_reserved_model_provider_ids（0.148 起）对配置里出现
@@ -2744,7 +2746,9 @@ pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Resu
                 }
             }
 
-            // Fallback: no model_provider or structure mismatch → top-level field
+            // Fallback: `model_provider` 存在但不是字符串（结构异常）→ 顶层字段。
+            // 注意「缺失 model_provider」已在上面的 `.or_else` 里解析成内置
+            // `openai`，走 `openai_base_url`，不再落到这里。
             if trimmed.is_empty() {
                 doc.as_table_mut().remove(field);
             } else {
@@ -3333,7 +3337,7 @@ model = "gpt-4"
     }
 
     #[test]
-    fn base_url_falls_back_to_top_level_without_model_provider() {
+    fn base_url_uses_openai_override_without_model_provider() {
         let input = r#"model = "gpt-4"
 "#;
 
@@ -3341,10 +3345,22 @@ model = "gpt-4"
         let parsed: toml::Value = toml::from_str(&result).unwrap();
 
         let base_url = parsed
-            .get("base_url")
+            .get("openai_base_url")
             .and_then(|v| v.as_str())
-            .expect("should set top-level base_url");
+            .expect("should set the built-in provider's URL override");
         assert_eq!(base_url, "https://fallback.api/v1");
+        // 顶层 `base_url` 会被 Codex 忽略（0.148 起只认 model_providers 表与
+        // 内置 openai 的 `openai_base_url`），不能再写它。
+        assert!(parsed.get("base_url").is_none());
+        // wire_api 对内置 openai 由 CLI 固定为 Responses，无需也无需写表。
+        let responses = update_codex_toml_field(&result, "wire_api", "responses").unwrap();
+        assert_eq!(responses, result);
+        // 清空 base_url 应把配置还原成原始形态。
+        let cleared = update_codex_toml_field(&result, "base_url", "").unwrap();
+        assert_eq!(
+            toml::from_str::<toml::Value>(&cleared).unwrap(),
+            toml::from_str::<toml::Value>(input).unwrap()
+        );
     }
 
     #[test]

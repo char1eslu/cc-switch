@@ -1358,9 +1358,11 @@ impl ProviderService {
         root.remove("model_provider");
         // Legacy/alt formats might use a top-level base_url.
         root.remove("base_url");
-        // wire_api 与 base_url 同属供应商路由语义：无 model_provider 时
-        // update_codex_toml_field / 前端 setCodexWireApi 都会把它落在顶层，
-        // 进了片段会改写其它供应商的协议选择（chat vs responses）。
+        // wire_api 与 base_url 同属供应商路由语义：前端 setCodexWireApi 与
+        // 历史存量配置都会把它落在顶层（后端 update_codex_toml_field 自
+        // 2026-09 起在 model_provider 缺失时改写内置 openai 的
+        // `openai_base_url` 而非顶层），进了片段会改写其它供应商的协议选择
+        // （chat vs responses）。
         root.remove("wire_api");
 
         // Remove entire model_providers table (provider-specific configuration)
