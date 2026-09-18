@@ -9,7 +9,7 @@
 | 项 | 值 |
 | --- | --- |
 | 已完整评估到的上游基线 | `06082e18` |
-| 当前已验证代码 head | `c3cdf3e4`（`dev`；本机前端验证、完整 CI 与 macOS Ad Hoc 构建均通过）。本轮 `sync-2026-09-18` 分支（19 个提交）**尚未验证**，见「同步审计日志」2026-09-18 条目 |
+| 当前已验证代码 head | `dd822e85`（`dev`；本机 Rust 后端三件套全绿 1751 passed / 2 ignored、前端 CI 全绿、完整 CI 与 macOS Ad Hoc 构建均通过）。本轮 `sync-2026-09-18`（24 个提交）**已验证**，见「同步审计日志」2026-09-18 条目 |
 | 最近一轮已适配的上游修复 | Fable 周限额改读 `limits[]`、统一同步保留子供应商元数据、Images 编辑与 Images API 后续、Codex rollout 持久化字节游标、空 `reasoning_content` 占位符、相邻 commentary 合并、按应用保留代理配置、npm dist-tags 专用端点、智谱 Responses 模型列表、DeepSeek V4.1 定价与识图解除门控、v19 mcode 迁移 |
 
 **下次同步从这里开始**：
@@ -325,7 +325,12 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 上游 head `06082e18`（MiniMax Code harness）。按三应用边界逐提交核对：
 **搬 20 个、跳过 12 个、延期 1 个**。分支 `sync-2026-09-18`（基于 `cf437559`），
-19 个提交，28 个文件，+1868 / −108。
+最终 **24 个提交（23 代码 + 1 文档），32 个文件，+2328 / −126**。
+
+其中最后 4 个提交（`5e0bd59a` 排版、`e60e488b` 常量、`8e2605e7` 测试锁、
+`dd822e85` 夹具与 fail-closed 守卫）是本机预跑 CI 时补的，**没有一个是上游
+提交的新搬运项**，全部是前 19 个提交自身的问题。详见下方「验证」段与
+「验证手段」的 2026-09-18 补记。
 
 本轮**唯一强制项**是 `06082e18` 带 `SCHEMA_VERSION` 18→19 迁移 ——
 按守则 5，vendor 门控不能豁免版本号迁移，已单独提交 `db114b07`。
@@ -384,12 +389,30 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
    教训：**计划里的「完整搬运」项要在收尾时按 SHA 逐一对照提交消息，
    不能只按主题回忆**。
 
-验证：本机无 cargo / rustc / pnpm，且沙箱拦截 `npm install`，因此
-**本轮 19 个提交全部未执行编译与测试**，仅做逐行对照上游 diff。
-Rust 与 TypeScript 改动均按 rustfmt 的 100 列换行规则手工排版
-（新增行仅一处 >100 列，位于 `json!` 宏体内，rustfmt 不处理宏体，
-与上游原文一致）。**编译、Clippy、rustfmt、前端 vitest 全部留给 CI**；
-合并前必须先跑 `gh workflow run "CI" --ref sync-2026-09-18`。
+验证：**分两轮才走到全绿，教训见「验证手段」2026-09-18 补记。**
+
+第一轮直接推 `dev` 并触发 CI（run
+[`35319345460`](https://github.com/char1eslu/cc-switch/actions/runs/35319345460)）：
+前端 job 全绿，后端 job 倒在 `cargo fmt --check`，报了 4 个文件；Clippy 与
+`cargo test` 因此被 skip，**从未真正执行**。
+
+随后改用隔离工具链（见「验证手段」）在本机镜像 CI 的后端 job，一次抓出
+**五类**问题 —— 其中三类是编译错误，CI 那条链上必然失败：
+
+1. 4 处 rustfmt 偏差（手写换行，无 `rustfmt.toml`，`wrap_comments=false`）。
+2. `TIER_SEVEN_DAY_FABLE` **只用了没声明**，`subscription.rs` 与 `tray.rs`
+   共 6 处 E0425。
+3. `lock_conn!` 用在两个非 `Result` 的测试函数里，宏内的 `?` 直接编译失败。
+4. `b060a3dc` 只搬了 `media_sanitizer.rs` 的 3 个夹具，**漏搬 `forwarder.rs`
+   同源的 4 个**，一个既有测试断言 1 实得 0。
+5. `c89f273e` 把 `strip_suffix` 换成按长度切片以支持大小写不敏感，**丢掉了
+   fail-closed 守卫**，基线既有测试守护的「归一化路径命中但原始串不匹配」
+   场景开始返回垃圾 URL。
+
+本机 `cargo fmt --check` / `cargo clippy -- -D warnings` / `cargo test`
+（**1751 passed / 0 failed / 2 ignored**）全绿后重推，CI run
+[`35320679735`](https://github.com/char1eslu/cc-switch/actions/runs/35320679735)
+两个 job 全绿。
 
 ### 2026-09-07（`92d52916..f3b18df1`，29 个）
 
@@ -875,30 +898,46 @@ Clippy 零警告。CI 32041716595 / Ad Hoc 32041958536（run 已删，ID 记录�
   另：缓存未命中可能是该中转不支持 prompt caching，也可能是测试 prompt 未达
   1024 token 下限。只影响成本，不影响功能。
 - **Skill 备份新策略未在真实备份目录上观察过收敛**（见「fork 侧改造记录」）。
-- **`sync-2026-09-18` 分支（19 个提交）完全未验证，合并前必须过 CI。**
-  本机无 cargo / rustc / pnpm，且沙箱拦截 `npm install`，所以 19 个提交
-  一次编译、一次测试都没跑过，全部只做了逐行对照上游 diff。
-  优先跑：
+- ~~**`sync-2026-09-18` 分支完全未验证**~~ —— **2026-09-18 当日闭环**：本机后端
+  三件套全绿（1751 passed / 2 ignored），CI
+  [`35320679735`](https://github.com/char1eslu/cc-switch/actions/runs/35320679735)
+  两个 job 全绿，Ad Hoc 构建通过。
 
-  ```bash
-  gh workflow run "CI" --ref sync-2026-09-18 -R char1eslu/cc-switch
-  ```
+  当时按风险排的三处，实际表现是 **2 中 1 不中**：
 
-  预期最先暴露的三处（按风险排序）：
-  1. `b9922e2f`（`session_usage_codex.rs`）—— fork 与上游架构不同，是**语义
-     等价重写**而非移植，且依赖已有的 `session_log_sync.last_byte_offset` 列。
-     两个新测试用 `total_changes()` 区分「真跳过」与「重解析但导入 0 行」，
-     该断言语义需要 CI 确认。
-  2. `02bcef4f`（`subscription.rs`）—— 本轮为该文件**新建了测试模块**
-     （fork 原本没有），5 个解析器测试是本轮首次在该文件跑起来的用例。
-  3. `c89f273e`（`proxy/server.rs`）—— 上游那 163 行全是测试，且引用
-     `CodexStandaloneEndpoint` / `/v1/alpha/search`（fork 均无），已按 fork 自己的
-     `image_upstream` + `CapturedImageRequest` 脚手架重写为 5 个用例。
-  另外 `db114b07` 的 v19 迁移建议先用真实库副本干跑，确认 v19 库原样打开、零迁移。
+  1. `b9922e2f`（`session_usage_codex.rs`）—— 中。语义等价重写本身没问题，
+     但两个新测试把 `lock_conn!` 用在了返回 `i64` / `()` 的函数里，宏内的 `?`
+     导致编译失败（`8e2605e7`）。改后用 `total_changes()` 区分「真跳过」与
+     「重解析但导入 0 行」的断言语义如期成立。
+  2. `02bcef4f`（`subscription.rs`）—— 中。新建的测试模块没问题，但
+     `TIER_SEVEN_DAY_FABLE` **只用了没声明**，`subscription.rs` 与 `tray.rs`
+     共 6 处 E0425（`e60e488b`）。
+  3. `c89f273e`（`proxy/server.rs`）—— 未中。按 fork 脚手架重写的 5 个端到端
+     用例一次通过；真正出问题的是同一提交对 `forwarder.rs` 的改动（见下）。
+
+  另外两处**预判时完全没想到**、本机预跑才暴露的：
+
+  4. `b060a3dc` 只搬了 `media_sanitizer.rs` 的 3 个夹具，漏搬 `forwarder.rs`
+     同源的 4 个，打破既有测试（`dd822e85`）。
+  5. `c89f273e` 把 `strip_suffix` 换成按长度切片后丢掉 fail-closed 守卫，
+     基线既有测试守护的「归一化路径命中但原始串不匹配」场景开始返回垃圾 URL
+     （`dd822e85`）。
+
+- `db114b07` 的 v19 迁移**仍建议先用真实库副本干跑**，确认 v19 库原样打开、
+  零迁移。CI 只覆盖到 `database/tests.rs` 里的合成库，覆盖不到真实用户的库。
 
 ## 验证手段
 
 本机默认不保留 Rust toolchain；后端改动以 GitHub CI 为最终验证。
+
+**但推送前必须先在本机跑一遍后端三件套**（`cargo fmt --check` /
+`cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` /
+`cargo test --manifest-path src-tauri/Cargo.toml`），做法见 2026-09-18 补记。
+理由：CI 的 `fmt --check` 一旦失败，**Clippy 与 `cargo test` 会被 skip**，
+等于一轮 CI 只换来 4 个排版偏差；而编译错误与既有测试回归本机几秒就能看到。
+本机与 CI 同工具链（`rust-toolchain.toml` 锁 `channel = "1.95"`，
+CI 用 `dtolnay/rust-toolchain@stable` 也会读它），结果可直接对照。
+
 需要 pnpm 时按 `packageManager` 锁定版本放入隔离目录，验证后清理。
 本机跑前端用 `node_modules/.bin` 下的项目锁定版二进制（tsc / vitest / prettier），
 不要用 `npx prettier`——会拉最新版，与 CI 的 `format:check` 结果不一致。
@@ -937,3 +976,59 @@ upstream remote 已配置为只跟踪 `main`（2026-08-21：fetch refspec 收紧
 CI [`32525733555`](https://github.com/char1eslu/cc-switch/actions/runs/32525733555)
 全绿；Ad Hoc [`32525735709`](https://github.com/char1eslu/cc-switch/actions/runs/32525735709)
 构建通过，artifact `CC-Switch-macOS-arm64-ad-hoc` 11,522,958 bytes。
+
+### 2026-09-18 本机验证补记
+
+本轮先犯了「直接推 CI」的错：run
+[`35319345460`](https://github.com/char1eslu/cc-switch/actions/runs/35319345460)
+后端 job 倒在 `cargo fmt --check`，报 4 个文件，**Clippy 与 `cargo test` 被
+skip —— 一次都没跑**。随后改用隔离工具链在本机镜像 CI 的后端 job，一次抓出
+五类问题（4 处 rustfmt、常量漏声明、`lock_conn!` 用在非 Result 函数、
+4 处夹具漏搬、fail-closed 守卫丢失），修完再推，run
+[`35320679735`](https://github.com/char1eslu/cc-switch/actions/runs/35320679735)
+全绿。
+
+工具链做法（与 2026-08-17 的 `/private/tmp` 做法等效，隔离目录用完即删）：
+
+```bash
+export RUSTUP_HOME=<隔离目录>/rustup CARGO_HOME=<隔离目录>/cargo
+export PATH="$CARGO_HOME/bin:$PATH"
+export CARGO_TARGET_DIR=<隔离目录>/target   # 别落在仓库里
+curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+rustup toolchain install 1.95 --component rustfmt clippy --profile minimal
+cd <repo>
+mkdir -p dist                                   # CI 有这步，tauri build script 需要
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
+cargo clippy      --manifest-path src-tauri/Cargo.toml -- -D warnings
+cargo test        --manifest-path src-tauri/Cargo.toml
+```
+
+要点：
+
+- **`rust-toolchain.toml` 会替 rustup 选版本**（`channel = "1.95"`），不用手写
+  工具链名；CI 的 `dtolnay/rust-toolchain@stable` 同样读它，两边一致。
+- **`CARGO_TARGET_DIR` 放到仓库外**，避免 ~1GB 的 `src-tauri/target` 污染
+  工作区。只有 clippy/test 需要它，`cargo fmt` 不需要。
+- 本机有 `/Library/Developer/CommandLineTools`（clang + `MacOSX.sdk`），
+  `cargo test` 能真的链接跑完，**不需要 Xcode 全量**。
+- **`cargo clippy` 不带 `--all-targets` 时不编译测试代码**，测试里的编译错误
+  只有 `cargo test` 才看得到。两个都要跑。
+- 改完 Rust 后跑一次 `cargo fmt`（**不是** `--check`）让 rustfmt 自己排版，
+  比手写换行可靠；文件本来就干净时不会产生无关 diff。
+
+本轮新增两条守则：
+
+- **推送前必须在本机跑完后端三件套**（`fmt --check` / `clippy -D warnings` /
+  `test`）。理由见本节开头：CI 的 fmt 一失败就会 skip 掉后两件。
+- **搬一个上游提交前先 `git show --stat <sha>` 列全它动的文件**，逐个决定
+  搬/不搬。本轮 `b060a3dc` 只搬了 `media_sanitizer.rs` 的 3 个夹具，
+  漏掉同源的 `forwarder.rs` 4 个，直接打破一个既有测试。这是守则 1
+  （「判断依据不能只看 commit message」）在**文件粒度**上的同一条教训。
+
+验证（代码 head `dd822e85`）：本机 Rust `fmt --check` / `clippy -D warnings` /
+`cargo test` 全绿，**1751 passed / 0 failed / 2 ignored**（lib 1660 + 集成 91）。
+CI [`35320679735`](https://github.com/char1eslu/cc-switch/actions/runs/35320679735)
+两个 job 全绿；Ad Hoc
+[`35321436908`](https://github.com/char1eslu/cc-switch/actions/runs/35321436908)
+构建通过，artifact `CC-Switch-macOS-arm64-ad-hoc` 11,572,184 bytes
+（上轮 11,522,958，+49,226，与新增功能量级相符）。
