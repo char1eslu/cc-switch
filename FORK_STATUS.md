@@ -9,7 +9,7 @@
 | 项 | 值 |
 | --- | --- |
 | 已完整评估到的上游基线 | `8e478b2b` |
-| 当前已验证代码 head | `552db404`（`sync-2026-09-22`；本机前端格式、类型、362 tests、renderer build 全绿，Rust fmt / clippy 全绿；全量 Rust 除一个在旧 `dev` 同样失败的时区敏感 rollup 测试外全绿）。远端 CI 与 macOS Ad Hoc 构建待本轮合入 `dev` 后补记 |
+| 当前已验证代码 head | `fd779350`（已合入 `dev`；本机前端格式、类型、362 tests、renderer build 全绿，Rust fmt / clippy 全绿；远端 CI `35793093465` 完整全绿，macOS Ad Hoc `35793521582` 构建与产物验收通过） |
 | 最近一轮已适配的上游修复 | 大型 Skill 压缩包恢复、外部编辑后 Prompt 刷新、移动 Skill 源解析、usage 卡片缓存层级收敛、DeepSeek/Qwen/Hy/Grok/GLM 定价种子、MiniMax CN 当前域名、Codex 图像 detail 与 `additional_tools` 转换、Codex Live 空凭据保留、切应用滚动复位、WSL 探测输出、GPT-5.6/GPT-6 最大 effort、缺失 tool description、窗口 taskbar 状态、前端 build 与会话归因 CI 覆盖 |
 
 **下次同步从这里开始**：
@@ -370,6 +370,16 @@ Linux 实现）；以及 `8e478b2b` 的 Grok reasoning whitelist（fork 无该�
 `7dc254a8` 上同样失败（UTC 日期与 SQLite `localtime` 跨日），确认不是本轮回归。
 跳过该既有波动后，lib 1673 passed / 2 ignored，全部集成测试通过。远端 macOS CI
 会运行不跳过的完整测试，并作为合入后的最终准入门槛。
+
+远端验证（代码 merge head `fd779350`）：CI
+[`35793093465`](https://github.com/char1eslu/cc-switch/actions/runs/35793093465)
+前端与后端两个 job 全绿，后端在 macOS arm64 上完整运行 fmt、Clippy 和不跳过的
+Rust tests；Ad Hoc
+[`35793521582`](https://github.com/char1eslu/cc-switch/actions/runs/35793521582)
+构建、arm64 检查、签名和 artifact 上传全部通过。下载后的最终 ZIP 为
+`CC-Switch-macOS-arm64-ad-hoc-20260922-fd779350.zip`，11,605,366 bytes，ZIP CRC、
+Mach-O `arm64` 与 `codesign --verify --deep --strict` 均通过；SHA-256：
+`4cbc216c0120632bcf5e8d0a948fe8ccf063ccc9a852249dc06a85791d1a4225`。
 
 ### 2026-09-18（`f3b18df1..06082e18`，33 个）
 
