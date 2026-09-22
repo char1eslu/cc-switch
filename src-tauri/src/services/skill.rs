@@ -1028,8 +1028,7 @@ impl SkillService {
                     &skill.directory,
                     name,
                     skill.readme_url.as_deref(),
-                )
-                else {
+                ) else {
                     log::warn!(
                         "跳过 skill {} 的更新检查：在 {}/{} 中找不到匹配的远程目录（候选: {:?}）",
                         skill.directory,
@@ -1135,9 +1134,7 @@ impl SkillService {
                 ))
             })?;
 
-        let canonical_temp = temp_dir
-            .canonicalize()
-            .unwrap_or_else(|_| temp_dir.clone());
+        let canonical_temp = temp_dir.canonicalize().unwrap_or_else(|_| temp_dir.clone());
         let resolved_doc_path = source
             .canonicalize()
             .ok()
@@ -4007,9 +4004,7 @@ mod tests {
         write_skill(&temp.path().join("skills-a"), "duplicate-skill");
         write_skill(&temp.path().join("skills-b"), "duplicate-skill");
 
-        assert!(
-            SkillService::resolve_skill_source_dir(temp.path(), "duplicate-skill").is_none()
-        );
+        assert!(SkillService::resolve_skill_source_dir(temp.path(), "duplicate-skill").is_none());
     }
 
     #[test]
