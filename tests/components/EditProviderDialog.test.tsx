@@ -258,6 +258,51 @@ describe("EditProviderDialog", () => {
     );
   });
 
+  it("keeps stored Codex auth when Live has no credential", async () => {
+    const provider: Provider = {
+      id: "header-auth",
+      name: "Header Auth",
+      category: "custom",
+      settingsConfig: {
+        auth: { OPENAI_API_KEY: "sk-db-only" },
+        config: 'model_provider = "custom"\nmodel = "old-model"\n',
+      },
+    };
+    const liveSettings = {
+      auth: {},
+      config: 'model_provider = "custom"\nmodel = "live-model"\n',
+    };
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    apiMocks.getCurrent.mockResolvedValue(provider.id);
+    apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
+
+    render(
+      <EditProviderDialog
+        open
+        provider={provider}
+        onOpenChange={vi.fn()}
+        onSubmit={handleSubmit}
+        appId="codex"
+      />,
+    );
+
+    const expectedSettings = {
+      ...liveSettings,
+      auth: { OPENAI_API_KEY: "sk-db-only" },
+    };
+    await waitFor(() => {
+      expect(
+        JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
+      ).toEqual(expectedSettings);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
+    expect(handleSubmit.mock.calls[0][0].provider.settingsConfig).toEqual(
+      expectedSettings,
+    );
+  });
+
   it("does not convert an OAuth-only Codex provider into an API-key provider", async () => {
     const provider: Provider = {
       id: "oauth-provider",
