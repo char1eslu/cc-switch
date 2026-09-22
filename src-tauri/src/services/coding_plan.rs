@@ -27,9 +27,12 @@ fn detect_provider(base_url: &str) -> Option<CodingPlanProvider> {
         Some(CodingPlanProvider::ZhipuCn)
     } else if url.contains("api.z.ai") {
         Some(CodingPlanProvider::ZhipuEn)
-    } else if url.contains("api.minimaxi.com") {
+    } else if crate::codex_config::codex_url_host_matches_any(
+        base_url,
+        &["api.minimaxi.com", "api.minimax.cn"],
+    ) {
         Some(CodingPlanProvider::MiniMaxCn)
-    } else if url.contains("api.minimax.io") {
+    } else if crate::codex_config::codex_url_host_matches_any(base_url, &["api.minimax.io"]) {
         Some(CodingPlanProvider::MiniMaxEn)
     } else if url.contains("zenmux") {
         Some(CodingPlanProvider::ZenMux)
@@ -384,6 +387,7 @@ async fn query_zhipu(base_url: &str, api_key: &str) -> SubscriptionQuota {
 async fn query_minimax(api_key: &str, is_cn: bool) -> SubscriptionQuota {
     let client = crate::proxy::http_client::get();
 
+    // The quota endpoint is still documented on the legacy CN host.
     let api_domain = if is_cn {
         "api.minimaxi.com"
     } else {
@@ -709,10 +713,30 @@ pub async fn get_coding_plan_quota(
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_minimax_tiers, parse_zhipu_token_tiers, zhipu_quota_base, TIER_FIVE_HOUR,
-        TIER_WEEKLY_LIMIT,
+        detect_provider, parse_minimax_tiers, parse_zhipu_token_tiers, zhipu_quota_base,
+        CodingPlanProvider, TIER_FIVE_HOUR, TIER_WEEKLY_LIMIT,
     };
     use serde_json::json;
+
+    #[test]
+    fn minimax_cn_detects_current_and_legacy_hosts() {
+        for base_url in [
+            "https://api.minimax.cn/v1",
+            "https://API.MINIMAX.CN/anthropic",
+            "https://api.minimaxi.com/v1",
+        ] {
+            assert!(matches!(
+                detect_provider(base_url),
+                Some(CodingPlanProvider::MiniMaxCn)
+            ));
+        }
+        assert!(matches!(
+            detect_provider("https://api.minimax.io/v1"),
+            Some(CodingPlanProvider::MiniMaxEn)
+        ));
+        assert!(detect_provider("https://api.minimax.cn.example.com/v1").is_none());
+        assert!(detect_provider("https://api.minimax.io.example.com/v1").is_none());
+    }
 
     #[test]
     fn zhipu_new_plan_two_tiers_sorted_by_reset_time() {
