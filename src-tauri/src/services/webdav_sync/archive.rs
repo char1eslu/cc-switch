@@ -15,7 +15,10 @@ use crate::services::sync_protocol::{
 };
 
 /// Maximum number of entries allowed in a zip archive.
-const MAX_EXTRACT_ENTRIES: usize = 10_000;
+///
+/// A single large Skill repository can exceed the old 10,000-entry limit;
+/// keep restores aligned with the upstream 30,000-entry allowance.
+const MAX_EXTRACT_ENTRIES: usize = 30_000;
 
 pub(crate) struct SkillsBackup {
     _tmp: TempDir,
