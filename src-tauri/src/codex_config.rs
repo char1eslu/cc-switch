@@ -46,7 +46,8 @@ const CODEX_WEB_SEARCH_REJECT_HOSTS: &[&str] = &[
     "xiaomimimo.com", // Xiaomi MiMo (api.xiaomimimo.com, token-plan-cn.xiaomimimo.com)
     "longcat.chat",   // Meituan LongCat (api.longcat.chat)
     "minimax.io",     // MiniMax global (api.minimax.io)
-    "minimaxi.com",   // MiniMax CN (api.minimaxi.com)
+    "minimax.cn",     // MiniMax CN (current official endpoint)
+    "minimaxi.com",   // MiniMax CN (legacy endpoint)
     "bigmodel.cn",    // GLM native Responses rejects the hosted web_search tool.
     "z.ai",
 ];
@@ -58,7 +59,7 @@ const CODEX_WEB_SEARCH_REJECT_HOSTS: &[&str] = &[
 const CODEX_WEB_SEARCH_REJECT_MODEL_PREFIXES: &[&str] = &["mimo", "longcat", "minimax", "glm"];
 
 // Match DNS labels so short vendor names cannot capture unrelated hosts or URL paths.
-fn codex_url_host_matches_any(url_or_host: &str, hosts: &[&str]) -> bool {
+pub(crate) fn codex_url_host_matches_any(url_or_host: &str, hosts: &[&str]) -> bool {
     let input = url_or_host.trim();
     let parsed = if input.contains("://") {
         url::Url::parse(input)
@@ -3708,6 +3709,7 @@ web_search = "disabled"
             ("LongCat-2.0-Preview", "https://api.longcat.chat/openai/v1"),
             ("MiniMax-M3", "https://api.minimax.io/v1"),
             ("MiniMax-M3", "https://api.minimaxi.com/v1"),
+            ("custom-model", "https://api.minimax.cn/v1"),
             ("glm-5.3", "https://open.bigmodel.cn/api/v1"),
             ("glm-5.3", "https://api.z.ai/api/v1"),
         ] {
