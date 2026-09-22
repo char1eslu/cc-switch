@@ -906,6 +906,22 @@ async fn fetch_pypi_latest_version(client: &reqwest::Client, package: &str) -> O
 static VERSION_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\d+\.\d+\.\d+(-[\w.]+)?").expect("Invalid version regex"));
 
+#[cfg_attr(not(windows), allow(dead_code))]
+const VERSION_PROBE_SENTINEL: &str = "__CCSWITCH_VERSION__";
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn version_probe_payload(tool: &str) -> String {
+    format!("echo {VERSION_PROBE_SENTINEL}; {tool} --version")
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn after_version_sentinel(output: &str) -> &str {
+    match output.rfind(VERSION_PROBE_SENTINEL) {
+        Some(i) => output[i + VERSION_PROBE_SENTINEL.len()..].trim(),
+        None => output,
+    }
+}
+
 /// 从版本输出中提取纯版本号
 fn extract_version(raw: &str) -> String {
     VERSION_RE
@@ -1047,17 +1063,18 @@ fn try_get_version_wsl(
             default_flag_for_shell(shell)
         };
 
-        (shell.to_string(), flag, format!("{tool} --version"))
+        (shell.to_string(), flag, version_probe_payload(tool))
     } else {
+        let payload = version_probe_payload(tool);
         let cmd = if let Some(flag) = force_shell_flag {
             if !is_valid_shell_flag(flag) {
                 return ShellProbe::NotFound(format!("[WSL:{distro}] invalid shell flag: {flag}"));
             }
-            format!("\"${{SHELL:-sh}}\" {flag} '{tool} --version'")
+            format!("\"${{SHELL:-sh}}\" {flag} '{payload}'")
         } else {
             // 兜底：自动尝试 -lic, -lc, -c
             format!(
-                "\"${{SHELL:-sh}}\" -lic '{tool} --version' 2>/dev/null || \"${{SHELL:-sh}}\" -lc '{tool} --version' 2>/dev/null || \"${{SHELL:-sh}}\" -c '{tool} --version'"
+                "\"${{SHELL:-sh}}\" -lic '{payload}' 2>/dev/null || \"${{SHELL:-sh}}\" -lc '{payload}' 2>/dev/null || \"${{SHELL:-sh}}\" -c '{payload}'"
             )
         };
 
@@ -1073,15 +1090,24 @@ fn try_get_version_wsl(
         Ok(out) => {
             let stdout = decode_command_output(&out.stdout).trim().to_string();
             let stderr = decode_command_output(&out.stderr).trim().to_string();
+            let payload_out = after_version_sentinel(&stdout).to_string();
             if out.status.success() {
-                let raw = if stdout.is_empty() { &stderr } else { &stdout };
+                let raw = if payload_out.is_empty() {
+                    &stderr
+                } else {
+                    &payload_out
+                };
                 if raw.is_empty() {
                     ShellProbe::NotFound(format!("[WSL:{distro}] {NOT_INSTALLED}"))
                 } else {
                     ShellProbe::Found(extract_version(raw))
                 }
             } else {
-                let err = if stderr.is_empty() { stdout } else { stderr };
+                let err = if stderr.is_empty() {
+                    payload_out
+                } else {
+                    stderr
+                };
                 // wsl.exe 透传的退出码不总可靠，故同时用 exit 127 与 "command not found"
                 // 文本兜底判别"没装"；其余非零退出视作"装了但 --version 报错"。
                 let not_found = err.is_empty()

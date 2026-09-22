@@ -43,6 +43,23 @@ fn test_extract_version() {
 }
 
 #[test]
+fn version_probe_sentinel_drops_shell_startup_output() {
+    assert_eq!(
+        version_probe_payload("claude"),
+        "echo __CCSWITCH_VERSION__; claude --version"
+    );
+    let motd = "Welcome to Ubuntu 24.04.4 LTS\n__CCSWITCH_VERSION__\n2.1.270 (Claude Code)";
+    assert_eq!(after_version_sentinel(motd), "2.1.270 (Claude Code)");
+    let chained = "__CCSWITCH_VERSION__\nbash: warning\n__CCSWITCH_VERSION__\n1.2.3";
+    assert_eq!(after_version_sentinel(chained), "1.2.3");
+    assert_eq!(after_version_sentinel("__CCSWITCH_VERSION__\n"), "");
+    assert_eq!(
+        after_version_sentinel("sh: 1: bad: not found"),
+        "sh: 1: bad: not found"
+    );
+}
+
+#[test]
 fn test_compare_semver() {
     use std::cmp::Ordering;
     assert_eq!(
