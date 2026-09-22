@@ -2161,6 +2161,14 @@ impl Database {
                 "0.03",
                 "0",
             ),
+            (
+                "glm-5.3-flashx",
+                "GLM-5.3-FlashX",
+                "0.37",
+                "1.25",
+                "0.075",
+                "0",
+            ),
             ("glm-4.7", "GLM-4.7", "0.6", "2.2", "0.11", "0"),
             ("glm-4.6", "GLM-4.6", "0.6", "2.2", "0.11", "0"),
             ("glm-5", "GLM-5", "1", "3.2", "0.2", "0"),
@@ -2268,8 +2276,9 @@ impl Database {
             ("qwq-32b", "QwQ 32B", "0.20", "0.60", "0", "0"),
             ("qwen3-32b", "Qwen3 32B", "0.16", "0.64", "0", "0"),
             // Grok 系列 (xAI)
-            // 4.5/4.6 both use tiered pricing above 200K prompt tokens. The
+            // 4.5/4.6/4.7 use tiered pricing above 200K prompt tokens. The
             // pricing table stores the base tier, consistent with other models.
+            ("grok-4.7", "Grok 4.7", "2", "6", "0.50", "0"),
             ("grok-4.6", "Grok 4.6", "2", "6", "0.50", "0"),
             ("grok-4.5", "Grok 4.5", "2", "6", "0.30", "0"),
             ("grok-4.3", "Grok 4.3", "1.25", "2.50", "0.20", "0"),
