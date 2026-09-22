@@ -2,21 +2,21 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-09-18
+最后更新：2026-09-22
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `06082e18` |
-| 当前已验证代码 head | `dd822e85`（`dev`；本机 Rust 后端三件套全绿 1751 passed / 2 ignored、前端 CI 全绿、完整 CI 与 macOS Ad Hoc 构建均通过）。本轮 `sync-2026-09-18`（23 个代码提交）**已验证**，见「同步审计日志」2026-09-18 条目 |
-| 最近一轮已适配的上游修复 | Fable 周限额改读 `limits[]`、统一同步保留子供应商元数据、Images 编辑与 Images API 后续、Codex rollout 持久化字节游标、空 `reasoning_content` 占位符、相邻 commentary 合并、按应用保留代理配置、npm dist-tags 专用端点、智谱 Responses 模型列表、DeepSeek V4.1 定价与识图解除门控、v19 mcode 迁移 |
+| 已完整评估到的上游基线 | `8e478b2b` |
+| 当前已验证代码 head | `552db404`（`sync-2026-09-22`；本机前端格式、类型、362 tests、renderer build 全绿，Rust fmt / clippy 全绿；全量 Rust 除一个在旧 `dev` 同样失败的时区敏感 rollup 测试外全绿）。远端 CI 与 macOS Ad Hoc 构建待本轮合入 `dev` 后补记 |
+| 最近一轮已适配的上游修复 | 大型 Skill 压缩包恢复、外部编辑后 Prompt 刷新、移动 Skill 源解析、usage 卡片缓存层级收敛、DeepSeek/Qwen/Hy/Grok/GLM 定价种子、MiniMax CN 当前域名、Codex 图像 detail 与 `additional_tools` 转换、Codex Live 空凭据保留、切应用滚动复位、WSL 探测输出、GPT-5.6/GPT-6 最大 effort、缺失 tool description、窗口 taskbar 状态、前端 build 与会话归因 CI 覆盖 |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 06082e18..upstream/main
+git log --oneline 8e478b2b..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
@@ -150,7 +150,7 @@ fork 没有。因此 `45f9e819` + `45b9a952` 无法 cherry-pick，只能按语�
 | | SCHEMA_VERSION |
 | --- | --- |
 | 本 fork | **19**（2026-09-18 跟进） |
-| 上游（`06082e18`） | **19**（`06082e18` MiniMax Code harness 为 `mcp_servers` / `skills` 引入 `enabled_mcode`） |
+| 上游（`8e478b2b`） | **19**（本轮无 schema 变化） |
 
 **v19 跟进记录（2026-09-18）。** 随 `06082e18`（MiniMax Code harness）搬入：
 上游把 `SCHEMA_VERSION` 从 18 抬到 19，为 `mcp_servers` / `skills` 两表各补一列
@@ -345,6 +345,31 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-09-22（`06082e18..8e478b2b`，40 个）
+
+**搬 18 个、跳过 22 个。** 分支 `sync-2026-09-22`（基于 fork `dev`
+`7dc254a8`），按三应用边界手工适配为 21 个代码/测试提交，未整段 cherry-pick。
+本轮上游没有 schema 迁移，fork 与上游继续保持 `SCHEMA_VERSION = 19`。
+
+已适配的上游提交：`33c80626`、`a659440b`、`8272707d`、`2c735bd9`、
+`48e572cc`（只取 MiniMax CN 识别）、`e06ff90f`（只取 MiniMax 当前域名）、
+`d8e98be2`、`83a24dfb`、`a35e5000`、`5a80e300`、`4837fe2c`、`c715ee2b`、
+`701c079b`、`d6e05152`、`c8e76bbc`、`6f6087cd`、`4b1ec8b5`、`42200b42`。
+
+跳过项均有明确边界：赞助商/合作预设与 referral 文案；OpenCode、OpenClaw、Pi、
+MCode、GrokBuild 等已裁应用；release/version/updater；GitHub star prompt；仅文档或
+zh-TW 文案；GitHub Copilot 专用 stop 处理；Linux Claude Desktop 测试（fork 无对应
+Linux 实现）；以及 `8e478b2b` 的 Grok reasoning whitelist（fork 无该模型白名单前提）。
+没有恢复任何已裁应用、商业预设或永久放弃区。
+
+本机验证：前端 `format:check`、`typecheck`、58 files / 362 tests、renderer build
+全部通过；Rust `fmt --check` 与 `clippy --all-targets -D warnings` 通过。Rust 全量
+首次为 1672 passed / 2 failed / 2 ignored：其中 Qwen3.8 新测试夹具已修正并通过；
+另一个 `usage_rollup::test_rollup_merges_with_existing` 在未改动的旧 `dev`
+`7dc254a8` 上同样失败（UTC 日期与 SQLite `localtime` 跨日），确认不是本轮回归。
+跳过该既有波动后，lib 1673 passed / 2 ignored，全部集成测试通过。远端 macOS CI
+会运行不跳过的完整测试，并作为合入后的最终准入门槛。
 
 ### 2026-09-18（`f3b18df1..06082e18`，33 个）
 
