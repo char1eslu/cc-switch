@@ -36,6 +36,12 @@ const hasAuthMaterial = (value: unknown): boolean => {
   return true;
 };
 
+const hasCodexAuthMaterial = (auth: Record<string, unknown> | null): boolean =>
+  auth !== null &&
+  Object.entries(auth).some(
+    ([key, value]) => key !== "auth_mode" && hasAuthMaterial(value),
+  );
+
 /**
  * Rebuild the provider auth only for a current Codex provider's live snapshot.
  *
@@ -56,10 +62,17 @@ const reconcileCodexLiveAuth = (
   const configText =
     typeof liveSettings.config === "string" ? liveSettings.config : "";
   const bearer = extractCodexExperimentalBearerToken(configText);
-  if (!bearer) return liveSettings;
-
+  const liveAuth = asRecord(liveSettings.auth);
   const storedAuth = asRecord(storedSettings?.auth);
-  const authTemplate = storedAuth ?? asRecord(liveSettings.auth) ?? {};
+
+  if (!bearer) {
+    if (!hasCodexAuthMaterial(liveAuth) && hasCodexAuthMaterial(storedAuth)) {
+      return { ...liveSettings, auth: storedAuth };
+    }
+    return liveSettings;
+  }
+
+  const authTemplate = storedAuth ?? liveAuth ?? {};
   const hasProviderApiKey =
     typeof authTemplate.OPENAI_API_KEY === "string" &&
     authTemplate.OPENAI_API_KEY.trim().length > 0;

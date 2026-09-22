@@ -547,6 +547,22 @@ fn restore_live_settings_for_provider_backfill(
         );
     }
 
+    // A third-party route may keep its only credential in the DB while Live
+    // has no auth.json. Treat credential-less Live auth as absent, not cleared.
+    if provider.category.as_deref() != Some("official") {
+        let stored_auth = provider.settings_config.get("auth");
+        let live_auth_has_material = settings
+            .get("auth")
+            .is_some_and(crate::codex_config::codex_auth_has_login_material);
+        if !live_auth_has_material
+            && stored_auth.is_some_and(crate::codex_config::codex_auth_has_login_material)
+        {
+            if let (Some(obj), Some(stored_auth)) = (settings.as_object_mut(), stored_auth) {
+                obj.insert("auth".to_string(), stored_auth.clone());
+            }
+        }
+    }
+
     // MCP 服务器归 DB mcp_servers 表所有，live 里的 [mcp_servers] 是同步投影；
     // 回填时剥掉，否则已删除的服务器会随供应商快照复活（逐条 reconcile 清不掉孤儿）。
     if let Err(err) = crate::codex_config::strip_codex_mcp_servers_from_settings(&mut settings) {
@@ -1238,6 +1254,40 @@ mod tests {
             result.get("modelCatalog"),
             provider.settings_config.get("modelCatalog"),
             "switch-away backfill must keep the DB-stored modelCatalog when Live has none"
+        );
+    }
+
+    #[test]
+    fn codex_switch_backfill_keeps_stored_auth_when_live_has_no_credential() {
+        let mut provider = Provider::with_id(
+            "header-auth".to_string(),
+            "Header Auth".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-db-only" },
+                "config": "model_provider = \"custom\"\nmodel = \"old-model\"\n"
+            }),
+            None,
+        );
+        provider.category = Some("custom".to_string());
+
+        let result = restore_live_settings_for_provider_backfill(
+            &AppType::Codex,
+            &provider,
+            json!({
+                "auth": {},
+                "config": "model_provider = \"custom\"\nmodel = \"live-model\"\n"
+            }),
+        );
+
+        assert_eq!(
+            result.get("auth"),
+            Some(&json!({ "OPENAI_API_KEY": "sk-db-only" }))
+        );
+        assert_eq!(
+            result.get("config"),
+            Some(&json!(
+                "model_provider = \"custom\"\nmodel = \"live-model\"\n"
+            ))
         );
     }
 

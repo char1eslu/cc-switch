@@ -1023,9 +1023,12 @@ impl SkillService {
             let _state_guard = skill_state_read_guard();
 
             for skill in group_skills {
-                let Some(remote_hash) =
-                    Self::find_remote_hash_for_skill(&remote_hashes, &skill.directory, name)
-                else {
+                let Some(remote_hash) = Self::find_remote_hash_for_skill(
+                    &remote_hashes,
+                    &skill.directory,
+                    name,
+                    skill.readme_url.as_deref(),
+                ) else {
                     log::warn!(
                         "跳过 skill {} 的更新检查：在 {}/{} 中找不到匹配的远程目录（候选: {:?}）",
                         skill.directory,
@@ -1105,6 +1108,7 @@ impl SkillService {
             remote_skills.iter().map(|rs| rs.directory.as_str()),
             &skill.directory,
             &name,
+            skill.readme_url.as_deref(),
         )
         .map(|dir| dir.to_string());
 
@@ -1129,6 +1133,12 @@ impl SkillService {
                     Some("checkRepoUrl"),
                 ))
             })?;
+
+        let canonical_temp = temp_dir.canonicalize().unwrap_or_else(|_| temp_dir.clone());
+        let resolved_doc_path = source
+            .canonicalize()
+            .ok()
+            .and_then(|source| Self::doc_path_for_source(&canonical_temp, &source));
 
         // Downloads do not mutate local state, so acquire only now and hold the
         // guard through the SSOT replacement, DB metadata update, and app sync.
@@ -1168,11 +1178,11 @@ impl SkillService {
         let (new_name, new_description) = Self::read_skill_name_desc(&skill_md, &skill.directory);
 
         // 更新 readme_url
-        let doc_path = skill
-            .readme_url
-            .as_deref()
-            .and_then(Self::extract_doc_path_from_url)
-            .unwrap_or_else(|| format!("{}/SKILL.md", skill.directory.trim_end_matches('/')));
+        let doc_path = Self::choose_doc_path(
+            resolved_doc_path,
+            skill.readme_url.as_deref(),
+            &skill.directory,
+        );
         let readme_url = Some(Self::build_skill_doc_url(
             &owner,
             &name,
@@ -2347,8 +2357,31 @@ impl SkillService {
         remote_dirs: impl IntoIterator<Item = &'a str>,
         install_directory: &str,
         repo_name: &str,
+        stored_readme_url: Option<&str>,
     ) -> Option<&'a str> {
         let all: Vec<&'a str> = remote_dirs.into_iter().collect();
+
+        if let Some(stored_dir) = stored_readme_url
+            .and_then(Self::extract_doc_path_from_url)
+            .and_then(|path| {
+                path.strip_suffix("/SKILL.md")
+                    .or_else(|| (path == "SKILL.md").then_some(""))
+                    .map(str::to_string)
+            })
+        {
+            let stored_dir = if stored_dir.is_empty() {
+                repo_name
+            } else {
+                stored_dir.as_str()
+            };
+            if let Some(found) = all
+                .iter()
+                .copied()
+                .find(|remote_dir| remote_dir.eq_ignore_ascii_case(stored_dir))
+            {
+                return Some(found);
+            }
+        }
 
         let mut leaf_matches: Vec<&'a str> = all
             .iter()
@@ -2375,11 +2408,13 @@ impl SkillService {
         remote_hashes: &'a HashMap<String, String>,
         install_directory: &str,
         repo_name: &str,
+        stored_readme_url: Option<&str>,
     ) -> Option<&'a String> {
         let selected = Self::select_remote_dir_for_skill(
             remote_hashes.keys().map(|key| key.as_str()),
             install_directory,
             repo_name,
+            stored_readme_url,
         )?;
         remote_hashes.get(selected)
     }
@@ -2787,7 +2822,8 @@ impl SkillService {
     /// 返回的目录必须包含 `SKILL.md`。解析顺序：
     /// 1. 校验 `skills/foo` 这类直接相对路径；
     /// 2. 按安装名递归查找含 `SKILL.md` 的目录；
-    /// 3. 仓库根目录本身是 skill 时回退到解压根目录。
+    /// 3. 按 `SKILL.md` metadata name 查找唯一匹配；
+    /// 4. 仓库根目录本身是 skill 时回退到解压根目录。
     fn resolve_skill_source_dir(root: &Path, raw_directory: &str) -> Option<PathBuf> {
         let source_rel = Self::sanitize_skill_source_path(raw_directory)?;
         let target_name = source_rel.file_name()?.to_string_lossy().to_string();
@@ -2803,6 +2839,25 @@ impl SkillService {
                 found.display()
             );
             return Some(found);
+        }
+
+        if let Ok(skill_dirs) = Self::scan_skills_in_dir(root) {
+            let mut metadata_matches = skill_dirs.into_iter().filter(|path| {
+                Self::parse_skill_metadata_static(&path.join("SKILL.md"))
+                    .ok()
+                    .and_then(|metadata| metadata.name)
+                    .is_some_and(|name| name.trim().eq_ignore_ascii_case(&target_name))
+            });
+            if let Some(found) = metadata_matches.next() {
+                if metadata_matches.next().is_some() {
+                    log::warn!(
+                        "Multiple skill directories declare metadata name '{}'; refusing ambiguous install",
+                        target_name
+                    );
+                    return None;
+                }
+                return Some(found);
+            }
         }
 
         if root.join("SKILL.md").is_file() {
@@ -3932,6 +3987,39 @@ mod tests {
     }
 
     #[test]
+    fn resolve_skill_source_dir_falls_back_to_unique_metadata_name() {
+        let temp = tempdir().expect("tempdir");
+        let source = temp.path().join("skills");
+        write_skill(&source, "weread-skills");
+
+        assert_eq!(
+            SkillService::resolve_skill_source_dir(temp.path(), "weread-skills"),
+            Some(source)
+        );
+    }
+
+    #[test]
+    fn resolve_skill_source_dir_rejects_duplicate_metadata_names() {
+        let temp = tempdir().expect("tempdir");
+        write_skill(&temp.path().join("skills-a"), "duplicate-skill");
+        write_skill(&temp.path().join("skills-b"), "duplicate-skill");
+
+        assert!(SkillService::resolve_skill_source_dir(temp.path(), "duplicate-skill").is_none());
+    }
+
+    #[test]
+    fn select_remote_dir_prefers_persisted_source_path() {
+        let selected = SkillService::select_remote_dir_for_skill(
+            ["skills", "weread-skills"],
+            "weread-skills",
+            "repo",
+            Some("https://github.com/owner/repo/blob/main/skills/SKILL.md"),
+        );
+
+        assert_eq!(selected, Some("skills"));
+    }
+
+    #[test]
     fn replace_dest_with_copy_rejects_empty_source_without_touching_existing_dest() {
         let temp = tempdir().expect("tempdir");
         let source = temp.path().join("source-skill");
@@ -3963,6 +4051,7 @@ mod tests {
                 ordered.iter().copied(),
                 "ponytail-audit",
                 "ponytail",
+                None,
             );
             assert_eq!(
                 selected,
@@ -3984,8 +4073,12 @@ mod tests {
         remote_hashes.insert("skills/ponytail".to_string(), "hash-b".to_string());
 
         for _ in 0..64 {
-            let hash =
-                SkillService::find_remote_hash_for_skill(&remote_hashes, "ponytail", "ponytail");
+            let hash = SkillService::find_remote_hash_for_skill(
+                &remote_hashes,
+                "ponytail",
+                "ponytail",
+                None,
+            );
             assert_eq!(hash.map(String::as_str), Some("hash-b"));
         }
     }
@@ -3998,6 +4091,7 @@ mod tests {
             ["Bizard"],
             "Bizard — Biomedical Visualization Atlas",
             "Bizard",
+            None,
         );
         assert_eq!(selected, Some("Bizard"));
     }
@@ -4008,6 +4102,7 @@ mod tests {
             ["skills/alpha", "skills/beta"],
             "gamma",
             "some-repo",
+            None,
         );
         assert_eq!(selected, None, "无法确定时不应任选一个");
     }
@@ -4018,6 +4113,7 @@ mod tests {
             ["plugins/ars-codex/skills/suite", "skills/suite"],
             "suite",
             "repo",
+            None,
         );
         assert_eq!(selected, Some("skills/suite"));
     }

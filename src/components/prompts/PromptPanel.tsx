@@ -43,6 +43,13 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
       if (open) reload();
     }, [open, reload]);
 
+    useEffect(() => {
+      if (!open) return;
+      const handleFocus = () => reload();
+      window.addEventListener("focus", handleFocus);
+      return () => window.removeEventListener("focus", handleFocus);
+    }, [open, reload]);
+
     // Listen for prompt import events from deep link
     useEffect(() => {
       const handlePromptImported = (event: Event) => {
