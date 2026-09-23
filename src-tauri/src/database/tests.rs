@@ -975,6 +975,47 @@ fn model_pricing_seed_includes_claude_opus_5_5() {
 }
 
 #[test]
+fn model_pricing_refresh_finishes_old_repair_chains_and_preserves_custom_prices() {
+    let db = Database::memory().expect("create memory db");
+    {
+        let conn = db.conn.lock().expect("lock conn");
+        // mimo-v2.5 停在旧修复链的中间值（0.09/0.29/0.009），本轮新增的第二跳
+        // 应把它推到 0.14/0.28/0.0028；o3-mini 被用户改成自定义价，必须原样保留。
+        conn.execute_batch(
+            "UPDATE model_pricing SET input_cost_per_million = '0.09',
+                output_cost_per_million = '0.29', cache_read_cost_per_million = '0.009',
+                cache_creation_cost_per_million = '0' WHERE model_id = 'mimo-v2.5';
+             UPDATE model_pricing SET input_cost_per_million = '9.99' WHERE model_id = 'o3-mini';",
+        )
+        .expect("seed stale prices");
+    }
+    db.ensure_model_pricing_seeded().expect("seed pricing");
+    // 跑两轮：修复链必须收敛，不能每启动一次就来回改写。
+    for _ in 0..2 {
+        {
+            let conn = db.conn.lock().expect("lock conn");
+            let output: String = conn
+                .query_row(
+                    "SELECT output_cost_per_million FROM model_pricing WHERE model_id = 'mimo-v2.5'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("query mimo-v2.5 output price");
+            assert_eq!(output, "0.28");
+            let custom: String = conn
+                .query_row(
+                    "SELECT input_cost_per_million FROM model_pricing WHERE model_id = 'o3-mini'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("query o3-mini input price");
+            assert_eq!(custom, "9.99");
+        }
+        db.ensure_model_pricing_seeded().expect("seed pricing");
+    }
+}
+
+#[test]
 fn model_pricing_seed_repairs_sonnet_5_list_price_but_keeps_custom_price() {
     let db = Database::memory().expect("create memory db");
 
