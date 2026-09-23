@@ -436,6 +436,14 @@ disk` + `satisfies its Designated Requirement`，adhoc 签名，`com.ccswitch.de
 （`fd779350`）本机留有 `CC-Switch-macOS-arm64-ad-hoc-20260922-fd779350.zip`，
 09-18 构建（`dd822e85`）的产物无本地副本、已永久失去。
 
+**分支清理。** 同步分支在合入后即失去作用（`--no-ff` 的价值在于合并提交本身的
+双亲拓扑，与分支引用是否存活无关），本轮收尾删除 `sync-2026-09-23`
+（tip `6ceca014`，删除前已确认它是 `dev` 的祖先）。远端
+`git push origin --delete sync-2026-09-23`、本地 `git branch -d`（安全形式，
+非 `-D`）均成功。清理后该 fork 只剩 `dev` 一个分支，本地与远端一致；合并拓扑与
+全部同步提交仍可从 `dev` 到达（`80676018` 的双亲仍是 `7287bc35` 与 `6ceca014`）。
+历史各轮的 `sync-YYYY-MM-DD` 分支同理，均已在各自轮次收尾时删除。
+
 ### 2026-09-22（`06082e18..8e478b2b`，40 个）
 
 **搬 18 个、跳过 22 个。** 分支 `sync-2026-09-22`（基于 fork `dev`
