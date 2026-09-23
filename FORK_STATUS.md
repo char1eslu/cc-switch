@@ -426,6 +426,16 @@ disk` + `satisfies its Designated Requirement`，adhoc 签名，`com.ccswitch.de
 
 产物已落盘到 `/Users/charles_lu/Downloads/CC-Switch-macOS-arm64-ad-hoc-20260923-80676018.zip`。
 
+**run 清理。** 按 2026-08-18 起的惯例只保留最新一轮，删掉该 fork 上其余 5 条
+旧 run（`35794721708`、`35793521582`、`35793093465`、`35321436908`、
+`35320679735`，均为 success，head 分别 `7287bc35` / `fd779350` / `dd822e85`），
+删除前先确认所需产物已落盘。删除方式为 `DELETE /actions/runs/{id}`，5 条全部
+204，逐条回读确认为 404。清理后该 fork 恰余 2 条 run，均指向本轮 head
+`80676018`：CI `35902828931` 与 Ad Hoc `35903290782`；后者的 artifact
+（11,576,015 bytes）保持完好。被删 run 的 artifact 已随之失效，其中 09-22 构建
+（`fd779350`）本机留有 `CC-Switch-macOS-arm64-ad-hoc-20260922-fd779350.zip`，
+09-18 构建（`dd822e85`）的产物无本地副本、已永久失去。
+
 ### 2026-09-22（`06082e18..8e478b2b`，40 个）
 
 **搬 18 个、跳过 22 个。** 分支 `sync-2026-09-22`（基于 fork `dev`
