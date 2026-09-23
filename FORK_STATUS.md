@@ -2,25 +2,25 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-09-22
+最后更新：2026-09-23
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `8e478b2b` |
-| 当前已验证代码 head | `fd779350`（已合入 `dev`；本机前端格式、类型、362 tests、renderer build 全绿，Rust fmt / clippy 全绿；远端 CI `35793093465` 完整全绿，macOS Ad Hoc `35793521582` 构建与产物验收通过） |
-| 最近一轮已适配的上游修复 | 大型 Skill 压缩包恢复、外部编辑后 Prompt 刷新、移动 Skill 源解析、usage 卡片缓存层级收敛、DeepSeek/Qwen/Hy/Grok/GLM 定价种子、MiniMax CN 当前域名、Codex 图像 detail 与 `additional_tools` 转换、Codex Live 空凭据保留、切应用滚动复位、WSL 探测输出、GPT-5.6/GPT-6 最大 effort、缺失 tool description、窗口 taskbar 状态、前端 build 与会话归因 CI 覆盖 |
+| 已完整评估到的上游基线 | `da193d4f` |
+| 当前已验证代码 head | `80676018`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，远端 CI `35902828931` 前端与后端两个 job 全绿，macOS Ad Hoc `35903290782` 构建与产物验收通过） |
+| 最近一轮已适配的上游修复 | Claude Opus 5.5 定价种子、GPT-6 Sol/Luna 与 GPT-5.5/5.4/5.2 Pro 及 gpt-4o 定价、Step 5 Preview 与 MiMo 2.6 定价、mimo-v2.5 / o3-mini 调价、模型列表容忍非智谱形状的 `models` 字段 |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 8e478b2b..upstream/main
+git log --oneline da193d4f..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-  **用上表第一行那个基线值起算**（本轮是 `06082e18..upstream/main`）才是真实增量。
+  **用上表第一行那个基线值起算**（本轮是 `8e478b2b..upstream/main`）才是真实增量。
 - ⚠️ 代码块里的基线值和上表第一行必须一起改。2026-08-18 曾发现两处不一致
   （表写 `1f38c838`，审计节已到 `a98829ba`），按表起算会把 35 个已审提交重算一遍。
 - 历轮增量范围与结论见下方「同步审计日志」，从新到旧。
@@ -345,6 +345,86 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-09-23（`8e478b2b..da193d4f`，4 个）
+
+**搬 4 个（其中 1 个部分搬运）、跳过 0 个整提交。** 分支 `sync-2026-09-23`（基于
+fork `dev` `7287bc35`），4 个代码提交，4 个文件，+331 / −20。本轮上游没有 schema
+迁移，fork 与上游继续保持 `SCHEMA_VERSION = 19`。
+
+| 上游提交 | fork 提交 | 本轮适配 |
+| --- | --- | --- |
+| `85894582` | `ebd63fa8` | Claude Opus 5.5 种子行（4/20/0.20/5）。缓存读 0.05× 非常规 0.1×，照抄 Opus 5 行会把缓存读多算 2.5 倍 |
+| `85caa69e` | `0ed14b60` | GPT-6 Sol/Luna、GPT-5.5/5.4/5.2 Pro、gpt-4o/gpt-4o-mini 种子 + 升级回填测试。**跳过 `gpt-5.6-cyber`**（见下）；测试期望值按 fork 的 codex 口径重算 |
+| `f2537fdf` | `980fdf00` | `ModelsResponse.models` 收成 `Value` + `catalog_model_ids`；另改写 fork 两个既有的类型化访问测试 |
+| `da193d4f`（部分） | `6ceca014` | 仅 schema 定价与守卫（Step 5 Preview、MiMo 2.6、mimo-v2.5 / o3-mini 调价），14 个预设/测试文件全部跳过 |
+
+**跳过 `gpt-5.6-cyber` 的依据。** fork 内置种子完全没有 GPT-5.6 族，价格由
+models.dev 自动同步覆盖 —— 真实用量库（213 条定价 / 22752 条请求）里
+`gpt-5.6-sol` 6699 次、`gpt-5.6-luna` 5700 次、`gpt-5.6-terra` 107 次
+**全部已定价**，来源是 models.dev 而非 seed。沿用 09-07 轮 `ccc140a2` 与
+`9692ff5e` 的既定口径：fork 没有该 seed 族就不搬对应定价条目。单独补一行
+`gpt-5.6-cyber` 会造出半截家族，且该模型需 Trusted Access、真实库中 0 次调用。
+依赖它的测试夹具按台账守则（夹具必须引用 fork 种子表里存在的型号）一并删除。
+
+**`da193d4f` 跳过的 14 个文件**：`hermesProviderPresets.ts`、
+`openclawProviderPresets.ts`、`opencodeProviderPresets.ts`（已裁应用）；
+`piModelCatalog.ts` / `piProviderPresets.ts` / `piThinkingProfiles.ts`
+（fork 无该应用，文件不存在）；`claudeProviderPresets.ts` /
+`claudeDesktopProviderPresets.ts` / `codexProviderPresets.ts`（fork 已裁到只剩
+官方条目，由 `tests/config/` 断言；本提交改的 deepseek / glm / kimi / mimo /
+qiniu / compshare / ccsub / grok 预设 fork 里均不存在）；`jiekouProviderPresets.test.ts`、
+`tests/config/codexChatProviderPresets.test.ts`、
+`tests/config/codexReasoningLevelPresets.test.ts`、
+`tests/config/xaiOauthProviderPresets.test.ts`、`tests/components/PiProviderForm.test.tsx`。
+
+**真实用量库交叉验证（本轮新增做法）。** 只读打开 `~/.cc-switch/cc-switch.db`
+核查模型分布，作为「该不该搬」的判据之一：
+
+- `gpt-6-sol` 106 次、`gpt-6-luna` 26 次请求当时 `total_cost_usd` 为 0 →
+  `0ed14b60` 直接修掉这 132 条已发生的零成本记账。
+- `gpt-6-astra` 290 次已有定价 → 证明同族新增行的机制在 fork 生效。
+- GPT-5.6 全系与 `gpt-5.5-pro` 在库里已由 models.dev 定价 → 佐证跳过 `gpt-5.6-cyber`。
+
+**两条守则的落地核对**：
+
+- 守则 3（守卫旧值按 fork 自身历史写）：`mimo-v2.5` 的 `0.14/0.29/0.0028/0`、
+  `o3-mini` 的 `0.55/2.20/0.55/0` 与 fork 种子现值逐一比对一致，可直接沿用。
+- 守则 7（`pricing_fixes` 条目顺序即迁移顺序）：两条新条目追加在数组末尾；
+  fork 原有 `mimo-v2.5` 中间值条目（守卫 `0.09/0.29/0.009/0`）在新条目之前，
+  两跳链顺序正确 —— 新测试
+  `model_pricing_refresh_finishes_old_repair_chains_and_preserves_custom_prices`
+  正是断言这一点，并验证 `o3-mini` 的自定义价不被覆盖、跑两轮收敛。
+
+**测试夹具的适配（`85caa69e`）。** 上游测试把 `input_token_semantics` 全设为
+`INPUT_TOKEN_SEMANTICS_TOTAL` 并按「input − cache_read − cache_creation」断言 codex
+成本。**fork 没有这套分支**：`sql_helpers.rs` 只有 `CACHE_INCLUSIVE_APP_TYPES`，
+回填判据是 `app_type == "codex"`，可计费输入 = `input − cache_read`。因此
+fork 侧不引入该常量，期望值按 fork 口径重算（claude 行不变，4 个 codex 行不同）。
+
+本机验证：Rust `fmt --check`、`clippy --all-targets -D warnings`、`cargo test`
+（lib **1680 passed / 0 failed / 2 ignored**，全 target 合计 **1771 passed / 0 failed**）
+全绿；本轮新增/改写的 30 个测试定向复核通过。
+**前端套件未能本机运行**：pnpm 下载 570 个包成功，但 `node_modules` 链接阶段被
+环境沙箱阻断（`CODEBUDDY_BROKER_DENY`，关闭沙箱重试仍被同一策略拦截）。
+本轮改动为纯 Rust（只动 `src-tauri/`），未触碰 `src/` 与 `tests/`，前端由远端
+CI 的 Frontend Checks job 把关。
+
+远端验证（代码 merge head `80676018`）：CI
+[`35902828931`](https://github.com/char1eslu/cc-switch/actions/runs/35902828931)
+前端与后端两个 job 全绿 —— Frontend Checks（`pnpm typecheck` / `format:check` /
+vitest / `build:renderer`）与 Backend Checks（macOS arm64 上完整运行 `cargo fmt --check`、
+Clippy 与不跳过的 `cargo test`）均 success，补上了本机前端套件未能运行的缺口。
+Ad Hoc [`35903290782`](https://github.com/char1eslu/cc-switch/actions/runs/35903290782)
+构建、arm64 检查、签名和 artifact 上传全部通过，artifact 11,576,015 bytes。
+下载后解出的 app ZIP 为 `CC-Switch-macOS-arm64-ad-hoc-20260923-80676018.zip`，
+11,605,515 bytes，本机 ZIP CRC、Mach-O `arm64`
+（`Mach-O 64-bit executable arm64`）与 `codesign --verify --deep --strict`（`valid on
+disk` + `satisfies its Designated Requirement`，adhoc 签名，`com.ccswitch.desktop`）
+均通过；包内版本沿用 fork 的 3.16.3。SHA-256：
+`53b1c34e2d10308bbd9df9e83b7d5b04f8c540637e97477c3c679f7ffd8e7f36`。
+
+产物已落盘到 `/Users/charles_lu/Downloads/CC-Switch-macOS-arm64-ad-hoc-20260923-80676018.zip`。
 
 ### 2026-09-22（`06082e18..8e478b2b`，40 个）
 
