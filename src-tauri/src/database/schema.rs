@@ -1701,8 +1701,15 @@ impl Database {
                 "0.30",
                 "3.75",
             ),
-            // GPT-6 基础上下文档；沿用上游种子，不引入阶梯计价。
+            // GPT-6 系列（Astra 2026-09-04 发布，1.05M 窗口；Sol / Luna 2026-09-22 发布）
+            // 2026-09-23 核对官方价页 + 模型页 + models.dev：录入 Standard 短上下文价，
+            // cache read 0.1×、cache write 1.25× 输入价；>272K 长上下文档、Batch/Flex、
+            // Fast mode、区域加价沿用上游种子口径，不引入阶梯计价。
+            // effort 档 low/medium/high/xhigh 由查价剥后缀回落到本行；max 不在剥离列表
+            //（会与 *-max 真 id 撞名），不另加后缀行。
             ("gpt-6-astra", "GPT-6 Astra", "10", "50", "1", "12.5"),
+            ("gpt-6-sol", "GPT-6 Sol", "2", "10", "0.20", "2.50"),
+            ("gpt-6-luna", "GPT-6 Luna", "0.10", "0.50", "0.01", "0.125"),
             // GPT-5.5 系列
             ("gpt-5.5", "GPT-5.5", "5", "30", "0.50", "0"),
             ("gpt-5.5-low", "GPT-5.5", "5", "30", "0.50", "0"),
@@ -1881,6 +1888,17 @@ impl Database {
             ("gpt-4.1", "GPT-4.1", "2", "8", "0.50", "0"),
             ("gpt-4.1-mini", "GPT-4.1 Mini", "0.40", "1.60", "0.10", "0"),
             ("gpt-4.1-nano", "GPT-4.1 Nano", "0.10", "0.40", "0.025", "0"),
+            // OpenAI 文本模型补全（2026-09-23）：各模型页的标准 token 价。
+            // 来源：https://developers.openai.com/api/docs/models/<model_id>
+            // 已按 /api/docs/deprecations 排除弃用模型；不含工具调用费及多模态价格。
+            // Pro 系列未提供缓存折扣，与 o3-pro 一样将未支持的缓存价格记为 0。
+            // 有意不收：chat-latest 是滚动别名（改指向即改价）；gpt-rosalind-research 官方
+            // 2026-10-05 才开始计费且仅限 Trusted Access，提前入表会给免费期用量记账。
+            ("gpt-5.5-pro", "GPT-5.5 Pro", "30", "180", "0", "0"),
+            ("gpt-5.4-pro", "GPT-5.4 Pro", "30", "180", "0", "0"),
+            ("gpt-5.2-pro", "GPT-5.2 Pro", "21", "168", "0", "0"),
+            ("gpt-4o", "GPT-4o", "2.50", "10", "1.25", "0"),
+            ("gpt-4o-mini", "GPT-4o Mini", "0.15", "0.60", "0.075", "0"),
             // StepFun 系列
             (
                 "step-3.7-flash",

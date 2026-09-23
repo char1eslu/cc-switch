@@ -2719,6 +2719,99 @@ mod tests {
     }
 
     #[test]
+    fn test_backfill_new_anthropic_openai_pricing_after_upgrade() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        // 期望值按 fork 自身的 codex 计价口径重算：fork 的可计费输入是
+        // `input - cache_read`（不扣 cache_creation），与上游那套
+        // `input_token_semantics` 分支不同，故不能照抄上游数字。
+        let cases = [
+            (
+                "anthropic/claude-opus-5.5",
+                "claude",
+                1_000_000,
+                ["4.000000", "20.000000", "0.200000", "5.000000", "29.200000"],
+            ),
+            (
+                "OpenAI/GPT-6-SOL@HIGH",
+                "codex",
+                3_000_000,
+                ["4.000000", "10.000000", "0.200000", "2.500000", "16.700000"],
+            ),
+            (
+                "gpt-6-luna",
+                "codex",
+                3_000_000,
+                ["0.200000", "0.500000", "0.010000", "0.125000", "0.835000"],
+            ),
+            // Pro 系列无缓存折扣，缓存列记 0
+            (
+                "gpt-5.5-pro",
+                "codex",
+                3_000_000,
+                [
+                    "60.000000",
+                    "180.000000",
+                    "0.000000",
+                    "0.000000",
+                    "240.000000",
+                ],
+            ),
+            // 剥日期后缀后精确命中 gpt-4o-mini，不会落到更短的 gpt-4o
+            (
+                "gpt-4o-mini-2024-07-18",
+                "codex",
+                3_000_000,
+                ["0.300000", "0.600000", "0.075000", "0.000000", "0.975000"],
+            ),
+        ];
+        {
+            let conn = lock_conn!(db.conn);
+            // Simulate an existing database with unpriced usage before the update.
+            conn.execute(
+                "DELETE FROM model_pricing WHERE model_id IN
+                 ('claude-opus-5-5', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5-pro', 'gpt-4o-mini')",
+                [],
+            )?;
+            for (model, app, input, _) in &cases {
+                insert_usage_log(
+                    &conn, model, app, "p1", model, "proxy", 1000, *input, 1_000_000, 1_000_000,
+                    1_000_000, 200, "0",
+                )?;
+            }
+            // fork 的回填不读该列（只按 app_type == "codex" 扣 cache_read），
+            // 这里仍按上游写法标成 TOTAL，顺带断言它对 fork 的计价结果无副作用。
+            conn.execute(
+                "UPDATE proxy_request_logs SET input_token_semantics = 1",
+                [],
+            )?;
+        }
+        assert_eq!(db.backfill_missing_usage_costs()?, 0);
+        db.ensure_model_pricing_seeded()?;
+        assert_eq!(db.backfill_missing_usage_costs()?, cases.len() as u64);
+
+        let conn = lock_conn!(db.conn);
+        for (model, _, _, expected) in cases {
+            let costs: [String; 5] = conn.query_row(
+                "SELECT input_cost_usd, output_cost_usd, cache_read_cost_usd,
+                        cache_creation_cost_usd, total_cost_usd
+                 FROM proxy_request_logs WHERE request_id = ?1",
+                [model],
+                |row| {
+                    Ok([
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ])
+                },
+            )?;
+            assert_eq!(costs, expected, "{model}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_backfill_missing_usage_costs_keeps_claude_fresh_input() -> Result<(), AppError> {
         let db = Database::memory()?;
 
