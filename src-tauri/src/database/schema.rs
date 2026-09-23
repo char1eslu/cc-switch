@@ -2422,6 +2422,9 @@ impl Database {
             ("gpt-5-mini", "GPT-5 Mini", "0.25", "2", "0.025", "0"),
             ("gpt-5-nano", "GPT-5 Nano", "0.05", "0.40", "0.005", "0"),
             // 补缺：实际在用但历史无定价的型号（2026-08-10 按 usage 库核查补齐）
+            // Claude Opus 5.5（2026-09-23 发布；缓存读为 0.05x = $0.20，非常规 0.1x 的
+            // $0.40，也非 Opus 5 的 $0.50；fast mode $8/$40 不入表）
+            ("claude-opus-5-5", "Claude Opus 5.5", "4", "20", "0.20", "5"),
             // Claude Opus 5 官方价 $5/$25，cache 按 Opus 档惯例 0.1×/1.25×
             ("claude-opus-5", "Claude Opus 5", "5", "25", "0.50", "6.25"),
             // Grok 4.5 Build Free：build 档 cache_read 实测 $0.30（对齐上游 grok-4.5-build
