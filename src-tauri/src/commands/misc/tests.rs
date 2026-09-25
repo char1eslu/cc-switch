@@ -574,6 +574,46 @@ mod install_source_classification {
             "scoop"
         );
     }
+
+    #[test]
+    fn macos_homebrew_caskroom_is_homebrew() {
+        assert_eq!(
+            infer_install_source(Path::new("/opt/homebrew/Caskroom/codex/0.146.0/bin/codex")),
+            "homebrew"
+        );
+        // Intel prefix 不含 `/homebrew/`，必须靠 `/caskroom/` 本身命中。
+        assert_eq!(
+            infer_install_source(Path::new("/usr/local/Caskroom/codex/0.146.0/bin/codex")),
+            "homebrew"
+        );
+    }
+
+    #[test]
+    fn intel_cask_launcher_uses_resolved_target() {
+        // 标准 Intel cask：PATH 入口是 `/usr/local/bin/codex`，真身才在 Caskroom。
+        // 只看 launcher 会落到 `system`，徽章和冲突诊断都会错。
+        assert_eq!(
+            infer_install_source(Path::new("/usr/local/bin/codex")),
+            "system"
+        );
+        assert_eq!(
+            infer_install_source_for_install(
+                Path::new("/usr/local/bin/codex"),
+                Path::new("/usr/local/Caskroom/codex/0.146.0/bin/codex"),
+            ),
+            "homebrew"
+        );
+        // nvm shim 仍按 launcher 分类，不能被真身路径抢走。
+        assert_eq!(
+            infer_install_source_for_install(
+                Path::new("/Users/me/.nvm/versions/node/v22.0.0/bin/codex"),
+                Path::new(
+                    "/Users/me/.nvm/versions/node/v22.0.0/lib/node_modules/@openai/codex/bin/codex.js"
+                ),
+            ),
+            "nvm"
+        );
+    }
 }
 
 /// 锚定升级命令生成：用真实勘察到的安装路径固化为回归断言——
@@ -625,6 +665,37 @@ mod anchored_upgrade {
             "/opt/homebrew/Cellar/codex/1.2.3/bin/codex",
         );
         assert_eq!(cmd.as_deref(), Some("/opt/homebrew/bin/brew upgrade codex"));
+    }
+
+    #[test]
+    fn codex_homebrew_cask_uses_brew_upgrade_cask() {
+        // `/opt/homebrew/bin/codex` → Caskroom/codex/...:是 brew cask 而非 npm 全局包。
+        // 若误走 sibling `npm i -g @openai/codex`，npm bin-links 会因
+        // `/opt/homebrew/bin/codex` 不属于它而 EEXIST（#6562）。
+        let cmd = anchored_command_from_paths(
+            "codex",
+            "/opt/homebrew/bin/codex",
+            "/opt/homebrew/Caskroom/codex/0.146.0/bin/codex",
+        );
+        assert_eq!(
+            cmd.as_deref(),
+            Some("/opt/homebrew/bin/brew upgrade --cask codex")
+        );
+    }
+
+    #[test]
+    fn intel_homebrew_cask_without_homebrew_prefix_still_uses_brew() {
+        // Intel 默认 prefix 是 `/usr/local`，Caskroom 路径不含 `/homebrew/`。
+        // 真身解析必须靠 `Caskroom` 段本身，不能依赖 prefix 子串。
+        let cmd = anchored_command_from_paths(
+            "codex",
+            "/usr/local/bin/codex",
+            "/usr/local/Caskroom/codex/0.146.0/bin/codex",
+        );
+        assert_eq!(
+            cmd.as_deref(),
+            Some("/usr/local/bin/brew upgrade --cask codex")
+        );
     }
 
     #[test]
@@ -730,6 +801,19 @@ mod anchored_upgrade {
     }
 
     #[test]
+    fn brew_cask_path_with_space_is_quoted() {
+        let cmd = anchored_command_from_paths(
+            "codex",
+            "/opt/my brew/bin/codex",
+            "/opt/my brew/Caskroom/codex/0.146.0/bin/codex",
+        );
+        assert_eq!(
+            cmd.as_deref(),
+            Some("'/opt/my brew/bin/brew' upgrade --cask codex")
+        );
+    }
+
+    #[test]
     fn brew_formula_extraction() {
         assert_eq!(
             brew_formula_from_path("/opt/homebrew/Cellar/codex/1.2.3/bin/codex").as_deref(),
@@ -742,6 +826,33 @@ mod anchored_upgrade {
         );
         assert_eq!(
             brew_formula_from_path("/Users/me/.nvm/versions/node/v22/lib/node_modules/x"),
+            None
+        );
+        // Caskroom 不是 formula。
+        assert_eq!(
+            brew_formula_from_path("/opt/homebrew/Caskroom/codex/0.146.0/bin/codex"),
+            None
+        );
+    }
+
+    #[test]
+    fn brew_cask_extraction() {
+        assert_eq!(
+            brew_cask_from_path("/opt/homebrew/Caskroom/codex/0.146.0/bin/codex").as_deref(),
+            Some("codex")
+        );
+        // Intel prefix 不含 /homebrew/，仍能抽出 token。
+        assert_eq!(
+            brew_cask_from_path("/usr/local/Caskroom/codex/0.146.0/bin/codex").as_deref(),
+            Some("codex")
+        );
+        // formula / npm 全局包都不是 cask。
+        assert_eq!(
+            brew_cask_from_path("/opt/homebrew/Cellar/codex/1.2.3/bin/codex"),
+            None
+        );
+        assert_eq!(
+            brew_cask_from_path("/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js"),
             None
         );
     }
@@ -836,6 +947,26 @@ mod anchored_upgrade {
         assert_eq!(
             installs_anchored_command("codex", &[broken]).as_deref(),
             Some("/opt/homebrew/bin/brew upgrade codex")
+        );
+    }
+
+    #[test]
+    fn codex_broken_homebrew_cask_uses_brew_not_npm_repair() {
+        // brew cask 装的坏 codex（real 在 Caskroom）：与 formula 同理，必须回落到
+        // `brew upgrade --cask`。误走 npm uninstall+install 会撞 EEXIST，或旁路
+        // 装第二份 npm 全局包争抢同一个 `/opt/homebrew/bin/codex`。
+        let broken = ToolInstallation {
+            path: "/opt/homebrew/bin/codex".to_string(),
+            version: None,
+            runnable: false,
+            error: None,
+            source: "homebrew".to_string(),
+            is_path_default: true,
+            real: std::path::PathBuf::from("/opt/homebrew/Caskroom/codex/0.146.0/bin/codex"),
+        };
+        assert_eq!(
+            installs_anchored_command("codex", &[broken]).as_deref(),
+            Some("/opt/homebrew/bin/brew upgrade --cask codex")
         );
     }
 
