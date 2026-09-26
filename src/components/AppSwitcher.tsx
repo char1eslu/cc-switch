@@ -11,6 +11,12 @@ const APP_BADGE_ICON: Partial<
   "claude-desktop": { icon: Monitor, offsetY: 0.5 },
 };
 
+// 单色图标经 currentColor 继承按钮的 muted 文字色，未选中时自然变灰；
+// 其余为固定品牌色，需要显式去色才能和选中态区分。
+// fork 只有三个 AppType：codex 用 openai 图标（fill="currentColor"）已随文字色变灰，
+// claude / claude-desktop 共用 claude 图标（固定品牌色 #D97757）必须显式去色。
+const CURRENT_COLOR_APPS = new Set<AppId>(["codex"]);
+
 interface AppSwitcherProps {
   activeApp: AppId;
   onSwitch: (app: AppId) => void;
@@ -73,6 +79,12 @@ export function AppSwitcher({
                 icon={appIconName[app]}
                 name={appDisplayName[app]}
                 size={iconSize}
+                className={cn(
+                  "transition-[filter,opacity] duration-200",
+                  !isActive &&
+                    !CURRENT_COLOR_APPS.has(app) &&
+                    "grayscale opacity-60 group-hover:grayscale-0 group-hover:opacity-100",
+                )}
               />
               {BadgeIcon && (
                 <span
