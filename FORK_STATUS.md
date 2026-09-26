@@ -2,21 +2,21 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-09-23
+最后更新：2026-09-26
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `da193d4f` |
-| 当前已验证代码 head | `80676018`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，远端 CI `35902828931` 前端与后端两个 job 全绿，macOS Ad Hoc `35903290782` 构建与产物验收通过） |
-| 最近一轮已适配的上游修复 | Claude Opus 5.5 定价种子、GPT-6 Sol/Luna 与 GPT-5.5/5.4/5.2 Pro 及 gpt-4o 定价、Step 5 Preview 与 MiMo 2.6 定价、mimo-v2.5 / o3-mini 调价、模型列表容忍非智谱形状的 `models` 字段 |
+| 已完整评估到的上游基线 | `1ee2fdc3` |
+| 当前已验证代码 head | `7d3d28a0`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，远端 CI `36259615828` 前端与后端两个 job 全绿，macOS Ad Hoc `36259848002` 构建与产物验收通过） |
+| 最近一轮已适配的上游修复 | GPT-6 Sol/Luna 保留 max effort、Codex OAuth 客户端身份抬到 0.155.0、Homebrew Cask 安装走 `brew upgrade --cask`、Codex 官方独立安装器原地升级（#7650）、应用切换器未选中图标去色 |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline da193d4f..upstream/main
+git log --oneline 1ee2fdc3..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
@@ -150,7 +150,7 @@ fork 没有。因此 `45f9e819` + `45b9a952` 无法 cherry-pick，只能按语�
 | | SCHEMA_VERSION |
 | --- | --- |
 | 本 fork | **19**（2026-09-18 跟进） |
-| 上游（`8e478b2b`） | **19**（本轮无 schema 变化） |
+| 上游（`1ee2fdc3`） | **19**（2026-09-26 核对，连续两轮无 schema 变化） |
 
 **v19 跟进记录（2026-09-18）。** 随 `06082e18`（MiniMax Code harness）搬入：
 上游把 `SCHEMA_VERSION` 从 18 抬到 19，为 `mcp_servers` / `skills` 两表各补一列
@@ -341,10 +341,95 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
    例外：文件里除 vendor 预设外还有别的改动时（如 `userAgentPresets.ts`），
    只取那部分。
 
+9. **`commands/misc.rs` 的测试在独立文件里，cherry-pick 它必然整体冲突
+   （2026-09-26 首次书面化）。** fork 的 `misc.rs` 用
+   `#[path = "misc/tests.rs"] mod tests;` 把测试外置到
+   `src-tauri/src/commands/misc/tests.rs`，而上游测试**内联在 `misc.rs` 末尾**。
+   两边文件长度差一个数量级（fork ~2800 行 vs 上游 ~7500 行），git 找不到对齐锚点，
+   于是整个测试块落成一个 2000+ 行的冲突区。
+   **固定解法**：冲突区保留 fork 的两行 `#[path]`，删掉上游内联块，再把上游新增/改动的
+   测试**手工搬进 `tests.rs` 对应的 `mod` 块**（`install_source_classification` /
+   `anchored_upgrade` / `anchored_upgrade_windows` / `install_strategy` …）。
+   搬完务必核对 `cargo test` 的 **passed 总数增量 == 本轮搬入的测试数** —— 这是
+   「测试搬运无遗漏」唯一可靠的证据（本轮 1771 → 1792 = +21，与搬入数一致）。
+   另注意 `tests.rs` 里 `use super::super::*;` 才能看到 `misc.rs` 的私有项
+   （`CodexStandaloneInstall`、`UpdateCommand` 等）。
+
 ## 同步审计日志
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-09-26（`da193d4f..1ee2fdc3`，16 个）
+
+**搬 5 个（其中 2 个按 fork 边界适配）、跳过 11 个。** 分支 `sync-2026-09-26`（基于 fork
+`dev` `e7ea0294`），6 个提交（含 1 个 rustfmt 修正），12 个文件，+777 / −44。
+**本轮无 schema 迁移**，fork 与上游继续保持 `SCHEMA_VERSION = 19`
+（`src-tauri/src/database/mod.rs` 双方均为 19）。
+
+| 上游提交 | fork 提交 | 本轮适配 |
+| --- | --- | --- |
+| `79bdae47` | `70c1ca0f` | `supports_max_reasoning_effort` 增加 gpt-6-sol / luna，两处测试夹具同步。fork 改动前与上游逐字一致，干净 cherry-pick |
+| `993ce2f3` | `83f8dc78` | `CODEX_OAUTH_CLIENT_VERSION` 0.153.4 → 0.155.0；`claude.rs` / `codex_oauth_models.rs` 的版本断言与 models 夹具换成 sol/luna |
+| `9df49ef5` | `b4715b27` | Homebrew Cask：新增 `brew_token_from_path` / `brew_cask_from_path` / `is_brew_managed_path` / `infer_install_source_for_install`；`package_manager_anchored_command_from_paths` 里 cask 先于 formula。**丢掉同冲突区里的 `is_grok_native_install`**（fork 无 grok） |
+| `8ab8eebd` | `3a3e6222` | Codex 官方独立安装器原地升级（#7650）：`CodexStandaloneInstall`、`UpdateCommand` 枚举、`resolve_update_command` / `is_unmanaged_native_install` / `is_native_executable`；`plan_command_for` 返回类型由 `(String,bool,bool)` 收成 `(UpdateCommand,bool)`；`ToolInstallationReport.unmanaged`；前端跳过未托管安装 + 两条 i18n |
+| `3ed58925` | `b81be893` | 应用切换器未选中图标去色；`CURRENT_COLOR_APPS` 由上游 `["codex","grokbuild","pi"]` **收窄为 `["codex"]`** |
+| — | `6e358021` | rustfmt 修正（搬入的测试里一行超 100 列） |
+
+跳过 11 个：
+
+- **6 个纯文档**：`913a3bf2` / `854c9f5f` / `0555c09d`（README 四语言）、`e0f70019`（guides）、
+  `1ee2fdc3`（user-manual）、`a06a41ec`（FluxA 赞助商计数，含 4 个 i18n）。
+- **3 个 mcode**：`65d0d741`（About 页 mcode 检测）/ `9154f418`（mcode 空态文案）/
+  `bc4cce04`（mcode 预设）—— fork 的 `AboutSection.tsx` 是 `TOOL_NAMES = ["claude","codex"]`，
+  `misc.rs` 里 `mcode|minimax` 零命中，`src/config/` 无 `mcodeProviderPresets.ts`。
+- **`f8788719` Sub2API 图标**：fork 的 `src/icons/extracted/` 只有 4 个文件
+  （`claude.svg` / `openai.svg` / `index.ts` / `metadata.ts`），`index.ts` 是 30 行手工裁剪版，
+  上游是 140+ 图标的生成文件 —— 图标集属刻意裁剪，第三方聚合商图标不搬。
+- **`bf5f34d0` Zhipu GLM 预设**：fork 的 `codexProviderPresets.ts` 仅 56 行，
+  `glm-5.3|zhipu` 零命中。
+
+**本轮的结构性发现：fork 把 `misc.rs` 的测试抽成了独立文件。**
+`misc.rs` 里是 `#[path = "misc/tests.rs"] mod tests;`，而上游测试**内联在 `misc.rs`**。
+后果：凡 cherry-pick 上游动 `misc.rs` 的提交，**测试块必然整体冲突**（本轮冲突区达 2000+ 行）。
+固定解法：冲突区保留 fork 的两行 `#[path]`，把上游新增测试手工搬进
+`src-tauri/src/commands/misc/tests.rs` 对应的 `mod` 块。
+
+**文档注释的步骤编号必须按 fork 的裁剪边界重排。** `8ab8eebd` 把 ①-④ 重编成 ①-⑤
+（它插入了 mcode 与 Codex standalone 两个分支）；fork 没有 mcode，正确结果是
+①Claude native ②Codex standalone ③Homebrew formula/cask ④官方自升级 ⑤npm。照抄会得到两个「④」。
+
+**`8ab8eebd` 不受守则 5（updater 禁令）约束。** commit 前缀是 `fix(updater)`，但改的是
+About 页的**工具生命周期升级**（Codex CLI 独立安装器重跑 `install.sh`），不是 Tauri 自更新
+（不接 endpoint、不生成 updater artifact）。判据是 diff 落在
+`commands/misc.rs` / `AboutSection.tsx` / `lib/api/settings.ts`。
+
+验证（代码 head `7d3d28a0`）：
+
+- 本机隔离工具链 `~/.cc-rust`（rustup **1.95.0**，与 `rust-toolchain.toml` 的 `channel = "1.95"` 一致）：
+  `fmt --check` / `clippy --all-targets -- -D warnings`（**比 CI 严格**，CI 不带 `--all-targets`）
+  / `cargo test` —— **三项退出码均为 0**。
+- `cargo test` **1792 passed / 0 failed / 2 ignored**（12 个 test binary 合计，lib 1701）。
+  对照 09-23 轮的 1771 → **+21**，恰好等于本轮搬入的 21 个测试
+  （`9df49ef5` 的 7 个 + `8ab8eebd` 的 14 个 macOS 可跑用例；另有 1 个 Windows-gated 不在本机跑）。
+  **数字对得上，是「测试搬运无遗漏」的强证据。**
+- 远端 CI `36259615828` 两个 job 全绿，**逐步核对**：后端 fmt / clippy / tests 三步 success；
+  前端 Install dependencies / TypeScript type check / Check formatting / Unit tests /
+  Build frontend 全部 success（**58 files · 362 tests**，vite 3462 modules）。
+- macOS Ad Hoc `36259848002` 全绿（含 Ad hoc sign app、Upload app artifact），
+  artifact `CC-Switch-macOS-arm64-ad-hoc` **11,577,730 bytes**（上轮 11,576,015，+1,715）。
+  产物落盘 `~/Downloads/CC-Switch-macOS-arm64-ad-hoc-20260926-7d3d28a0.zip`
+  （**11,607,100 bytes**，`Mach-O 64-bit executable arm64`、`codesign --verify --deep --strict`
+  通过、adhoc 签名），SHA-256 `99672085…d1e0d4`。
+
+**⚠️ 前端套件本机跑不了（本环境固有限制）。** `npx pnpm@10.12.3 install --frozen-lockfile`
+跑 27 分钟无任何输出、`node_modules/.modules.yaml` 始终不存在。**本轮改动含前端文件**
+（`AppSwitcher.tsx` / `AboutSection.tsx` / `en.json` / `zh.json` / `settings.ts`），
+所以前端检查**不是**无信息的 —— 由远端 CI 的 Frontend Checks 把关，已确认全绿。
+⚠️ **另一个环境坑**：把这个长跑安装 kill 掉之后，**整个 Bash 层被拖死**
+（此后 `echo` / `true` / `pwd` 全部 exit 137 / SIGTERM，关闭沙箱与换 subagent 均无效，
+仅 Read/Glob/Write/Edit 可用），需外部干预才恢复。已记入 skill `rust-ci-local-mirror`。
+**教训：本环境不要长跑前端安装再 kill；先把后端三件套与提交做完，损失就只限远端步骤。**
 
 ### 2026-09-23（`8e478b2b..da193d4f`，4 个）
 
