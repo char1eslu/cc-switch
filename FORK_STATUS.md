@@ -431,6 +431,39 @@ About 页的**工具生命周期升级**（Codex CLI 独立安装器重跑 `inst
 仅 Read/Glob/Write/Edit 可用），需外部干预才恢复。已记入 skill `rust-ci-local-mirror`。
 **教训：本环境不要长跑前端安装再 kill；先把后端三件套与提交做完，损失就只限远端步骤。**
 
+**run 清理。** 按 2026-08-18 起的惯例只保留最新一轮，本轮删掉该 fork 上此前的旧 run
+`35903290782`（09-23 Ad Hoc，head `80676018`）与 `35902828931`（09-23 CI，head
+`80676018`），两条均 success。删除前先确认所需产物已落盘：`35903290782` 的 artifact
+`CC-Switch-macOS-arm64-ad-hoc`（11,576,015 bytes）在本机与废纸篓中**均无副本**，已随 run
+永久失去；`35902828931` 无 artifact。删除方式 `DELETE /actions/runs/{id}`，两条均 204，
+逐条回读确认为 404。清理后该 fork **恰余 2 条 run，均指向本轮 head `7d3d28a0`**：
+CI `36259615828` 与 Ad Hoc `36259848002`；后者的 artifact（11,577,730 bytes）保持完好。
+
+**分支清理。** 同步分支在合入后即失去作用（`--no-ff` 的价值在于合并提交本身的双亲拓扑，
+与分支引用是否存活无关），本轮收尾删除 `sync-2026-09-26`（tip `6e358021`，删除前已用
+`git merge-base --is-ancestor` 确认它是 `dev` 的祖先）。**本轮远端从未推送该分支** ——
+`git ls-remote --heads origin` 自始至终只有 `refs/heads/dev`，故无远端删除动作；本地用
+`git branch -d`（安全形式，非 `-D`）删除成功。清理后本地与远端**均只剩 `dev` 一个分支**，
+合并拓扑与全部同步提交仍可从 `dev` 到达（`7d3d28a0` 的双亲仍是 `e7ea0294` 与 `6e358021`）。
+
+**本机临时缓存清理。** 用 `/bin/rm -rf` 绝对路径**真删**（本环境裸 `rm` 只是移入废纸篓、
+不回收空间），逐项校验全部 `absent`，可用空间 **117Gi → 125Gi（+8 GiB）**，与清单合计
+~8.0G 相符，且废纸篓中无对应条目 —— 三项独立证据共同确认是真删而非移入废纸篓：
+
+| 路径 | 大小 |
+| --- | --- |
+| `~/.cc-rust`（隔离 rustup 工具链） | 7.7G |
+| `~/.cc-node`（隔离 node 工作区） | 220M |
+| `cc-switch/node_modules`（失败的前端安装残留，gitignore 项） | 62M |
+| `/tmp/cc-verify` | 35M |
+| `/tmp/cc-artifact.zip` | 12M |
+| `/tmp/fe-log.txt` | 92K |
+| `cc-switch/dist`（空目录，CI 的 `mkdir -p dist` 步骤需要故曾建，gitignore 项） | 0B |
+
+`src-tauri/target` 本就不存在（`CARGO_TARGET_DIR` 一直指向仓库外），无额外残留；
+交付物 `~/Downloads/CC-Switch-macOS-arm64-ad-hoc-20260926-7d3d28a0.zip`（11,607,100 bytes）
+按惯例保留。
+
 ### 2026-09-23（`8e478b2b..da193d4f`，4 个）
 
 **搬 4 个（其中 1 个部分搬运）、跳过 0 个整提交。** 分支 `sync-2026-09-23`（基于
