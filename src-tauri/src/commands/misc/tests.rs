@@ -1230,7 +1230,10 @@ mod codex_standalone_detection {
                 "/Users/me/.local/bin/codex",
                 "/Users/me/.codex/packages/app-server-daemon/current/bin/codex",
             ),
-            (r"C:\Users\me\AppData\Roaming\npm\codex.cmd", r"C:\Users\me\AppData\Roaming\npm\codex.cmd"),
+            (
+                r"C:\Users\me\AppData\Roaming\npm\codex.cmd",
+                r"C:\Users\me\AppData\Roaming\npm\codex.cmd",
+            ),
         ] {
             assert_eq!(codex_standalone_install(bin, real), None, "{bin}");
         }
