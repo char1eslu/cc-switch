@@ -424,6 +424,18 @@ fn tool_display_name(tool: &str) -> &'static str {
 /// 先下载到 mktemp 文件再交给 bash,能让 curl 失败稳定变成整条命令失败。
 const CLAUDE_INSTALL_UNIX: &str =
     "bash -c 'tmp=$(mktemp) && curl -fsSL https://claude.ai/install.sh -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'";
+/// Codex 官方独立安装器（POSIX sh 脚本）。独立安装版的 `codex update` 内部跑的正是
+/// `curl ... | sh` 且没开 pipefail——实测断网时 curl 失败、sh 读到空脚本 exit 0，
+/// `codex update` 仍打印 "Update ran successfully" 并 exit 0。所以不走 `codex update`，
+/// 由这里下载到临时文件再执行，curl 失败会如实变成整条命令失败。
+/// 只用于锚定升级（Windows 用 `CODEX_INSTALL_WINDOWS_SCRIPT`；WSL 不锚定），故按平台 gate。
+#[cfg(not(target_os = "windows"))]
+const CODEX_INSTALL_UNIX: &str =
+    "bash -c 'tmp=$(mktemp) && curl -fsSL https://chatgpt.com/codex/install.sh -o $tmp && sh $tmp; status=$?; rm -f $tmp; exit $status'";
+
+#[cfg(target_os = "windows")]
+const CODEX_INSTALL_WINDOWS_SCRIPT: &str = "irm https://chatgpt.com/codex/install.ps1 | iex";
+
 #[cfg(target_os = "windows")]
 fn powershell_encoded_command(script: &str) -> String {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -433,6 +445,89 @@ fn powershell_encoded_command(script: &str) -> String {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
     STANDARD.encode(bytes)
+}
+
+/// Codex 官方独立安装器（`install.sh` / `install.ps1`）装出的一处安装。
+///
+/// 布局（2026-09 实测 install.sh、读 install.ps1）：发布包在
+/// `<CODEX_HOME>/packages/standalone/releases/<ver>-<target>/`，`current` 指向当前版本；
+/// PATH 上的入口放在 `CODEX_INSTALL_DIR`（POSIX 默认 `~/.local/bin` 下的软链，Windows 默认
+/// `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` 这个 junction），真身都解析到发布包里。
+/// 它既不归 npm 管，也不在 `prefers_official_update` 里，此前锚定落空、退回裸
+/// `npm i -g` 另装一份 npm 版（#7650）。
+#[derive(Debug, PartialEq, Eq)]
+struct CodexStandaloneInstall {
+    /// 入口所在目录，重跑 installer 时作为 `CODEX_INSTALL_DIR` 写回同一处。
+    install_dir: String,
+    /// 从真身路径截出的 `CODEX_HOME`；GUI 进程拿不到用户 shell 里设的 `CODEX_HOME`，
+    /// 不显式传会装进默认的 `~/.codex`，入口指向的那份原地不动。
+    codex_home: Option<String>,
+}
+
+/// 纯字符串判定、不碰 fs，POSIX / Windows 路径都能在任一平台单测。
+fn codex_standalone_install(bin_path: &str, real_target: &str) -> Option<CodexStandaloneInstall> {
+    let install_dir = parent_dir(bin_path);
+    if install_dir.is_empty() {
+        return None;
+    }
+    let normalized_real = real_target.replace('\\', "/").to_ascii_lowercase();
+    if let Some(idx) = normalized_real.find("/packages/standalone/") {
+        // `replace` 与 `to_ascii_lowercase` 都不改字节长度，下标可直接用于原串。
+        // Windows 的 real 是 canonicalize 出的 `\\?\` verbatim 路径，交给 installer 前还原。
+        let home = &real_target[..idx];
+        let home = match home.strip_prefix(r"\\?\UNC\") {
+            Some(unc) => format!(r"\\{unc}"),
+            None => home.strip_prefix(r"\\?\").unwrap_or(home).to_string(),
+        };
+        if !home.is_empty() {
+            return Some(CodexStandaloneInstall {
+                install_dir,
+                codex_home: Some(home),
+            });
+        }
+    }
+    // canonicalize 失败时 real 就是入口本身；Windows 默认入口目录仍能认出来，
+    // 只是拿不到 CODEX_HOME，交给 installer 用默认值。
+    let normalized_bin = bin_path.replace('\\', "/").to_ascii_lowercase();
+    normalized_bin
+        .contains("/programs/openai/codex/bin/")
+        .then_some(CodexStandaloneInstall {
+            install_dir,
+            codex_home: None,
+        })
+}
+
+/// 重跑官方 installer 升级独立安装那一处。显式传 `CODEX_INSTALL_DIR` / `CODEX_HOME`
+/// 写回探测到的位置（实测自定义目录时会原地升级、不在默认目录多装一份）；
+/// `CODEX_NON_INTERACTIVE=1` 与 `codex update` 自己重跑 installer 时的做法一致。
+#[cfg(not(target_os = "windows"))]
+fn codex_installer_update_command(install: &CodexStandaloneInstall) -> String {
+    let mut env = format!(
+        "CODEX_NON_INTERACTIVE=1 CODEX_INSTALL_DIR={}",
+        shell_single_quote(&install.install_dir)
+    );
+    if let Some(home) = &install.codex_home {
+        env.push_str(&format!(" CODEX_HOME={}", shell_single_quote(home)));
+    }
+    format!("{env} {CODEX_INSTALL_UNIX}")
+}
+
+#[cfg(target_os = "windows")]
+fn codex_installer_update_command(install: &CodexStandaloneInstall) -> String {
+    // PowerShell 单引号字面量里 `'` 写作 `''`；整段经 EncodedCommand 传入，不经 cmd 解析。
+    let quote = |value: &str| value.replace('\'', "''");
+    let mut script = format!(
+        "$env:CODEX_NON_INTERACTIVE = '1'; $env:CODEX_INSTALL_DIR = '{}'; ",
+        quote(&install.install_dir)
+    );
+    if let Some(home) = &install.codex_home {
+        script.push_str(&format!("$env:CODEX_HOME = '{}'; ", quote(home)));
+    }
+    script.push_str(CODEX_INSTALL_WINDOWS_SCRIPT);
+    format!(
+        "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {}",
+        powershell_encoded_command(&script)
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -551,8 +646,12 @@ fn build_tool_action_line(
         let command = match action {
             ToolLifecycleAction::Update => {
                 let installs = enumerate_tool_installations(tool);
-                installs_anchored_command(tool, &installs)
-                    .unwrap_or_else(|| static_fallback_command(tool))
+                match resolve_update_command(tool, &installs) {
+                    UpdateCommand::Anchored(command) | UpdateCommand::Static(command) => command,
+                    UpdateCommand::Unmanaged => {
+                        return Err(unmanaged_update_error(tool, &installs));
+                    }
+                }
             }
             ToolLifecycleAction::Install => {
                 static_fallback_command_for(tool, ToolLifecycleAction::Install)
@@ -577,8 +676,12 @@ fn build_tool_action_line(
         let command = match action {
             ToolLifecycleAction::Update => {
                 let installs = enumerate_tool_installations(tool);
-                installs_anchored_command(tool, &installs)
-                    .unwrap_or_else(|| static_fallback_command(tool))
+                match resolve_update_command(tool, &installs) {
+                    UpdateCommand::Anchored(command) | UpdateCommand::Static(command) => command,
+                    UpdateCommand::Unmanaged => {
+                        return Err(unmanaged_update_error(tool, &installs));
+                    }
+                }
             }
             ToolLifecycleAction::Install => install_command_for(tool),
         };
@@ -1525,7 +1628,7 @@ pub struct ToolInstallation {
 }
 
 /// 由可执行文件路径前缀推断安装来源。纯字符串匹配、无副作用。
-/// 顺序敏感：Homebrew 的 Cellar 真身要先于通用规则命中。
+/// 顺序敏感：Homebrew 的 Cellar / Caskroom 真身要先于通用规则命中。
 fn infer_install_source(path: &Path) -> &'static str {
     let s = path
         .to_string_lossy()
@@ -1533,7 +1636,7 @@ fn infer_install_source(path: &Path) -> &'static str {
         .to_ascii_lowercase();
     if s.contains("/.nvm/") {
         "nvm"
-    } else if s.contains("/homebrew/") || s.contains("/cellar/") {
+    } else if s.contains("/homebrew/") || s.contains("/cellar/") || s.contains("/caskroom/") {
         "homebrew"
     // `.volta` 是 macOS/Linux 默认安装(`~/.volta/bin`),`/volta/` 兜底覆盖
     // Windows 的 `%LOCALAPPDATA%\Volta\bin` / `%VOLTA_HOME%\bin`(无前导点)。
@@ -1558,6 +1661,23 @@ fn infer_install_source(path: &Path) -> &'static str {
         "pip"
     } else {
         "system"
+    }
+}
+
+/// 安装来源：Homebrew 看 canonicalize 真身，node 管理器仍看 launcher。
+///
+/// Intel Cask 入口是 `/usr/local/bin/codex`，不含 `/homebrew/` / `/caskroom/`，
+/// 真身才在 `/usr/local/Caskroom/...`。只看 launcher 会把徽章标成 `system`。
+/// nvm/volta/fnm 的分类在 shim 路径上，必须继续用未解析的入口。
+fn infer_install_source_for_install(launcher: &Path, real: &Path) -> &'static str {
+    let real_s = real
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    if real_s.contains("/cellar/") || real_s.contains("/caskroom/") {
+        "homebrew"
+    } else {
+        infer_install_source(launcher)
     }
 }
 
@@ -1681,7 +1801,7 @@ fn enumerate_tool_installations(tool: &str) -> Vec<ToolInstallation> {
 
             let is_path_default = path_default.as_ref() == Some(&real);
             let path_str = tool_path.display().to_string();
-            let source = infer_install_source(&tool_path);
+            let source = infer_install_source_for_install(&tool_path, &real);
 
             installs.push(ToolInstallation {
                 path: path_str,
@@ -1735,15 +1855,38 @@ fn parent_dir(p: &str) -> String {
 /// npm 全局包落在 `/opt/homebrew/lib/node_modules`（不含 Cellar）。两者升级命令不同。
 #[cfg(not(target_os = "windows"))]
 fn brew_formula_from_path(real: &str) -> Option<String> {
+    brew_token_from_path(real, "Cellar")
+}
+
+/// 从 canonicalize 后的真身路径提取 Homebrew cask token：
+/// `/opt/homebrew/Caskroom/codex/0.146.0/bin/codex` → `Some("codex")`。
+/// 非 Caskroom 路径返回 None。Cask 是预编译二进制，不走 node；若误判成 Homebrew
+/// npm 全局包，会用 sibling `npm i -g` 覆盖 `/opt/homebrew/bin/<tool>` 并触发 EEXIST。
+#[cfg(not(target_os = "windows"))]
+fn brew_cask_from_path(real: &str) -> Option<String> {
+    brew_token_from_path(real, "Caskroom")
+}
+
+/// Homebrew 安装目录形如 `<prefix>/{Cellar,Caskroom}/<token>/<version>/...`。
+/// 取出 `marker` 后的第一段作为 formula 名或 cask token；大小写不敏感，兼容
+/// `/usr/local/Caskroom`（Intel）与 `/opt/homebrew/Caskroom`（Apple Silicon）。
+#[cfg(not(target_os = "windows"))]
+fn brew_token_from_path(real: &str, marker: &str) -> Option<String> {
     let mut segs = real.split('/');
     while let Some(seg) = segs.next() {
-        if seg.eq_ignore_ascii_case("Cellar") {
+        if seg.eq_ignore_ascii_case(marker) {
             return segs.next().filter(|s| !s.is_empty()).map(|s| s.to_string());
         }
     }
     None
 }
 
+/// Cellar formula 或 Caskroom cask 都由 Homebrew 拥有，升级必须走 brew，
+/// 不能落到 sibling npm。任一命中即视为 brew-managed。
+#[cfg(not(target_os = "windows"))]
+fn is_brew_managed_path(real: &str) -> bool {
+    brew_formula_from_path(real).is_some() || brew_cask_from_path(real).is_some()
+}
 /// 含空格才用 POSIX 单引号包一层,否则保持裸路径——命令展示更干净。
 /// claude / brew / volta / bun / npm 五个锚定分支共用,避免"含空格"判定漂移。
 ///
@@ -1915,7 +2058,7 @@ fn prefers_official_update(tool: &str, shell: LifecycleCommandShell) -> bool {
 /// **仅对会锚定到 sibling npm 的 node 管理器来源（nvm/fnm/mise/homebrew npm）生效**：
 /// `runnable=false` 是宽信号（权限 / node 版本 / 任意 `--version` 失败皆可触发），非 npm
 /// 全局安装各有自己的二进制分发与修复方式，无脑套 npm uninstall+install 会出错——Homebrew
-/// formula（real 在 `Cellar/`）本应 `brew upgrade codex`，npm 够不到它反而旁路装第二份 npm
+/// formula / cask（real 在 `Cellar/` 或 `Caskroom/`）本应 `brew upgrade`，npm 够不到它反而旁路装第二份 npm
 /// 全局 codex；Volta/Bun 本应 `volta install`/`bun add`，且 `~/.bun/bin` 下没有 npm、
 /// `sibling_bin` 会拼出不存在的路径；system/未知来源无可靠 sibling npm。这些来源一律返回
 /// None，让上游继续走 source-specific 的 `anchored_command_from_paths`。白名单与
@@ -1926,8 +2069,10 @@ fn prefers_official_update(tool: &str, shell: LifecycleCommandShell) -> bool {
 /// 对各类损坏都是合理且不会更糟的修复。
 #[cfg(not(target_os = "windows"))]
 fn codex_repair_command(bin_path: &str, real: &str) -> Option<String> {
-    // brew formula（real 在 Cellar）→ 不归 npm 管，交回 anchored 走 brew upgrade。
-    if brew_formula_from_path(real).is_some() {
+    // brew formula / cask（real 在 Cellar 或 Caskroom）→ 不归 npm 管，交回 anchored 走 brew upgrade。
+    // 官方独立安装同理：`CODEX_INSTALL_DIR` 可以指到 Homebrew / nvm 的 bin 目录，入口来源
+    // 会被判成 homebrew / nvm，但真身在 standalone 发布包里，交回 anchored 重跑 installer。
+    if is_brew_managed_path(real) || codex_standalone_install(bin_path, real).is_some() {
         return None;
     }
     // 只认会落到 sibling npm 的 node 管理器来源；volta/bun/system/未知交回 anchored。
@@ -1959,6 +2104,15 @@ fn package_manager_anchored_command_from_paths(
     bin_path: &str,
     real_target: &str,
 ) -> Option<String> {
+    // Cask 必须先于 formula：两者互斥（真身不会同时落在 Caskroom 和 Cellar），
+    // 但先拦 cask 能避免未来路径里同时出现这两个段时误走 formula。
+    if let Some(cask) = brew_cask_from_path(real_target) {
+        let brew = sibling_bin(bin_path, "brew")?;
+        return Some(format!(
+            "{} upgrade --cask {cask}",
+            quote_path_if_spaced(&brew)
+        ));
+    }
     if let Some(formula) = brew_formula_from_path(real_target) {
         let brew = sibling_bin(bin_path, "brew")?;
         return Some(format!("{} upgrade {formula}", quote_path_if_spaced(&brew)));
@@ -2005,11 +2159,14 @@ fn package_manager_anchored_command_from_paths(
 /// ① Claude 原生安装器（`~/.local/share/claude/versions/`）→ `<bin_path 绝对> update`；
 ///    bin_path 指向 launcher,launcher 内部 dispatch update 子命令。它不归 npm 管,
 ///    且在 PATH 里比 nvm/homebrew 更靠前,用 npm 升级会装到别处且被原生那份遮蔽。
-/// ② Homebrew formula（真身在 `Cellar/<formula>/`）→ `<bin_path 同目录>/brew upgrade <formula>`;
-///    formula 由 Homebrew 拥有,避免 self-update 尝试改动包管理器管理的安装。
-/// ③ 其余支持官方自升级的工具 → `<bin_path 绝对> update/upgrade || <原锚定包管理器命令>`；
+/// ② Codex 独立安装器（`CODEX_INSTALL_DIR`）→ 带 `CODEX_INSTALL_DIR` / `CODEX_HOME`
+///    重跑官方 installer;`codex update` 断网时假成功(见 `CODEX_INSTALL_UNIX`)。
+/// ③ Homebrew formula / cask（真身在 `Cellar/<formula>/` 或 `Caskroom/<token>/`）
+///    → `<bin_path 同目录>/brew upgrade [--cask] <name>`；由 Homebrew 拥有,避免
+///    self-update 或 sibling npm 改动包管理器管理的安装。
+/// ④ 其余支持官方自升级的工具 → `<bin_path 绝对> update/upgrade || <原锚定包管理器命令>`；
 ///    Codex 的 self-update 只在部分 release 可用,所以保留 npm/brew/bun/volta fallback。
-/// ④ 不支持官方自升级的 npm 全局包 → 锚定到"那处 bin 目录的 npm"。
+/// ⑤ 不支持官方自升级的 npm 全局包 → 锚定到"那处 bin 目录的 npm"。
 #[cfg(not(target_os = "windows"))]
 fn anchored_command_from_paths(tool: &str, bin_path: &str, real_target: &str) -> Option<String> {
     let real_lower = real_target.to_ascii_lowercase();
@@ -2020,8 +2177,13 @@ fn anchored_command_from_paths(tool: &str, bin_path: &str, real_target: &str) ->
     {
         return anchored_official_update_command(tool, bin_path);
     }
+    if tool == "codex" {
+        if let Some(install) = codex_standalone_install(bin_path, real_target) {
+            return Some(codex_installer_update_command(&install));
+        }
+    }
     let package_command = package_manager_anchored_command_from_paths(tool, bin_path, real_target);
-    if brew_formula_from_path(real_target).is_some() {
+    if is_brew_managed_path(real_target) {
         return package_command;
     }
     if prefers_official_update(tool, LifecycleCommandShell::Posix) {
@@ -2085,14 +2247,20 @@ fn package_manager_anchored_command_from_paths(tool: &str, bin_path: &str) -> Op
 /// 下的 Volta/pnpm 路径;`$SHELL -lic` 的探测时 PATH 与执行时 PATH 不对称。
 ///
 /// 判定顺序(命中即返回):
-/// ① 支持官方自升级且 Windows 可安全静默执行的工具 → `<bin_path> update/upgrade || call <包管理器 fallback>`。
-/// ② 其余 npm 工具 → sibling `npm.cmd`/`.exe` i -g <pkg>@latest。
+/// ① Codex 独立安装 → 带 `CODEX_INSTALL_DIR` / `CODEX_HOME` 重跑官方 PowerShell installer。
+/// ② 支持官方自升级且 Windows 可安全静默执行的工具 → `<bin_path> update/upgrade || call <包管理器 fallback>`。
+/// ③ 其余 npm 工具 → sibling `npm.cmd`/`.exe` i -g <pkg>@latest。
 ///
 /// 包管理器 fallback 的 sibling 探测都通过 `sibling_bin_with_ext`(碰 fs):该处无候选
 /// 扩展名存在时,支持官方自升级的工具仍返回 `<bin_path> update/upgrade`,其余工具
 /// 才返 None 让上游兜回静态命令、`anchored=false`。
 #[cfg(target_os = "windows")]
-fn anchored_command_from_paths(tool: &str, bin_path: &str, _real_target: &str) -> Option<String> {
+fn anchored_command_from_paths(tool: &str, bin_path: &str, real_target: &str) -> Option<String> {
+    if tool == "codex" {
+        if let Some(install) = codex_standalone_install(bin_path, real_target) {
+            return Some(codex_installer_update_command(&install));
+        }
+    }
     let package_command = package_manager_anchored_command_from_paths(tool, bin_path);
     if prefers_official_update(tool, LifecycleCommandShell::WindowsBatch) {
         let update = anchored_official_update_command(tool, bin_path)?;
@@ -2156,6 +2324,77 @@ fn static_fallback_command(tool: &str) -> String {
     static_fallback_command_for(tool, ToolLifecycleAction::Update)
 }
 
+/// 升级命令的解析结果。plan（前端确认 / 展示）与 execute（真正执行）共用
+/// `resolve_update_command`，保证两边判定一致。
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateCommand {
+    /// 锚定到命令行实际命中的那处。
+    Anchored(String),
+    /// 定位不到默认那处，或那处认不出渠道但可能归 npm 管（asdf/nodenv shim 等脚本）
+    /// → 静态命令，保持旧行为。
+    Static(String),
+    /// 默认那处是原生可执行文件且不在 `node_modules` 里：不归 npm 管，也认不出是哪个
+    /// 安装器装的（winget、Scoop、Nix、手动下载的二进制……）。退回裸 `npm i -g` 只会
+    /// 另装一份 npm 版——要么被原生那份遮蔽、版本号不动，要么反过来顶替它（#7650），
+    /// 所以不执行，由前端提示用户用原来的安装方式升级。
+    Unmanaged,
+}
+
+fn resolve_update_command(tool: &str, installs: &[ToolInstallation]) -> UpdateCommand {
+    if let Some(command) = installs_anchored_command(tool, installs) {
+        return UpdateCommand::Anchored(command);
+    }
+    if default_install(installs).is_some_and(is_unmanaged_native_install) {
+        return UpdateCommand::Unmanaged;
+    }
+    UpdateCommand::Static(static_fallback_command(tool))
+}
+
+/// 只认「原生可执行文件 + 真身不在 `node_modules` 里」。npm 全局包的真身都在
+/// `node_modules/<pkg>/` 下（多为 JS 入口，个别包把原生二进制放在包内）；asdf / nodenv
+/// 的 shim、Windows npm 的 `.cmd` 是文本脚本，都不算——它们背后可能正是 npm 全局包，
+/// 拒绝会误伤，保持旧的静态命令。
+fn is_unmanaged_native_install(inst: &ToolInstallation) -> bool {
+    let real = inst
+        .real
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    !real.contains("/node_modules/") && is_native_executable(&inst.real)
+}
+
+/// 按文件头识别原生可执行文件：ELF、Mach-O（单架构 / universal）、Windows PE。
+fn is_native_executable(path: &Path) -> bool {
+    use std::io::Read;
+
+    let mut magic = [0u8; 4];
+    let read = std::fs::File::open(path).and_then(|mut file| file.read_exact(&mut magic));
+    if read.is_err() {
+        return false;
+    }
+    matches!(
+        magic,
+        [0x7f, b'E', b'L', b'F']
+            | [0xcf, 0xfa, 0xed, 0xfe]
+            | [0xce, 0xfa, 0xed, 0xfe]
+            | [0xfe, 0xed, 0xfa, 0xcf]
+            | [0xfe, 0xed, 0xfa, 0xce]
+            | [0xca, 0xfe, 0xba, 0xbe]
+    ) || magic.starts_with(b"MZ")
+}
+
+/// 执行路径的兜底报错。正常流程里前端已按 probe 的 `unmanaged` 跳过该工具并给出
+/// 本地化提示；只有 probe 失败、前端直接执行时才会走到这里。
+fn unmanaged_update_error(tool: &str, installs: &[ToolInstallation]) -> String {
+    let path = default_install(installs)
+        .map(|inst| inst.path.as_str())
+        .unwrap_or_default();
+    format!(
+        "{} at {path} was not installed by npm or a recognized installer; update it the way it was installed",
+        tool_display_name(tool)
+    )
+}
+
 /// 新装(install)的命令:对有官方 installer 的工具走「上游推荐 || npm 兜底」短路链,
 /// 其余工具透传到 install 静态命令。update fallback 会在平台可安全静默执行时
 /// 优先跑官方 CLI 自升级,但 install 端不能先跑 `tool update`,
@@ -2202,22 +2441,20 @@ fn install_command_for(tool: &str) -> String {
 ///   前端不会弹确认。
 ///   **必须用 `wsl_tool_action_shell_command`(unix 版)而非 `static_fallback_command`**,
 ///   保证 plan 展示给前端的命令与实际执行落 .bat 的命令一致。
-/// - 其他平台与 Windows 原生工具走 `installs_anchored_command`:命中 → 锚定;
+/// - 其他平台与 Windows 原生工具走 `resolve_update_command`:命中 → 锚定;
 ///   None(无默认 / sibling 不存在等)→ 静态兜底、`anchored=false`,
-///   前端据此给"默认入口无法确定"诚实文案。
-fn plan_command_for(tool: &str, installs: &[ToolInstallation]) -> (String, bool, bool) {
+///   前端据此给"默认入口无法确定"诚实文案;默认那处是认不出渠道的原生可执行文件
+///   → `Unmanaged`,前端跳过并提示用原安装方式升级。
+fn plan_command_for(tool: &str, installs: &[ToolInstallation]) -> (UpdateCommand, bool) {
     #[cfg(target_os = "windows")]
     {
         if wsl_distro_for_tool(tool).is_some() {
             let cmd = wsl_tool_action_shell_command(tool, ToolLifecycleAction::Update)
                 .unwrap_or_default();
-            return (cmd, false, false);
+            return (UpdateCommand::Static(cmd), false);
         }
     }
-    match installs_anchored_command(tool, installs) {
-        Some(command) => (command, installs.len() >= 2, true),
-        None => (static_fallback_command(tool), installs.len() >= 2, false),
-    }
+    (resolve_update_command(tool, installs), installs.len() >= 2)
 }
 
 /// 多处安装是否构成"真冲突"：≥2 处，且(版本分歧 或 有的能跑有的跑不起来)。
@@ -2250,6 +2487,9 @@ pub struct ToolInstallationReport {
     /// 是否成功锚定到某处具体安装。false = 退到裸 fallback 命令（无法确定命令行实际
     /// 命中哪处，或该处无同级 npm）；前端据此给出"默认入口无法确定"的诚实文案。
     anchored: bool,
+    /// 默认那处是认不出安装渠道的原生可执行文件（见 `UpdateCommand::Unmanaged`）：
+    /// 不会执行升级，此时 `command` 为空；前端跳过该工具并提示用原安装方式升级。
+    unmanaged: bool,
 }
 
 /// 探测各工具的安装分布：枚举所有安装、标记冲突、生成锚定升级命令。只读、无副作用。
@@ -2268,7 +2508,12 @@ pub async fn probe_tool_installations(
             .into_iter()
             .map(|tool| {
                 let installs = enumerate_tool_installations(tool);
-                let (command, needs_confirmation, anchored) = plan_command_for(tool, &installs);
+                let (update, needs_confirmation) = plan_command_for(tool, &installs);
+                let (command, anchored, unmanaged) = match update {
+                    UpdateCommand::Anchored(command) => (command, true, false),
+                    UpdateCommand::Static(command) => (command, false, false),
+                    UpdateCommand::Unmanaged => (String::new(), false, true),
+                };
                 let is_conflict = is_conflicting(&installs);
                 ToolInstallationReport {
                     tool: tool.to_string(),
@@ -2277,6 +2522,7 @@ pub async fn probe_tool_installations(
                     needs_confirmation,
                     command,
                     anchored,
+                    unmanaged,
                 }
             })
             .collect()
