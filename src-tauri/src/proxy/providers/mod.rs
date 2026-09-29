@@ -44,8 +44,8 @@ pub use claude::{
 };
 pub use codex::CodexAdapter;
 pub use codex::{
-    apply_codex_chat_upstream_model, apply_codex_upstream_model, codex_provider_upstream_model,
-    codex_settings_uses_anthropic, resolve_codex_chat_reasoning_config,
+    apply_codex_chat_upstream_model, apply_codex_upstream_model, is_codex_official_provider,
+    resolve_codex_catalog_tool_profile, resolve_codex_chat_reasoning_config,
     should_convert_codex_responses_to_anthropic, should_convert_codex_responses_to_chat,
 };
 

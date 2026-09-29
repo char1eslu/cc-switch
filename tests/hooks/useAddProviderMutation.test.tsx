@@ -90,6 +90,7 @@ describe("useAddProviderMutation", () => {
       }),
       "claude-desktop",
       undefined,
+      undefined,
     );
     expect(duplicatedProvider.id).toBe("generated-uuid");
     expect(duplicatedProvider.id).not.toBe("claude-desktop-official");

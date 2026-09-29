@@ -273,6 +273,10 @@ fn build_provider_meta(request: &DeepLinkImportRequest) -> Result<Option<Provide
         template_type: None, // Deeplink providers don't specify template type (will use backward compatibility logic)
         auto_query_interval: request.usage_auto_interval,
         coding_plan_provider: None,
+        access_key_id: None,
+        secret_access_key: None,
+        team_organization_id: None,
+        team_project_id: None,
     };
 
     Ok(Some(ProviderMeta {

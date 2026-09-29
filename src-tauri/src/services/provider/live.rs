@@ -1,40 +1,28 @@
-//! Live configuration operations
+//! Live 配置的读取、首次导入和按模式分发的写入。
 //!
-//! Handles reading and writing live configuration files for Claude and Codex.
+//! 切换式应用（Claude Code、Codex）的客户端文件只经写入引擎写
+//! （`*_direct.rs`），这里只负责分发；Claude Desktop 仍在这里写。
+
+use std::sync::Arc;
 
 use serde_json::Value;
 use toml_edit::{DocumentMut, Item, TableLike};
 
 use crate::app_config::AppType;
-use crate::codex_config::{get_codex_auth_path, get_codex_config_path};
-use crate::config::{
-    delete_file, get_claude_settings_path, read_json_file, write_json_file_private,
-};
-use crate::database::Database;
+use crate::config::{get_claude_settings_path, read_json_file};
 use crate::error::AppError;
 use crate::provider::Provider;
+use crate::proxy::providers::codex_oauth_auth::{CodexLiveAuthSwitchGuard, CodexOAuthManager};
 use crate::services::mcp::McpService;
 use crate::store::AppState;
 
 use super::normalize_claude_models_in_value;
 
-pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
-    let mut v = settings.clone();
-    if let Some(obj) = v.as_object_mut() {
-        // Internal-only fields - never write to Claude Code settings.json
-        obj.remove("api_format");
-        obj.remove("apiFormat");
-        obj.remove("openrouter_compat_mode");
-        obj.remove("openrouterCompatMode");
-    }
-    v
-}
-
-#[allow(dead_code)]
 pub(crate) fn provider_exists_in_live_config(
     _app_type: &AppType,
     _provider_id: &str,
 ) -> Result<bool, AppError> {
+    // 本 fork 只保留独占式应用：live 配置里没有"某个供应商条目是否存在"的概念。
     Ok(false)
 }
 
@@ -82,24 +70,6 @@ fn json_remove_array_items(target_arr: &mut Vec<Value>, source_arr: &[Value]) {
             .position(|target_item| json_is_subset(target_item, source_item))
         {
             target_arr.remove(index);
-        }
-    }
-}
-
-fn json_deep_merge(target: &mut Value, source: &Value) {
-    match (target, source) {
-        (Value::Object(target_map), Value::Object(source_map)) => {
-            for (key, source_value) in source_map {
-                match target_map.get_mut(key) {
-                    Some(target_value) => json_deep_merge(target_value, source_value),
-                    None => {
-                        target_map.insert(key.clone(), source_value.clone());
-                    }
-                }
-            }
-        }
-        (target_value, source_value) => {
-            *target_value = source_value.clone();
         }
     }
 }
@@ -217,28 +187,6 @@ fn toml_item_is_subset(target: &Item, source: &Item) -> bool {
             toml_value_is_subset(target_value, source_value)
         }
         _ => false,
-    }
-}
-
-fn merge_toml_item(target: &mut Item, source: &Item) {
-    if let Some(source_table) = source.as_table_like() {
-        if let Some(target_table) = target.as_table_like_mut() {
-            merge_toml_table_like(target_table, source_table);
-            return;
-        }
-    }
-
-    *target = source.clone();
-}
-
-fn merge_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
-    for (key, source_item) in source.iter() {
-        match target.get_mut(key) {
-            Some(target_item) => merge_toml_item(target_item, source_item),
-            None => {
-                target.insert(key, source_item.clone());
-            }
-        }
     }
 }
 
@@ -389,517 +337,227 @@ pub(crate) fn remove_common_config_from_settings(
     }
 }
 
-fn apply_common_config_to_settings(
-    app_type: &AppType,
-    settings: &Value,
-    snippet: &str,
-) -> Result<Value, AppError> {
-    let trimmed = snippet.trim();
-    if trimmed.is_empty() {
-        return Ok(settings.clone());
-    }
-
-    match app_type {
-        AppType::Claude => {
-            let source = serde_json::from_str::<Value>(trimmed)
-                .map_err(|e| AppError::Message(format!("Invalid Claude common config: {e}")))?;
-            let mut result = settings.clone();
-            json_deep_merge(&mut result, &source);
-            Ok(result)
-        }
-        AppType::Codex => {
-            let mut result = settings.clone();
-            let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
-            let mut target_doc = if config_toml.trim().is_empty() {
-                DocumentMut::new()
-            } else {
-                config_toml.parse::<DocumentMut>().map_err(|e| {
-                    AppError::Message(format!(
-                        "Invalid Codex config.toml while applying common config: {e}"
-                    ))
-                })?
-            };
-            let source_doc = trimmed.parse::<DocumentMut>().map_err(|e| {
-                AppError::Message(format!("Invalid Codex common config snippet: {e}"))
-            })?;
-
-            merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
-            if let Some(obj) = result.as_object_mut() {
-                obj.insert("config".to_string(), Value::String(target_doc.to_string()));
-            }
-            Ok(result)
-        }
-        AppType::ClaudeDesktop => Ok(settings.clone()),
-    }
-}
-
-pub(crate) fn build_effective_settings_with_common_config(
-    db: &Database,
-    app_type: &AppType,
-    provider: &Provider,
-) -> Result<Value, AppError> {
-    let snippet = db.get_config_snippet(app_type.as_str())?;
-    let mut effective_settings = provider.settings_config.clone();
-
-    if provider_uses_common_config(app_type, provider, snippet.as_deref()) {
-        if let Some(snippet_text) = snippet.as_deref() {
-            match apply_common_config_to_settings(app_type, &effective_settings, snippet_text) {
-                Ok(settings) => effective_settings = settings,
-                Err(err) => {
-                    log::warn!(
-                        "Failed to apply common config for {} provider '{}': {err}",
-                        app_type.as_str(),
-                        provider.id
-                    );
-                }
-            }
-        }
-    }
-
-    Ok(effective_settings)
-}
-
-pub(crate) fn write_live_with_common_config(
-    db: &Database,
+/// 把 `provider` 写进 live（live 当前对应的就是它：同步、退出代理写回）。切换式应用只
+/// 替换关键字段；通用配置片段冻结在库里只给旧版读，这里不再合并。
+pub(crate) fn write_live_for_state(
+    state: &AppState,
     app_type: &AppType,
     provider: &Provider,
 ) -> Result<(), AppError> {
-    let mut effective_provider = provider.clone();
-    effective_provider.settings_config =
-        build_effective_settings_with_common_config(db, app_type, provider)?;
-
+    let db = state.db.as_ref();
+    if matches!(app_type, AppType::Claude) {
+        // Claude 不再整份写，也不合并片段：只替换关键字段和独有字段。live 当前对应的
+        // 就是这个供应商（同步、退出代理写回），它带进来的独有字段按同一行比对。
+        super::claude_direct::reapply(db, Some(provider), provider)?;
+        return Ok(());
+    }
+    if matches!(app_type, AppType::Codex) {
+        // Codex 同理：只替换关键字段和独有字段，不合并片段、不补回 MCP。
+        super::codex_direct::write_direct(
+            db,
+            &state.codex_oauth_manager,
+            crate::mode::state::op::APPLY,
+            super::codex_direct::Owner::Provider(provider),
+            Some(provider),
+            crate::mode::state::PendingTarget::default(),
+        )?;
+        return Ok(());
+    }
     if matches!(app_type, AppType::ClaudeDesktop) {
-        crate::claude_desktop_config::apply_provider(db, &effective_provider)?;
+        crate::claude_desktop_config::apply_provider(db, provider)?;
         log::info!(
             "Claude Desktop 3P profile '{}' written for provider '{}'",
             crate::claude_desktop_config::PROFILE_ID,
-            effective_provider.id
-        );
-        return Ok(());
-    }
-
-    write_live_snapshot(app_type, &effective_provider)
-}
-
-pub(crate) fn strip_common_config_from_live_settings(
-    db: &Database,
-    app_type: &AppType,
-    provider: &Provider,
-    live_settings: Value,
-) -> Value {
-    let snippet = match db.get_config_snippet(app_type.as_str()) {
-        Ok(snippet) => snippet,
-        Err(err) => {
-            log::warn!(
-                "Failed to load common config for {} while backfilling '{}': {err}",
-                app_type.as_str(),
-                provider.id
-            );
-            return restore_live_settings_for_provider_backfill(app_type, provider, live_settings);
-        }
-    };
-
-    let backfill_settings = if provider_uses_common_config(app_type, provider, snippet.as_deref()) {
-        match snippet.as_deref() {
-            Some(snippet_text) => {
-                match remove_common_config_from_settings(app_type, &live_settings, snippet_text) {
-                    Ok(settings) => settings,
-                    Err(err) => {
-                        log::warn!(
-                            "Failed to strip common config for {} provider '{}': {err}",
-                            app_type.as_str(),
-                            provider.id
-                        );
-                        live_settings
-                    }
-                }
-            }
-            None => live_settings,
-        }
-    } else {
-        live_settings
-    };
-
-    restore_live_settings_for_provider_backfill(app_type, provider, backfill_settings)
-}
-
-fn restore_live_settings_for_provider_backfill(
-    app_type: &AppType,
-    provider: &Provider,
-    live_settings: Value,
-) -> Value {
-    if !matches!(app_type, AppType::Codex) {
-        return live_settings;
-    }
-
-    let mut settings = live_settings;
-    let restore_provider_token =
-        crate::codex_config::should_restore_codex_provider_token_for_backfill(
-            provider.category.as_deref(),
-            &provider.settings_config,
-        );
-    if let Err(err) = crate::codex_config::restore_codex_settings_for_backfill(
-        &mut settings,
-        &provider.settings_config,
-        restore_provider_token,
-    ) {
-        log::warn!(
-            "Failed to restore Codex settings while backfilling '{}': {err}",
             provider.id
         );
-    }
-
-    // A third-party route may keep its only credential in the DB while Live
-    // has no auth.json. Treat credential-less Live auth as absent, not cleared.
-    if provider.category.as_deref() != Some("official") {
-        let stored_auth = provider.settings_config.get("auth");
-        let live_auth_has_material = settings
-            .get("auth")
-            .is_some_and(crate::codex_config::codex_auth_has_login_material);
-        if !live_auth_has_material
-            && stored_auth.is_some_and(crate::codex_config::codex_auth_has_login_material)
-        {
-            if let (Some(obj), Some(stored_auth)) = (settings.as_object_mut(), stored_auth) {
-                obj.insert("auth".to_string(), stored_auth.clone());
-            }
-        }
-    }
-
-    // MCP 服务器归 DB mcp_servers 表所有，live 里的 [mcp_servers] 是同步投影；
-    // 回填时剥掉，否则已删除的服务器会随供应商快照复活（逐条 reconcile 清不掉孤儿）。
-    if let Err(err) = crate::codex_config::strip_codex_mcp_servers_from_settings(&mut settings) {
-        log::warn!(
-            "Failed to strip mcp_servers while backfilling '{}': {err}",
-            provider.id
-        );
-    }
-
-    // 统一会话开关注入的共享 `custom` 路由只属于 live 配置；切换回填时
-    // 必须剥掉，否则官方供应商的存储配置被污染，关闭开关后无法还原。
-    if provider.category.as_deref() == Some("official") {
-        if let Err(err) =
-            crate::codex_config::strip_codex_unified_session_bucket_from_settings(&mut settings)
-        {
-            log::warn!(
-                "Failed to strip unified session bucket while backfilling '{}': {err}",
-                provider.id
-            );
-        }
-    }
-
-    // `modelCatalog` is a cc-switch–private field whose SSOT is the DB. Live's
-    // `config.toml` only carries a lossy projection (`model_catalog_json` →
-    // generated catalog file) that proxy takeover/restore cycles and Codex.app
-    // config rewrites can drop, so `read_live_settings` may reconstruct it as
-    // absent. Never let a switch-away backfill from Live erase the stored
-    // mapping: prefer the DB provider's `modelCatalog`, falling back to whatever
-    // Live reconstructed only when the DB has none.
-    if let Some(stored_catalog) = provider.settings_config.get("modelCatalog") {
-        if let Some(obj) = settings.as_object_mut() {
-            obj.insert("modelCatalog".to_string(), stored_catalog.clone());
-        }
-    }
-
-    settings
-}
-
-pub(crate) fn normalize_provider_common_config_for_storage(
-    db: &Database,
-    app_type: &AppType,
-    provider: &mut Provider,
-) -> Result<(), AppError> {
-    let uses_common_config = provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.common_config_enabled)
-        .unwrap_or(false);
-
-    if !uses_common_config {
         return Ok(());
     }
 
-    let Some(snippet) = db.get_config_snippet(app_type.as_str())? else {
-        return Ok(());
-    };
-
-    if snippet.trim().is_empty() {
-        return Ok(());
-    }
-
-    match remove_common_config_from_settings(app_type, &provider.settings_config, &snippet) {
-        Ok(settings) => provider.settings_config = settings,
-        Err(err) => {
-            log::warn!(
-                "Failed to normalize common config before saving {} provider '{}': {err}",
-                app_type.as_str(),
-                provider.id
-            );
-        }
-    }
-
-    Ok(())
+    write_live_snapshot(app_type, provider)
 }
 
-/// Live configuration snapshot for backup/restore
-#[derive(Clone)]
-#[allow(dead_code)]
-pub(crate) enum LiveSnapshot {
-    Claude {
-        settings: Option<Value>,
-    },
-    Codex {
-        auth: Option<Value>,
-        config: Option<String>,
-    },
+/// 构建写入托管 Codex `auth.json` 的完整可刷新 auth（含 refresh_token + last_refresh）。
+///
+/// 步骤：
+/// 1. **读回**：若 Codex CLI 已自行刷新并轮换 refresh_token，先采纳盘上最新值，避免
+///    用陈腐 refresh_token 覆盖 CLI 的有效登录（反复切换场景）。
+/// 2. 取有效 token 束（必要时刷新 access_token）。
+/// 3. 按原生浏览器登录形状生成完整 auth。
+///
+/// 不再持有外层锁：manager 内部按账号加锁刷新，网络阻塞不会波及其他账号操作或
+/// token 读取。
+pub(crate) fn get_codex_managed_oauth_live_auth_value(
+    manager: Arc<CodexOAuthManager>,
+    account_id: String,
+) -> Result<Value, AppError> {
+    std::thread::spawn(move || {
+        tauri::async_runtime::block_on(async move {
+            manager
+                .ensure_account_exists(&account_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let bundle = manager
+                .get_valid_token_bundle_for_account(&account_id)
+                .await
+                .map_err(|err| {
+                    format!(
+                        "Codex OAuth 账号 {account_id} 认证失败，请重新登录 ChatGPT 账号: {err}"
+                    )
+                })?;
+            let id_token = bundle
+                .id_token
+                .as_deref()
+                .filter(|token| !token.trim().is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "Codex OAuth 账号 {account_id} 缺少 id_token，请在认证中心重新登录后再保存"
+                    )
+                })?;
+
+            Ok::<Value, String>(codex_managed_oauth_live_auth(
+                &bundle.chatgpt_account_id,
+                &bundle.access_token,
+                Some(id_token),
+                &bundle.refresh_token,
+                &bundle.last_refresh,
+            ))
+        })
+    })
+    .join()
+    .map_err(|_| AppError::Message("Codex OAuth token 获取线程异常退出".to_string()))?
+    .map_err(AppError::Message)
 }
 
-impl LiveSnapshot {
-    #[allow(dead_code)]
-    pub(crate) fn restore(&self) -> Result<(), AppError> {
-        match self {
-            LiveSnapshot::Claude { settings } => {
-                let path = get_claude_settings_path();
-                if let Some(value) = settings {
-                    write_json_file_private(&path, value)?;
-                } else if path.exists() {
-                    delete_file(&path)?;
-                }
-            }
-            LiveSnapshot::Codex { auth, config } => {
-                let auth_path = get_codex_auth_path();
-                let config_path = get_codex_config_path();
-                if let Some(value) = auth {
-                    write_json_file_private(&auth_path, value)?;
-                } else if auth_path.exists() {
-                    delete_file(&auth_path)?;
-                }
+/// Before replacing an outgoing managed account's live auth, adopt any Codex
+/// CLI-rotated refresh generation and return the exact disk refresh token for
+/// a compare-before-write check.
+pub(crate) fn prepare_codex_managed_oauth_live_auth_switch_away(
+    manager: Arc<CodexOAuthManager>,
+    account_id: String,
+) -> Result<CodexLiveAuthSwitchGuard, AppError> {
+    std::thread::spawn(move || {
+        tauri::async_runtime::block_on(async move {
+            manager
+                .prepare_live_auth_for_account_switch_away(&account_id)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    })
+    .join()
+    .map_err(|_| AppError::Message("Codex OAuth live 凭据采纳线程异常退出".to_string()))?
+    .map_err(AppError::Message)
+}
 
-                if let Some(text) = config {
-                    crate::config::write_text_file_private(&config_path, text)?;
-                } else if config_path.exists() {
-                    delete_file(&config_path)?;
-                }
-            }
-        }
-        Ok(())
-    }
+pub(crate) fn codex_managed_oauth_live_auth(
+    chatgpt_account_id: &str,
+    access_token: &str,
+    id_token: Option<&str>,
+    refresh_token: &str,
+    last_refresh: &str,
+) -> Value {
+    // 与原生 Codex 浏览器登录的形状对齐：tokens 字段顺序 id_token、access_token、
+    // refresh_token、account_id，并带顶层 last_refresh。**必须**包含 refresh_token，
+    // 否则 Codex CLI 在 access_token 过期后无法自刷新（“裸跑 codex” 会静默失效）。
+    crate::codex_config::codex_managed_oauth_auth_value(
+        chatgpt_account_id,
+        access_token,
+        id_token,
+        refresh_token,
+        last_refresh,
+    )
 }
 
 /// Write live configuration snapshot for a provider
-pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
-    match app_type {
-        AppType::Claude => {
-            let path = get_claude_settings_path();
-            let settings = sanitize_claude_settings_for_live(&provider.settings_config);
-            write_json_file_private(&path, &settings)?;
-        }
-        AppType::ClaudeDesktop => {
-            return Err(AppError::localized(
-                "claude_desktop.live.requires_db_context",
-                "Claude Desktop 配置写入需要通过供应商切换流程执行",
-                "Claude Desktop configuration must be written through the provider switch flow",
-            ));
-        }
-        AppType::Codex => {
-            let obj = provider
-                .settings_config
-                .as_object()
-                .ok_or_else(|| AppError::Config("Codex 供应商配置必须是 JSON 对象".to_string()))?;
-            let auth = obj
-                .get("auth")
-                .ok_or_else(|| AppError::Config("Codex 供应商配置缺少 'auth' 字段".to_string()))?;
-            let config_str = obj.get("config").and_then(|v| v.as_str());
-
-            crate::codex_config::write_codex_provider_live_with_catalog(
-                &provider.settings_config,
-                provider.category.as_deref(),
-                auth,
-                config_str,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn sync_current_provider_for_app_to_live(
-    state: &AppState,
+///
+/// fork 只保留 Claude / ClaudeDesktop / Codex 三种 AppType，而这三者的客户端文件
+/// 都必须经关键字段写入流程（`*_direct.rs` / `claude_desktop_config.rs`）写入，
+/// 因此这里没有可写路径——保留签名只为让上层分发逻辑与上游同形。
+pub(crate) fn write_live_snapshot(
     app_type: &AppType,
+    _provider: &Provider,
 ) -> Result<(), AppError> {
-    let current_id = match crate::settings::get_effective_current_provider(&state.db, app_type)? {
-        Some(id) => id,
-        None => return Ok(()),
-    };
-
-    let providers = state.db.get_all_providers(app_type.as_str())?;
-    if let Some(provider) = providers.get(&current_id) {
-        write_live_with_common_config(state.db.as_ref(), app_type, provider)?;
-    }
-
-    McpService::sync_all_enabled(state)?;
-
-    Ok(())
-}
-
-/// Validate the target provider's Codex live projection without writing:
-/// build the effective settings exactly like the live write would, then run
-/// the write-layer plan (legacy normalization, safety gates, token
-/// injection, TOML parsing). Called before `current` is committed — a
-/// write-layer refusal after `current` moved would let the next switch
-/// backfill the old live config into the new provider's DB row.
-pub(crate) fn preflight_codex_live_write_for_state(
-    state: &AppState,
-    provider: &Provider,
-) -> Result<(), AppError> {
-    let effective_settings =
-        build_effective_settings_with_common_config(state.db.as_ref(), &AppType::Codex, provider)?;
-    let auth = effective_settings
-        .get("auth")
-        .ok_or_else(|| AppError::Config("Codex 供应商配置缺少 'auth' 字段".to_string()))?;
-    let config_str = effective_settings.get("config").and_then(|v| v.as_str());
-    crate::codex_config::preflight_codex_live_write(provider.category.as_deref(), auth, config_str)
+    Err(match app_type {
+        AppType::Claude => AppError::localized(
+            "claude.live.requires_engine",
+            "Claude Code 配置只能经关键字段写入流程写入",
+            "Claude Code configuration must be written through the key-field write flow",
+        ),
+        AppType::ClaudeDesktop => AppError::localized(
+            "claude_desktop.live.requires_db_context",
+            "Claude Desktop 配置写入需要通过供应商切换流程执行",
+            "Claude Desktop configuration must be written through the provider switch flow",
+        ),
+        AppType::Codex => AppError::localized(
+            "codex.live.requires_engine",
+            "Codex 配置只能经关键字段写入流程写入",
+            "Codex configuration must be written through the key-field write flow",
+        ),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LiveSyncOutcome {
+    /// 按直连投影写了 live。
     WroteLive,
-    BackupOnly,
+    /// 应用在代理模式：live 是代理契约，没有按直连写。
+    ProxyMode,
 }
 
-/// Return whether proxy takeover currently owns this app's live file.
+/// 把 `provider` 同步到 live，按应用的模式处理：
+/// - 直连模式：按直连投影写 live；
+/// - 代理模式：live 是代理契约。`provider` 是代理路由的那家时按新契约重写（契约没变
+///   就不动）；其余供应商（包括直连指针那家）只在退出代理时写回，这里不碰 live。
 ///
-/// A backup row by itself is not evidence: stale rows survive crashes and failed
-/// restores. Likewise, an enabled flag left behind by an interrupted teardown
-/// must not suppress a real live write unless there is corroborating evidence.
-fn proxy_owns_live_config(
-    state: &AppState,
-    app_type: &AppType,
-    has_live_backup: bool,
-    live_taken_over: bool,
-) -> bool {
-    if live_taken_over {
-        return true;
-    }
-
-    let takeover_enabled =
-        match futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str())) {
-            Ok(config) => config.enabled,
-            Err(err) => {
-                log::warn!(
-                    "读取 {} 代理接管标志失败，按未接管处理并继续写入 live 配置；\
-                     若该应用此刻确实处于接管状态，本次写入会覆盖接管的 live: {err}",
-                    app_type.as_str()
-                );
-                false
-            }
-        };
-
-    // The enabled flag is only trusted when the proxy is actually running and
-    // the app still has a backup. This avoids treating an interrupted teardown
-    // (enabled=true, ordinary live file, no backup) as proxy ownership. The
-    // per-app lock covers the short activation window before the flag/placeholder
-    // is committed and avoids using a global proxy-running bit for another app.
-    if takeover_enabled
-        && has_live_backup
-        && futures::executor::block_on(state.proxy_service.is_running())
-    {
-        return true;
-    }
-
-    has_live_backup
-        && futures::executor::block_on(
-            state
-                .proxy_service
-                .is_switch_in_progress_for_app(app_type.as_str()),
-        )
-}
-
-/// Sync a provider to live while respecting proxy takeover ownership.
-pub(crate) fn sync_live_for_provider_respecting_takeover(
+/// `prev` 是 live 现在对应的那一版供应商行（编辑前的行），Claude 按它删上一版带进来的
+/// 独有字段；`None` 表示 live 对应的就是 `provider` 自己。调用方持有这个应用的代理切换锁
+/// （`controller::lock_settled_blocking`），并且在拿锁之后才读谁是当前供应商：不拿锁的
+/// 话，读完模式到写完 live 之间进入代理，直连的关键字段会盖掉刚写的代理契约。
+pub(crate) fn sync_live_for_provider_respecting_mode(
     state: &AppState,
     app_type: &AppType,
     provider: &Provider,
+    prev: Option<&Provider>,
 ) -> Result<LiveSyncOutcome, AppError> {
-    let has_live_backup =
-        match futures::executor::block_on(state.db.get_live_backup(app_type.as_str())) {
-            Ok(backup) => backup.is_some(),
-            Err(err) => {
-                log::warn!(
-                    "读取 {} Live 备份失败，按无备份处理并继续写入 live 配置: {err}",
-                    app_type.as_str()
-                );
-                false
-            }
-        };
-    let live_taken_over = state
-        .proxy_service
-        .detect_takeover_in_live_config_for_app(app_type);
-
-    if !proxy_owns_live_config(state, app_type, has_live_backup, live_taken_over) {
-        // A stale backup must follow the provider too, otherwise a later restore
-        // can resurrect the old URL and undo the live write we are making now.
-        if has_live_backup {
-            if let Err(err) = futures::executor::block_on(
-                state
-                    .proxy_service
-                    .update_live_backup_from_provider(app_type.as_str(), provider),
-            ) {
-                log::warn!(
-                    "刷新 {} 残留 Live 备份失败（不影响本次 live 写入）: {err}",
-                    app_type.as_str()
-                );
-            }
+    let mode = crate::mode::current::mode_state(app_type);
+    if mode.is_proxy() {
+        if mode.proxy_route.as_deref() == Some(provider.id.as_str()) {
+            futures::executor::block_on(crate::mode::controller::resync_route_locked(
+                state, app_type,
+            ))
+            .map_err(AppError::Message)?;
         }
-        write_live_with_common_config(state.db.as_ref(), app_type, provider)?;
-        return Ok(LiveSyncOutcome::WroteLive);
+        return Ok(LiveSyncOutcome::ProxyMode);
     }
-
-    // Takeover owns live: update the restore source, and refresh proxy-safe
-    // projections while the proxy is running.
-    futures::executor::block_on(
-        state
-            .proxy_service
-            .update_live_backup_from_provider(app_type.as_str(), provider),
-    )
-    .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
-
-    if !futures::executor::block_on(state.proxy_service.is_running()) {
-        return Ok(LiveSyncOutcome::BackupOnly);
+    if matches!(app_type, AppType::Claude) {
+        super::claude_direct::reapply(state.db.as_ref(), prev.or(Some(provider)), provider)?;
+    } else {
+        write_live_for_state(state, app_type, provider)?;
     }
-
-    match app_type {
-        AppType::Claude => futures::executor::block_on(
-            state
-                .proxy_service
-                .sync_claude_live_from_provider_while_proxy_active(provider),
-        )
-        .map_err(|e| AppError::Message(format!("同步 Claude Live 配置失败: {e}")))?,
-        AppType::Codex if live_taken_over => futures::executor::block_on(
-            state
-                .proxy_service
-                .sync_codex_live_from_provider_while_proxy_active(provider),
-        )
-        .map_err(|e| AppError::Message(format!("同步 Codex Live 配置失败: {e}")))?,
-        _ => {}
-    }
-
-    Ok(LiveSyncOutcome::BackupOnly)
+    Ok(LiveSyncOutcome::WroteLive)
 }
 
-fn sync_current_provider_for_app_respecting_takeover(
+/// 把正在用的那家（代理模式下是代理路由）同步到 live；没有正在用的那家时返回 `None`。
+/// 返回时已经放开切换锁。
+pub(crate) fn sync_current_provider_for_app_respecting_mode(
     state: &AppState,
     app_type: &AppType,
-) -> Result<(), AppError> {
-    let current_id = match crate::settings::get_effective_current_provider(&state.db, app_type)? {
+) -> Result<Option<LiveSyncOutcome>, AppError> {
+    let _switch_guard = crate::mode::controller::lock_settled_blocking(state, app_type)?;
+    let current_id = match crate::mode::current::provider_for(
+        &state.db,
+        app_type,
+        crate::mode::current::Purpose::InUse,
+    )? {
         Some(id) => id,
-        None => return Ok(()),
+        None => return Ok(None),
     };
 
     let providers = state.db.get_all_providers(app_type.as_str())?;
     let Some(provider) = providers.get(&current_id) else {
-        return Ok(());
+        return Ok(None);
     };
 
-    sync_live_for_provider_respecting_takeover(state, app_type, provider).map(|_| ())
+    sync_live_for_provider_respecting_mode(state, app_type, provider, None).map(Some)
 }
 
 /// Sync current provider to live configuration
@@ -907,20 +565,24 @@ fn sync_current_provider_for_app_respecting_takeover(
 /// 使用有效的当前供应商 ID（验证过存在性）。
 /// 优先从本地 settings 读取，验证后 fallback 到数据库的 is_current 字段。
 /// 这确保了配置导入后无效 ID 会自动 fallback 到数据库。
-///
 pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
     let mut failures = Vec::new();
 
+    // Sync providers based on mode
     for app_type in AppType::all() {
         // Switch mode: sync only current provider. During proxy takeover,
         // update the restore backup instead of rewriting the taken-over
         // live file.
-        if let Err(error) = sync_current_provider_for_app_respecting_takeover(state, &app_type) {
+        let result = sync_current_provider_for_app_respecting_mode(state, &app_type).map(|_| ());
+
+        if let Err(error) = result {
             log::warn!("同步 Provider 到 {app_type:?} 失败: {error}");
             failures.push(format!("provider/{}: {error}", app_type.as_str()));
         }
     }
 
+    // MCP sync is already best-effort per application. Preserve its aggregate
+    // error while continuing with Skills.
     if let Err(error) = McpService::sync_all_enabled(state) {
         failures.push(format!("mcp: {error}"));
     }
@@ -994,15 +656,11 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
         return Ok(false);
     }
 
-    // 拒绝把"被代理接管的 Live"导入为供应商：接管期间 Live 里只有
+    // 拒绝把"代理模式下的 Live"导入为供应商：代理模式下 Live 里只有
     // PROXY_MANAGED 占位符和本地代理地址，不是用户的真实配置。一旦导入，
-    // 它会成为 current provider（SSOT），后续"无备份恢复"路径会把占位符
-    // 当真实配置写回 Live，永久卡在已失效的本地代理上。
-    // 典型触发场景：代理接管开启时切换 app_config_dir 并重启，新数据库首启导入。
-    if state
-        .proxy_service
-        .detect_takeover_in_live_config_for_app(&app_type)
-    {
+    // 它会成为直连指针（SSOT），退出代理时会把占位符当真实配置写回 Live。
+    // 典型触发场景：代理模式下切换 app_config_dir 并重启，新数据库首启导入。
+    if state.proxy_service.live_has_proxy_placeholder(&app_type) {
         return Err(AppError::localized(
             "provider.import.live_taken_over",
             "Live 配置当前处于代理接管状态（包含占位符），不能导入为供应商。请先关闭代理接管或恢复 Live 配置后重试。",
@@ -1098,7 +756,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn claude_common_config_apply_and_remove_roundtrip_for_non_overlapping_fields() {
+    fn claude_common_config_remove_strips_what_old_versions_merged() {
         let settings = json!({
             "env": {
                 "ANTHROPIC_API_KEY": "sk-test"
@@ -1111,10 +769,14 @@ mod tests {
   }
 }"#;
 
-        let applied =
-            apply_common_config_to_settings(&AppType::Claude, &settings, snippet).unwrap();
-        assert_eq!(applied["includeCoAuthoredBy"], json!(false));
-        assert_eq!(applied["env"]["CLAUDE_CODE_USE_BEDROCK"], json!("1"));
+        // 旧版切换时把片段深合并进行里的样子。
+        let applied = json!({
+            "env": {
+                "ANTHROPIC_API_KEY": "sk-test",
+                "CLAUDE_CODE_USE_BEDROCK": "1"
+            },
+            "includeCoAuthoredBy": false
+        });
 
         let stripped =
             remove_common_config_from_settings(&AppType::Claude, &applied, snippet).unwrap();
@@ -1122,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_common_config_apply_and_remove_roundtrip_for_non_overlapping_fields() {
+    fn codex_common_config_remove_strips_what_old_versions_merged() {
         let settings = json!({
             "auth": {
                 "OPENAI_API_KEY": "sk-test"
@@ -1131,14 +793,66 @@ mod tests {
         });
         let snippet = "[shared]\nreasoning = \"medium\"\n";
 
-        let applied = apply_common_config_to_settings(&AppType::Codex, &settings, snippet).unwrap();
-        let applied_config = applied["config"].as_str().unwrap_or_default();
-        assert!(applied_config.contains("[shared]"));
-        assert!(applied_config.contains("reasoning = \"medium\""));
+        // 旧版切换时把片段合并进行里的样子。
+        let applied = json!({
+            "auth": {
+                "OPENAI_API_KEY": "sk-test"
+            },
+            "config": "model_provider = \"openai\"\n[general]\nmodel = \"gpt-5\"\n\n[shared]\nreasoning = \"medium\"\n"
+        });
 
         let stripped =
             remove_common_config_from_settings(&AppType::Codex, &applied, snippet).unwrap();
         assert_eq!(stripped, settings);
+    }
+
+    #[test]
+    fn codex_managed_oauth_live_auth_matches_codex_cli_shape() {
+        assert_eq!(
+            codex_managed_oauth_live_auth(
+                "acct-managed",
+                "access-token",
+                Some("id-token"),
+                "refresh-token",
+                "2026-01-02T03:04:05.000000000Z",
+            ),
+            json!({
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": null,
+                "tokens": {
+                    "id_token": "id-token",
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "account_id": "acct-managed"
+                },
+                "last_refresh": "2026-01-02T03:04:05.000000000Z"
+            }),
+            "managed live auth must carry refresh_token + last_refresh so the Codex CLI can self-refresh"
+        );
+    }
+
+    #[test]
+    fn codex_managed_oauth_live_auth_without_id_token_omits_it() {
+        assert_eq!(
+            codex_managed_oauth_live_auth(
+                "acct-managed",
+                "access-token",
+                None,
+                "refresh-token",
+                "2026-01-02T03:04:05.000000000Z",
+            ),
+            json!({
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": null,
+                "tokens": {
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "account_id": "acct-managed"
+                },
+                "last_refresh": "2026-01-02T03:04:05.000000000Z"
+            }),
+            "without a stored id_token the field is omitted rather than written as null"
+        );
     }
 
     #[test]
@@ -1218,149 +932,5 @@ mod tests {
             .map(|value| value.as_str().expect("tool id should be string"))
             .collect();
         assert_eq!(values, vec!["tool2"]);
-    }
-
-    #[test]
-    fn codex_switch_backfill_preserves_stored_model_catalog_when_live_lacks_it() {
-        // Reproduces the data-loss bug: switching away from a Codex provider
-        // backfills the outgoing provider from Live, but Live's config.toml had
-        // already lost its `model_catalog_json` projection (proxy cycle /
-        // Codex.app rewrite), so `read_live_settings` reconstructs no catalog.
-        // The stored mapping must survive the backfill.
-        let mut provider = Provider::with_id(
-            "deepseek".to_string(),
-            "DeepSeek".to_string(),
-            json!({
-                "auth": { "OPENAI_API_KEY": "sk-deepseek" },
-                "config": "model_provider = \"custom\"\nmodel = \"deepseek-v4-pro\"\n",
-                "modelCatalog": {
-                    "models": [
-                        { "model": "deepseek-v4-pro", "contextWindow": 1_000_000 }
-                    ]
-                }
-            }),
-            None,
-        );
-        provider.category = Some("cn_official".to_string());
-
-        // Live snapshot as captured during switch: no `modelCatalog` field.
-        let live_settings = json!({
-            "auth": { "OPENAI_API_KEY": "sk-deepseek" },
-            "config": "model_provider = \"custom\"\nmodel = \"deepseek-v4-pro\"\n"
-        });
-
-        let result =
-            restore_live_settings_for_provider_backfill(&AppType::Codex, &provider, live_settings);
-
-        assert_eq!(
-            result.get("modelCatalog"),
-            provider.settings_config.get("modelCatalog"),
-            "switch-away backfill must keep the DB-stored modelCatalog when Live has none"
-        );
-    }
-
-    #[test]
-    fn codex_switch_backfill_keeps_stored_auth_when_live_has_no_credential() {
-        let mut provider = Provider::with_id(
-            "header-auth".to_string(),
-            "Header Auth".to_string(),
-            json!({
-                "auth": { "OPENAI_API_KEY": "sk-db-only" },
-                "config": "model_provider = \"custom\"\nmodel = \"old-model\"\n"
-            }),
-            None,
-        );
-        provider.category = Some("custom".to_string());
-
-        let result = restore_live_settings_for_provider_backfill(
-            &AppType::Codex,
-            &provider,
-            json!({
-                "auth": {},
-                "config": "model_provider = \"custom\"\nmodel = \"live-model\"\n"
-            }),
-        );
-
-        assert_eq!(
-            result.get("auth"),
-            Some(&json!({ "OPENAI_API_KEY": "sk-db-only" }))
-        );
-        assert_eq!(
-            result.get("config"),
-            Some(&json!(
-                "model_provider = \"custom\"\nmodel = \"live-model\"\n"
-            ))
-        );
-    }
-
-    #[test]
-    fn codex_switch_backfill_keeps_live_catalog_when_db_has_none() {
-        // When the DB provider has no stored catalog, a catalog reconstructed
-        // from Live (if any) should be left intact — the DB-preference overlay
-        // must not wipe it.
-        let mut provider = Provider::with_id(
-            "deepseek".to_string(),
-            "DeepSeek".to_string(),
-            json!({
-                "auth": { "OPENAI_API_KEY": "sk-deepseek" },
-                "config": "model_provider = \"custom\"\nmodel = \"deepseek-v4-pro\"\n"
-            }),
-            None,
-        );
-        provider.category = Some("cn_official".to_string());
-
-        let live_settings = json!({
-            "auth": { "OPENAI_API_KEY": "sk-deepseek" },
-            "config": "model_provider = \"custom\"\nmodel = \"deepseek-v4-pro\"\n",
-            "modelCatalog": { "models": [ { "model": "deepseek-v4-pro" } ] }
-        });
-
-        let result = restore_live_settings_for_provider_backfill(
-            &AppType::Codex,
-            &provider,
-            live_settings.clone(),
-        );
-
-        assert_eq!(
-            result.get("modelCatalog"),
-            live_settings.get("modelCatalog"),
-            "backfill must keep the Live-reconstructed catalog when the DB has none"
-        );
-    }
-
-    #[test]
-    fn codex_switch_backfill_strips_synced_mcp_servers() {
-        // Live 里的 [mcp_servers] 是 MCP 同步的投影（SSOT 在 DB 表），
-        // 回填进供应商存储配置会让已删除的服务器随快照复活。
-        let provider = Provider::with_id(
-            "prov".to_string(),
-            "Prov".to_string(),
-            json!({
-                "auth": { "OPENAI_API_KEY": "sk-test" },
-                "config": "model = \"gpt-5.5\"\n"
-            }),
-            None,
-        );
-
-        let live_settings = json!({
-            "auth": { "OPENAI_API_KEY": "sk-test" },
-            "config": "model = \"gpt-5.5\"\n\n[mcp_servers.echo]\ntype = \"stdio\"\ncommand = \"echo\"\n"
-        });
-
-        let result =
-            restore_live_settings_for_provider_backfill(&AppType::Codex, &provider, live_settings);
-
-        let config_text = result
-            .get("config")
-            .and_then(|v| v.as_str())
-            .expect("config text");
-        assert!(
-            !config_text.contains("mcp_servers"),
-            "backfill must strip synced [mcp_servers] from the stored provider config, got: {config_text}"
-        );
-        assert!(
-            config_text.contains("model = \"gpt-5.5\""),
-            "non-MCP content must survive the strip"
-        );
     }
 }

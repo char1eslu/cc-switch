@@ -73,16 +73,15 @@
     "editCommonConfigTitle": "Edit Common Config Snippet",
     "commonConfigHint": "This snippet will be merged into settings.json when 'Write Common Config' is checked",
     "fullSettingsHint": "Full Claude Code settings.json content",
-    "extractFromCurrent": "Extract from Editor",
-    "extractNoCommonConfig": "No common config available to extract from editor",
-    "extractFailed": "Extract failed: {{error}}",
-    "saveFailed": "Save failed: {{error}}",
     "hideAttribution": "Hide AI Attribution",
     "enableTeammates": "Teammates Mode",
     "enableToolSearch": "Enable Tool Search",
     "effortMax": "Max Effort Thinking",
     "disableAutoUpgrade": "Disable Auto-Upgrade",
-    "disableArtifact": "Disable Artifact Tool"
+    "disableArtifact": "Disable Artifact Tool",
+    "keyFieldsHint": "Endpoint, key, models, context window and compatibility switches follow the provider; everything else is a global Claude Code setting and applies to every provider once saved.",
+    "inactiveFieldsHint": "This provider still stores {{count}} field(s) that do not take effect when switching. Click one to add it to the global settings above; it is written to the config file on save, and the value stored in the provider is kept.",
+    "addToGlobalSettings": "Add to global settings"
   },
   "header": {
     "viewOnGithub": "View on GitHub",
@@ -104,13 +103,15 @@
     "tabUniversal": "Universal",
     "noProviders": "No providers added yet",
     "noProvidersDescription": "If you already have a config, click \"Import Current Config\" — all data will be safely saved in a default provider",
-    "noProvidersDescriptionSnippet": "Settings other than API key and endpoint (e.g. plugins) will be saved to a common config snippet for sharing across providers",
+    "noProvidersDescriptionKeyFields": "Switching providers only replaces the key, endpoint and model; plugins and other settings stay in the config file and apply to every provider",
     "importCurrent": "Import Current Config",
     "importFromClaude": "Import existing providers from Claude Code",
     "importCurrentDescription": "Import current live config as default provider",
     "currentlyUsing": "Currently Using",
     "enable": "Enable",
     "inUse": "In Use",
+    "directProvider": "Direct",
+    "directProviderHint": "Leaving routing mode switches back to this provider",
     "blockedByProxyHint": "Can't switch to an official provider while proxy takeover is active",
     "editProvider": "Edit Provider",
     "editProviderHint": "Configuration will be applied to the current provider immediately after update.",
@@ -154,12 +155,18 @@
     "writeCommonConfig": "Write common config",
     "editCommonConfigButton": "Edit common config",
     "configJsonHint": "Please fill in complete Claude Code configuration",
-    "editCommonConfigTitle": "Edit common config snippet",
-    "editCommonConfigHint": "Common config snippet will be merged into all providers that enable it",
     "addProvider": "Add Provider",
     "sortUpdated": "Sort order updated",
     "usageSaved": "Usage query configuration saved",
     "usageSaveFailed": "Failed to save usage query configuration",
+    "duplicateLiveIdsLoadFailed": "Failed to read provider identifiers from config, please fix the config and try again",
+    "editorViewFailed": "Cannot read the client config file, so the saved provider configuration is shown below: {{error}}",
+    "editConflict": {
+      "title": "The config file changed while you were editing",
+      "message": "After the editor opened, the settings below were changed by another program (such as Claude Code). Overwrite them with your edits, or keep the external changes? Your other edits are saved either way.",
+      "keepTheirs": "Keep external changes",
+      "keepMine": "Overwrite with my edits"
+    },
     "form": {}
   },
   "claudeCode": {
@@ -1175,8 +1182,6 @@
     "enableRemoteCompaction": "Enable remote compaction",
     "remoteCompactionHint": "When enabled, the active model_providers entry name is written as OpenAI so Codex can try remote compaction.",
     "apiUrlLabel": "API Request URL",
-    "extractFromCurrent": "Extract from Editor",
-    "extractNoCommonConfig": "No common config available to extract from editor",
     "extractFailed": "Extract failed: {{error}}",
     "saveFailed": "Save failed: {{error}}",
     "modelNameHint": "Specify the model to use, will be auto-updated in config.toml",
@@ -1227,7 +1232,10 @@
     "impersonateClaudeCodeLabel": "Emulate the Claude Code client",
     "impersonateClaudeCodeHint": "Enable when a gateway only allows Claude Code: spoofs the User-Agent, anthropic-beta and x-app headers and prepends the Claude Code identity to the system prompt. Off by default so the fingerprint is not leaked to general-purpose gateways.",
     "maxOutputTokensLabel": "Output ceiling override (max_tokens)",
-    "maxOutputTokensHint": "Leave empty to fall back to 8192 when Codex omits it. Codex does not forward model_max_output_tokens in the request body; raise this for long or thinking-heavy responses."
+    "maxOutputTokensHint": "Leave empty to fall back to 8192 when Codex omits it. Codex does not forward model_max_output_tokens in the request body; raise this for long or thinking-heavy responses.",
+    "keyFieldsHint": "The endpoint, key, model, reasoning effort, context window and compatibility switches follow the provider; everything else is a global Codex setting that applies to every provider once saved.",
+    "inactiveFieldsHint": "This provider still stores {{count}} settings that are not applied when switching. Click one to copy its TOML and paste it above if you need it; the stored values are kept.",
+    "inactiveFieldCopied": "Copied"
   },
   "providerPreset": {
     "label": "Provider Preset",
@@ -2198,7 +2206,7 @@
       "disabled": "{{app}} routing disabled",
       "failed": "Failed to toggle routing: {{detail}}",
       "tooltip": {
-        "active": "{{appLabel}} is routing - {{address}}:{{port}}\nSwitch provider for hot switching",
+        "active": "{{appLabel}} is routing - {{address}}:{{port}}\nSwitching providers changes the route only; the direct provider stays",
         "broken": "{{appLabel}} is routing, but routing service is not running",
         "inactive": "Route {{appLabel}}'s requests through local routing"
       }
@@ -2271,7 +2279,7 @@
       "started": "Routing service started - {{address}}:{{port}}",
       "startFailed": "Failed to start routing service: {{detail}}"
     },
-    "stoppedWithRestore": "Routing service stopped, all routing configs restored",
+    "stoppedWithRestore": "Routing service stopped; all apps are back on direct connections",
     "stopWithRestoreFailed": "Stop failed: {{detail}}"
   },
   "streamCheck": {

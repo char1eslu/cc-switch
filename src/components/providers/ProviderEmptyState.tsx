@@ -15,7 +15,7 @@ export function ProviderEmptyState({
   onImport,
 }: ProviderEmptyStateProps) {
   const { t } = useTranslation();
-  const showSnippetHint = appId === "claude" || appId === "codex";
+  const showKeyFieldsHint = appId === "claude" || appId === "codex";
 
   return (
     <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border p-10 text-center">
@@ -26,9 +26,9 @@ export function ProviderEmptyState({
       <p className="mt-2 max-w-lg text-sm text-muted-foreground">
         {t("provider.noProvidersDescription")}
       </p>
-      {showSnippetHint && (
+      {showKeyFieldsHint && (
         <p className="mt-1 max-w-lg text-sm text-muted-foreground">
-          {t("provider.noProvidersDescriptionSnippet")}
+          {t("provider.noProvidersDescriptionKeyFields")}
         </p>
       )}
       <div className="mt-6 flex flex-col gap-2">

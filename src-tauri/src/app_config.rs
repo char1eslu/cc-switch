@@ -297,6 +297,14 @@ impl AppType {
         false
     }
 
+    /// 该应用是否有完整的本地网关数据面（接管 / 故障转移 / 路由）。
+    ///
+    /// fork 只保留 Claude 与 Codex：Claude Desktop 走 3P profile 直写，
+    /// 没有代理数据面。
+    pub fn supports_local_proxy(&self) -> bool {
+        matches!(self, AppType::Claude | AppType::Codex)
+    }
+
     /// Return an iterator over all app types
     pub fn all() -> impl Iterator<Item = AppType> {
         [AppType::Claude, AppType::ClaudeDesktop, AppType::Codex].into_iter()

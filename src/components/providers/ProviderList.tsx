@@ -35,6 +35,8 @@ import { useCallback } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { isTextEditableTarget } from "@/utils/domUtils";
+import { useDirectProviderId } from "@/lib/query/proxy";
+import { isProxyAppId } from "@/config/appConfig";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -79,6 +81,7 @@ export function ProviderList({
   );
 
   // 故障转移相关
+  const supportsFailover = isProxyAppId(appId);
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
   const { data: failoverQueue } = useFailoverQueue(appId);
   const addToQueue = useAddToFailoverQueue();
@@ -86,6 +89,12 @@ export function ProviderList({
 
   const isFailoverModeActive =
     isProxyTakeover === true && isAutoFailoverEnabled === true;
+
+  // 路由模式下「当前」是路由到的那家；直连供应商另外标出来，退出路由时写回它。
+  const { data: directProviderId } = useDirectProviderId(
+    appId,
+    supportsFailover && isProxyTakeover === true,
+  );
 
   const getFailoverPriority = useCallback(
     (providerId: string): number | undefined => {
@@ -301,11 +310,12 @@ export function ProviderList({
       >
         <div className="space-y-3">
           {filteredProviders.map((provider) => {
+            const isCurrent = provider.id === currentProviderId;
             return (
               <SortableProviderCard
                 key={provider.id}
                 provider={provider}
-                isCurrent={provider.id === currentProviderId}
+                isCurrent={isCurrent}
                 appId={appId}
                 isInConfig={true}
                 onSwitch={onSwitch}
@@ -319,6 +329,12 @@ export function ProviderList({
                 isTesting={isChecking(provider.id)}
                 isProxyRunning={isProxyRunning}
                 isProxyTakeover={isProxyTakeover}
+                isDirectProvider={
+                  supportsFailover &&
+                  isProxyTakeover &&
+                  !isCurrent &&
+                  provider.id === directProviderId
+                }
                 isAutoFailoverEnabled={isFailoverModeActive}
                 failoverPriority={getFailoverPriority(provider.id)}
                 isInFailoverQueue={isInFailoverQueue(provider.id)}
@@ -444,6 +460,7 @@ interface SortableProviderCardProps {
   isTesting: boolean;
   isProxyRunning: boolean;
   isProxyTakeover: boolean;
+  isDirectProvider: boolean;
   isAutoFailoverEnabled: boolean;
   failoverPriority?: number;
   isInFailoverQueue: boolean;
@@ -467,6 +484,7 @@ function SortableProviderCard({
   isTesting,
   isProxyRunning,
   isProxyTakeover,
+  isDirectProvider,
   isAutoFailoverEnabled,
   failoverPriority,
   isInFailoverQueue,
@@ -507,6 +525,7 @@ function SortableProviderCard({
         isTesting={isTesting}
         isProxyRunning={isProxyRunning}
         isProxyTakeover={isProxyTakeover}
+        isDirectProvider={isDirectProvider}
         dragHandleProps={{
           attributes,
           listeners,

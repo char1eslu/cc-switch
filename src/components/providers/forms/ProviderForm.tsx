@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
-import { settingsApi, type AppId } from "@/lib/api";
+import type { AppId } from "@/lib/api";
 import type {
   ClaudeApiFormat,
   ClaudeApiKeyField,
@@ -27,8 +26,8 @@ import {
   setCodexWireApi,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
+import { overlayClaudeProviderFields } from "@/utils/claudeEditorOverlay";
 import { getCodexCustomTemplate } from "@/config/codexTemplates";
-import { useSettingsQuery } from "@/lib/query";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { BasicFormFields } from "./BasicFormFields";
 import { ClaudeDesktopProviderForm } from "./ClaudeDesktopProviderForm";
@@ -41,15 +40,16 @@ import {
   useApiKeyLink,
   useApiKeyState,
   useBaseUrlState,
-  useCodexCommonConfig,
   useCodexConfigState,
   useCodexOauth,
   useCodexTomlValidation,
-  useCommonConfigSnippet,
+  useDraftEditorProjection,
   useModelState,
   useSpeedTestEndpoints,
   useTemplateValues,
+  type EditorBaseChange,
 } from "./hooks";
+import type { ProviderEditorInactiveField } from "@/lib/api/providers";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 
 const CLAUDE_DEFAULT_CONFIG = JSON.stringify({ env: {} }, null, 2);
@@ -192,6 +192,18 @@ export interface ProviderFormProps {
   } | null;
   showButtons?: boolean;
   isProxyTakeover?: boolean;
+  /** 编辑器里行保存着、但不随切换生效的字段（Claude Code、Codex、Gemini CLI、Grok Build）。 */
+  inactiveFields?: ProviderEditorInactiveField[];
+  /**
+   * Claude 新增：当前 live 去掉当前供应商的关键字段后的样子。预设的关键字段套在它上面
+   * 显示，保存时其余部分的改动写进 live。
+   */
+  claudeLiveBase?: Record<string, unknown>;
+  /**
+   * Codex、Gemini CLI、Grok Build 新增：预设或模板投影到当前配置文件上之后的内容，保存时
+   * 作为三方比较的底；投影进行中或失败时为 `null`。
+   */
+  onEditorBaseChange?: EditorBaseChange;
 }
 
 export type ProviderFormValues = ProviderFormData & {
@@ -226,16 +238,15 @@ function ProviderFormCustom({
   initialData,
   showButtons = true,
   isProxyTakeover = false,
+  inactiveFields,
+  claudeLiveBase,
+  onEditorBaseChange,
 }: ProviderFormProps) {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
   const isEditMode = Boolean(initialData);
   const selectedPresetId = "custom";
   const category: ProviderCategory = initialData?.category ?? "custom";
   const nonOfficialCategory = category === "official" ? "custom" : category;
-  const { data: settingsData } = useSettingsQuery();
-  const showCommonConfigNotice =
-    settingsData != null && settingsData.commonConfigConfirmed !== true;
 
   const [draftCustomEndpoints, setDraftCustomEndpoints] = useState<string[]>(
     [],
@@ -252,7 +263,6 @@ function ProviderFormCustom({
   const [isEndpointModalOpen, setIsEndpointModalOpen] = useState(false);
   const [isCodexEndpointModalOpen, setIsCodexEndpointModalOpen] =
     useState(false);
-  const [isCommonConfigModalOpen, setIsCommonConfigModalOpen] = useState(false);
   const [softIssues, setSoftIssues] = useState<string[] | null>(null);
   const [pendingFormValues, setPendingFormValues] =
     useState<ProviderFormData | null>(null);
@@ -294,13 +304,22 @@ function ProviderFormCustom({
       notes: initialData?.notes ?? "",
       settingsConfig: initialData?.settingsConfig
         ? JSON.stringify(initialData.settingsConfig, null, 2)
-        : appId === "codex"
-          ? CODEX_DEFAULT_CONFIG
-          : CLAUDE_DEFAULT_CONFIG,
+        : appId === "claude" && claudeLiveBase
+          ? JSON.stringify(
+              overlayClaudeProviderFields(
+                claudeLiveBase,
+                JSON.parse(CLAUDE_DEFAULT_CONFIG) as Record<string, unknown>,
+              ),
+              null,
+              2,
+            )
+          : appId === "codex"
+            ? CODEX_DEFAULT_CONFIG
+            : CLAUDE_DEFAULT_CONFIG,
       icon: initialData?.icon ?? "",
       iconColor: initialData?.iconColor ?? "",
     }),
-    [appId, initialData],
+    [appId, initialData, claudeLiveBase],
   );
 
   const form = useForm<ProviderFormData>({
@@ -352,18 +371,6 @@ function ProviderFormCustom({
     },
     [form],
   );
-
-  const handleCommonConfigConfirm = async () => {
-    try {
-      if (settingsData) {
-        const { webdavSync: _, ...rest } = settingsData;
-        await settingsApi.save({ ...rest, commonConfigConfirmed: true });
-        await queryClient.invalidateQueries({ queryKey: ["settings"] });
-      }
-    } catch (error) {
-      console.error("Failed to save commonConfigConfirmed:", error);
-    }
-  };
 
   const {
     apiKey,
@@ -480,13 +487,25 @@ function ProviderFormCustom({
     [debouncedValidate, setCodexConfig],
   );
 
+  // 新增：预设或模板投影到当前配置文件上显示。每次重置显示内容都要重新投影，否则保存时
+  // 三方比较的底和显示内容对不上。
+  const { projectDraft } = useDraftEditorProjection(appId, onEditorBaseChange);
+  const projectCodexDraft = useCallback(
+    (auth: Record<string, unknown>, config: string, category?: string) =>
+      projectDraft({ auth, config }, category, (shown) =>
+        setCodexConfig(typeof shown.config === "string" ? shown.config : ""),
+      ),
+    [projectDraft, setCodexConfig],
+  );
+
   useEffect(() => {
     if (appId === "codex" && !initialData) {
       const template = getCodexCustomTemplate();
       resetCodexConfig(template.auth, template.config);
       setCodexChatReasoning({});
+      projectCodexDraft(template.auth, template.config);
     }
-  }, [appId, initialData, resetCodexConfig]);
+  }, [appId, initialData, resetCodexConfig, projectCodexDraft]);
 
   const {
     templateValues,
@@ -498,42 +517,6 @@ function ProviderFormCustom({
     presetEntries: [],
     settingsConfig,
     onConfigChange: handleSettingsConfigChange,
-  });
-
-  const {
-    useCommonConfig,
-    commonConfigSnippet,
-    commonConfigError,
-    handleCommonConfigToggle,
-    handleCommonConfigSnippetChange,
-    isExtracting: isClaudeExtracting,
-    handleExtract: handleClaudeExtract,
-  } = useCommonConfigSnippet({
-    settingsConfig,
-    onConfigChange: handleSettingsConfigChange,
-    initialData: appId === "claude" ? (initialData ?? undefined) : undefined,
-    initialEnabled:
-      appId === "claude" ? initialData?.meta?.commonConfigEnabled : undefined,
-    selectedPresetId,
-    enabled: appId === "claude",
-  });
-
-  const {
-    useCommonConfig: useCodexCommonConfigFlag,
-    commonConfigSnippet: codexCommonConfigSnippet,
-    commonConfigError: codexCommonConfigError,
-    handleCommonConfigToggle: handleCodexCommonConfigToggle,
-    handleCommonConfigSnippetChange: handleCodexCommonConfigSnippetChange,
-    isExtracting: isCodexExtracting,
-    handleExtract: handleCodexExtract,
-    clearCommonConfigError: clearCodexCommonConfigError,
-  } = useCodexCommonConfig({
-    codexConfig,
-    onConfigChange: handleCodexConfigChange,
-    initialData: appId === "codex" ? (initialData ?? undefined) : undefined,
-    initialEnabled:
-      appId === "codex" ? initialData?.meta?.commonConfigEnabled : undefined,
-    selectedPresetId,
   });
 
   const { isAuthenticated: isCodexOauthAuthenticated } = useCodexOauth();
@@ -746,8 +729,12 @@ function ProviderFormCustom({
     const providerType = initialData?.meta?.providerType;
     const nextMeta: ProviderMeta = {
       ...(baseMeta ?? {}),
+      // Claude Code、Codex 的通用配置片段已冻结：沿用行里原有的标记，新增时由后端写
+      // true（兼容旧版）。前端的片段编辑已移除，片段由后端统一维护。
       commonConfigEnabled:
-        appId === "claude" ? useCommonConfig : useCodexCommonConfigFlag,
+        appId === "claude" || appId === "codex"
+          ? initialData?.meta?.commonConfigEnabled
+          : undefined,
       endpointAutoSelect,
       claudeDesktopMode: undefined,
       providerType,
@@ -937,18 +924,9 @@ function ProviderFormCustom({
                 isProxyTakeover={isProxyTakeover}
                 onAuthChange={setCodexAuth}
                 onConfigChange={handleCodexConfigChange}
-                useCommonConfig={useCodexCommonConfigFlag}
-                onCommonConfigToggle={handleCodexCommonConfigToggle}
-                commonConfigSnippet={codexCommonConfigSnippet}
-                onCommonConfigSnippetChange={
-                  handleCodexCommonConfigSnippetChange
-                }
-                onCommonConfigErrorClear={clearCodexCommonConfigError}
-                commonConfigError={codexCommonConfigError}
                 authError={codexAuthError}
                 configError={codexConfigError}
-                onExtract={handleCodexExtract}
-                isExtracting={isCodexExtracting}
+                inactiveFields={inactiveFields}
               />
               {settingsConfigErrorField}
             </>
@@ -957,16 +935,7 @@ function ProviderFormCustom({
               <CommonConfigEditor
                 value={settingsConfig}
                 onChange={handleSettingsConfigChange}
-                useCommonConfig={useCommonConfig}
-                onCommonConfigToggle={handleCommonConfigToggle}
-                commonConfigSnippet={commonConfigSnippet}
-                onCommonConfigSnippetChange={handleCommonConfigSnippetChange}
-                commonConfigError={commonConfigError}
-                onEditClick={() => setIsCommonConfigModalOpen(true)}
-                isModalOpen={isCommonConfigModalOpen}
-                onModalClose={() => setIsCommonConfigModalOpen(false)}
-                onExtract={handleClaudeExtract}
-                isExtracting={isClaudeExtracting}
+                inactiveFields={inactiveFields}
               />
               {settingsConfigErrorField}
             </>
@@ -992,16 +961,6 @@ function ProviderFormCustom({
           )}
         </form>
       </Form>
-
-      <ConfirmDialog
-        isOpen={showCommonConfigNotice}
-        variant="info"
-        title={t("confirm.commonConfig.title")}
-        message={t("confirm.commonConfig.message")}
-        confirmText={t("confirm.commonConfig.confirm")}
-        onConfirm={() => void handleCommonConfigConfirm()}
-        onCancel={() => void handleCommonConfigConfirm()}
-      />
 
       <ConfirmDialog
         isOpen={softIssues !== null && softIssues.length > 0}

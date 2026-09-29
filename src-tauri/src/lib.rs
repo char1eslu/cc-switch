@@ -16,7 +16,12 @@ mod deeplink;
 mod error;
 mod init_status;
 mod lightweight;
+// fork 无 linux_fix / mcode_config（前者已从模块树摘除，后者属被裁应用）
+pub mod live;
 mod mcp;
+mod model_capabilities;
+// fork 无 openclaw_config / opencode_config（属被裁应用与未搬模块）
+pub mod mode;
 mod panic_hook;
 mod prompt;
 mod prompt_files;
@@ -50,15 +55,24 @@ pub use mcp::{
 pub use provider::{Provider, ProviderMeta};
 pub use proxy::types::ProxyConfig;
 pub use services::{
+    // fork 无 profile 模块（上游独立功能，从未搬运）
+    provider::{reapply_current_codex_official_live, EditorSave, EditorView},
     skill::{migrate_skills_to_ssot, ImportSkillSelection},
-    ConfigService, EndpointLatency, McpService, PromptService, ProviderService, ProxyService,
-    SkillService, SpeedtestService,
+    ConfigService,
+    EndpointLatency,
+    McpService,
+    PromptService,
+    ProviderService,
+    ProxyService,
+    SkillService,
+    SpeedtestService,
 };
 pub use settings::{update_settings, AppSettings};
 pub use store::AppState;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+use std::fmt;
 use std::sync::Arc;
 use tauri::image::Image;
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
@@ -66,35 +80,140 @@ use tauri::RunEvent;
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
-fn redact_url_for_log(url_str: &str) -> String {
-    match url::Url::parse(url_str) {
-        Ok(url) => {
-            let mut output = format!("{}://", url.scheme());
-            if let Some(host) = url.host_str() {
-                output.push_str(host);
-            }
-            output.push_str(url.path());
+pub(crate) struct RedactedUrl<'a> {
+    url: &'a str,
+    known_secrets: &'a [String],
+}
 
-            let mut keys: Vec<String> = url.query_pairs().map(|(k, _)| k.to_string()).collect();
-            keys.sort();
-            keys.dedup();
+impl fmt::Display for RedactedUrl<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&redact_url_for_log_with_secrets(
+            self.url,
+            self.known_secrets,
+        ))
+    }
+}
 
-            if !keys.is_empty() {
-                output.push_str("?[keys:");
-                output.push_str(&keys.join(","));
-                output.push(']');
-            }
+/// 为日志提供惰性 URL 脱敏包装；只有日志实际输出时才解析和重建 URL。
+pub(crate) fn url_for_log(url: &str) -> RedactedUrl<'_> {
+    RedactedUrl {
+        url,
+        known_secrets: &[],
+    }
+}
 
-            output
-        }
-        Err(_) => {
-            let base = url_str.split('#').next().unwrap_or(url_str);
-            match base.split_once('?') {
-                Some((prefix, _)) => format!("{prefix}?[redacted]"),
-                None => base.to_string(),
-            }
+/// 为持有确切认证材料的调用方提供优先精确匹配、再启发式兜底的 URL 脱敏。
+pub(crate) fn url_for_log_with_secrets<'a>(
+    url: &'a str,
+    known_secrets: &'a [String],
+) -> RedactedUrl<'a> {
+    RedactedUrl { url, known_secrets }
+}
+
+/// 已知密钥参与子串脱敏的最短长度：过短的值(如 "api")当作子串会误伤无关文本，
+/// 所以只对足够长、几乎不可能是普通词的值做替换。
+const MIN_KNOWN_SECRET_LEN: usize = 8;
+
+/// 唯一的密钥脱敏原语：把字符串里出现的、我们确切握有的密钥值替换为 [REDACTED]。
+/// 不做任何“看起来像密钥”的形状猜测——只隐藏已知值，天然收敛、不误伤正常路径。
+pub(crate) fn redact_known_secrets(text: &str, known_secrets: &[String]) -> String {
+    redact_known_secrets_with_min_length(text, known_secrets, MIN_KNOWN_SECRET_LEN)
+}
+
+/// Exact-value redaction for user-visible error text. Unlike URL logging, a
+/// short known credential must still be hidden because the result reaches the
+/// UI rather than a diagnostic-only path.
+fn redact_known_secrets_with_min_length(
+    text: &str,
+    known_secrets: &[String],
+    minimum_chars: usize,
+) -> String {
+    let mut output = text.to_string();
+    for secret in known_secrets {
+        if secret.chars().count() >= minimum_chars {
+            output = output.replace(secret.as_str(), "[REDACTED]");
         }
     }
+    output
+}
+
+/// 无 scheme 的裸 authority 形态(如 `user:pass@host/path`)剥掉 userinfo：
+/// 仅当 `@` 出现在第一个 `/` 之前时才视为凭据。
+fn strip_bare_userinfo(input: &str) -> &str {
+    let authority_end = input.find('/').unwrap_or(input.len());
+    match input[..authority_end].rfind('@') {
+        Some(at) => &input[at + 1..],
+        None => input,
+    }
+}
+
+pub(crate) fn redact_url_for_log(url_str: &str) -> String {
+    redact_url_for_log_with_secrets(url_str, &[])
+}
+
+/// 为日志脱敏 URL：剥掉 userinfo(user:pass@) 与整个 query/fragment，保留
+/// scheme/host/port/path 供诊断(如 base_url 配错路径导致 404)，最后再抹掉已知密钥值。
+pub(crate) fn redact_url_for_log_with_secrets(url_str: &str, known_secrets: &[String]) -> String {
+    let scheme_relative = url_str.starts_with("//");
+    let parsed = if scheme_relative {
+        url::Url::parse(&format!("https:{url_str}"))
+    } else {
+        url::Url::parse(url_str)
+    };
+
+    let sanitized = match parsed {
+        Ok(mut url) if url.has_host() => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.set_query(None);
+            url.set_fragment(None);
+            let rendered = url.as_str();
+            if scheme_relative {
+                rendered
+                    .strip_prefix("https:")
+                    .unwrap_or(rendered)
+                    .to_string()
+            } else {
+                rendered.to_string()
+            }
+        }
+        _ => {
+            // 解析失败(相对路径、含裸 userinfo 的非法 URL 等)：丢掉 query/fragment，
+            // 尽力剥掉 userinfo，其余原样保留。
+            let without_tail = url_str.split(['?', '#']).next().unwrap_or(url_str);
+            strip_bare_userinfo(without_tail).to_string()
+        }
+    };
+
+    redact_known_secrets(&sanitized, known_secrets)
+}
+
+/// 只保留 `scheme://host:port`，丢掉 path/query/userinfo。用于我们手里没有任何
+/// 已知密钥可脱敏 path 的场景——凭据可能整个内嵌在 base_url 的 path 里，此时
+/// 记录 path 无法保证不泄漏，只能退回到 origin。
+pub(crate) fn redact_url_origin_for_log(url_str: &str) -> String {
+    let scheme_relative = url_str.starts_with("//");
+    let parsed = if scheme_relative {
+        url::Url::parse(&format!("https:{url_str}"))
+    } else {
+        url::Url::parse(url_str)
+    };
+
+    match parsed {
+        Ok(url) if url.has_host() => {
+            let authority = &url[url::Position::BeforeHost..url::Position::AfterPort];
+            if scheme_relative {
+                format!("//{authority}")
+            } else {
+                format!("{}://{authority}", url.scheme())
+            }
+        }
+        _ => "[invalid target]".to_string(),
+    }
+}
+
+fn runtime_log_level_allows(level: log::Level, max_level: log::LevelFilter) -> bool {
+    max_level.to_level().is_some_and(|maximum| level <= maximum)
 }
 
 /// 统一处理 ccswitch:// 深链接 URL
@@ -112,7 +231,7 @@ fn handle_deeplink_url(
         return false;
     }
 
-    let redacted_url = redact_url_for_log(url_str);
+    let redacted_url = url_for_log(url_str);
     log::info!("✓ Deep link URL detected from {source}: {redacted_url}");
     log::debug!("Deep link URL (raw) from {source}: {url_str}");
 
@@ -294,6 +413,11 @@ pub fn run() {
                     tauri_plugin_log::Builder::default()
                         // 初始化为 Trace，允许后续通过 log::set_max_level() 动态调整级别
                         .level(log::LevelFilter::Trace)
+                        // plugin-log 的前端 command 会直达 logger，绕过 log 宏的全局
+                        // max_level；在分发层补一次过滤，确保动态总开关同样约束前端日志。
+                        .filter(|metadata| {
+                            runtime_log_level_allows(metadata.level(), log::max_level())
+                        })
                         .targets([
                             Target::new(TargetKind::Stdout),
                             Target::new(TargetKind::Folder {
@@ -406,6 +530,10 @@ pub fn run() {
             // 设置 AppHandle 用于代理故障转移时的 UI 更新
             app_state.proxy_service.set_app_handle(app.handle().clone());
 
+            // 补完上次崩溃时写到一半的客户端文件（写前意图在 ~/.cc-switch/live-state.json），
+            // 要在任何写客户端文件的启动步骤之前。
+            crate::mode::operation::recover_on_startup(&app_state.db);
+
             // ============================================================
             // 按表独立判断的导入逻辑（各类数据独立检查，互不影响）
             // ============================================================
@@ -476,7 +604,7 @@ pub fn run() {
             //
             // 先 import 后 seed 是有意为之：先把用户手动配置的 settings.json / auth.json / .env
             // 落成 "default" provider 设为 current，再追加官方预设（is_current=false）。
-            // 这样用户切到官方预设时，回填机制会保护原 live 配置不丢失。
+            // 降级回旧版时，旧版的回填和整份写入仍靠这一行保住用户原来的 live 配置。
             //
             // 捕获首次运行快照：所有全新装用户都会看到欢迎弹窗介绍 CC Switch 的工作方式。
             // 读失败时默认不弹，宁可漏弹也不要因为故障打扰用户。
@@ -739,15 +867,13 @@ pub fn run() {
             let skill_service = SkillService::new();
             app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
 
-            // 初始化 CodexOAuthManager (ChatGPT Plus/Pro 反代)
+            // CodexOAuthManager 由 AppState 持有；这里只注册一个指向同一实例的
+            // Tauri State 包装，供 `auth_*` / `get_codex_oauth_*` 命令直接取用。
             {
-                use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
                 use commands::CodexOAuthState;
-                use tokio::sync::RwLock;
 
-                let app_config_dir = crate::config::get_app_config_dir();
-                let codex_oauth_manager = CodexOAuthManager::new(app_config_dir);
-                app.manage(CodexOAuthState(Arc::new(RwLock::new(codex_oauth_manager))));
+                let codex_oauth_manager = app.state::<AppState>().codex_oauth_manager.clone();
+                app.manage(CodexOAuthState(codex_oauth_manager));
                 log::info!("✓ CodexOAuthManager initialized");
             }
 
@@ -787,30 +913,16 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<AppState>();
 
-                // 检查是否有 Live 备份（表示上次异常退出时可能处于接管状态）
-                let has_backups = match state.db.has_any_live_backup().await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        log::error!("检查 Live 备份失败: {e}");
-                        false
-                    }
-                };
-                // 检查 Live 配置是否仍处于被接管状态（包含占位符）
-                let live_taken_over = state.proxy_service.detect_takeover_in_live_configs();
-
-                if has_backups || live_taken_over {
-                    log::warn!("检测到上次异常退出（存在接管残留），正在恢复 Live 配置...");
-                    if let Err(e) = state.proxy_service.recover_from_crash().await {
-                        log::error!("恢复 Live 配置失败: {e}");
-                    } else {
-                        log::info!("Live 配置已恢复");
-                    }
-                }
-
+                // 旧机制的崩溃恢复（has_any_live_backup / detect_takeover_in_live_configs /
+                // recover_from_crash）随架构替换整体移除，改由
+                // `mode::operation::recover_on_startup` 与 `mode::controller::startup` 接管
+                // （两处调用由本文件的其他 hunk 引入）。
+                // `scrub_leaked_gemini_common_config` 属被裁应用（fork 无 Gemini），不搬。
                 initialize_common_config_snippets(&state);
 
-                // 检查 settings 表中的代理状态，自动恢复代理服务
-                restore_proxy_state_on_startup(&state).await;
+                // 定下各应用的直连 / 代理模式（处理旧版遗留的接管状态），再把代理模式的
+                // 应用接上。要排在通用配置片段的自动提取之后：它读的是直连的 live。
+                crate::mode::controller::startup(&state).await;
 
                 // Periodic backup check (on startup)
                 if let Err(e) = state.db.periodic_backup_if_needed() {
@@ -910,6 +1022,7 @@ pub fn run() {
             commands::get_current_provider,
             commands::add_provider,
             commands::update_provider,
+            commands::get_provider_editor_view,
             commands::delete_provider,
             commands::remove_provider_from_live_config,
             commands::switch_provider,
@@ -1069,6 +1182,7 @@ pub fn run() {
             commands::stop_proxy_with_restore,
             commands::get_proxy_takeover_status,
             commands::set_proxy_takeover_for_app,
+            commands::get_direct_provider,
             commands::get_proxy_status,
             commands::get_proxy_config,
             commands::update_proxy_config,
@@ -1328,43 +1442,12 @@ pub fn run() {
 
 /// 应用退出前的清理工作
 ///
-/// 在应用退出前检查代理服务器状态，如果正在运行则停止代理并恢复 Live 配置。
-/// 确保 Claude Code/Codex 的配置不会处于损坏状态。
-/// 使用 stop_with_restore_keep_state 保留 settings 表中的代理状态，下次启动时自动恢复。
+/// 把接上代理的客户端都指回直连（模式和代理路由保留，下次启动再接上），再停止代理。
+/// 客户端不能一直指着代理：开机自启默认关闭，CC Switch 一关客户端就连不上了。
 pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
     if let Some(state) = app_handle.try_state::<store::AppState>() {
-        let proxy_service = &state.proxy_service;
-
-        // 退出时也需要兜底：代理可能已崩溃/未运行，但 Live 接管残留仍在（占位符/备份）。
-        let has_backups = match state.db.has_any_live_backup().await {
-            Ok(v) => v,
-            Err(e) => {
-                log::error!("退出时检查 Live 备份失败: {e}");
-                false
-            }
-        };
-        let live_taken_over = proxy_service.detect_takeover_in_live_configs();
-        let needs_restore = has_backups || live_taken_over;
-
-        if needs_restore {
-            log::info!("检测到接管残留，开始恢复 Live 配置（保留代理状态）...");
-            // 使用 keep_state 版本，保留 settings 表中的代理状态
-            if let Err(e) = proxy_service.stop_with_restore_keep_state().await {
-                log::error!("退出时恢复 Live 配置失败: {e}");
-            } else {
-                log::info!("已恢复 Live 配置（代理状态已保留，下次启动将自动恢复）");
-            }
-            return;
-        }
-
-        // 非接管模式：代理在运行则仅停止代理
-        if proxy_service.is_running().await {
-            log::info!("检测到代理服务器正在运行，开始停止...");
-            if let Err(e) = proxy_service.stop().await {
-                log::error!("退出时停止代理失败: {e}");
-            }
-            log::info!("代理服务器清理完成");
-        }
+        crate::mode::controller::detach_all(state.inner()).await;
+        log::info!("退出清理完成：客户端已指回直连，代理已停止");
     }
 }
 
@@ -1388,67 +1471,20 @@ pub(crate) fn remove_tray_icon_before_exit(app_handle: &tauri::AppHandle) {
     }
 }
 
-// ============================================================
-// 启动时恢复代理状态
-// ============================================================
-
-/// 启动时根据 proxy_config 表中的代理状态自动恢复代理服务
-///
-/// 检查 `proxy_config.enabled` 字段，如果有任一应用的状态为 `true`，
-/// 则自动启动代理服务并接管对应应用的 Live 配置。
-async fn restore_proxy_state_on_startup(state: &store::AppState) {
-    // 收集需要恢复接管的应用列表（从 proxy_config.enabled 读取）
-    let mut apps_to_restore = Vec::new();
-    for app_type in ["claude", "codex"] {
-        if let Ok(config) = state.db.get_proxy_config_for_app(app_type).await {
-            if config.enabled {
-                apps_to_restore.push(app_type);
-            }
-        }
-    }
-
-    if apps_to_restore.is_empty() {
-        log::debug!("启动时无需恢复代理状态");
-        return;
-    }
-
-    log::info!("检测到上次代理状态需要恢复，应用列表: {apps_to_restore:?}");
-
-    // 逐个恢复接管状态
-    for app_type in apps_to_restore {
-        match state
-            .proxy_service
-            .set_takeover_for_app(app_type, true)
-            .await
-        {
-            Ok(()) => {
-                log::info!("✓ 已恢复 {app_type} 的代理接管状态");
-            }
-            Err(e) => {
-                log::error!("✗ 恢复 {app_type} 的代理接管状态失败: {e}");
-                // 失败时清除该应用的状态，避免下次启动再次尝试
-                if let Err(clear_err) = state
-                    .proxy_service
-                    .set_takeover_for_app(app_type, false)
-                    .await
-                {
-                    log::error!("清除 {app_type} 代理状态失败: {clear_err}");
-                }
-            }
-        }
-    }
-}
-
 fn initialize_common_config_snippets(state: &store::AppState) {
     // Auto-extract common config snippets from clean live files when snippet is missing.
-    // This must run before proxy takeover is restored on startup, otherwise we'd read
-    // proxy-placeholder configs instead of the user's actual live settings.
+    // This must run before proxy mode is re-attached on startup, otherwise we'd read
+    // proxy-placeholder configs instead of the user's actual live settings. A client
+    // still attached from an update restart (no detach on the way out) is skipped too.
     for app_type in crate::app_config::AppType::all() {
         if !state
             .db
             .should_auto_extract_config_snippet(app_type.as_str())
             .unwrap_or(false)
         {
+            continue;
+        }
+        if state.proxy_service.live_has_proxy_placeholder(&app_type) {
             continue;
         }
 
@@ -1743,7 +1779,91 @@ pub fn restart_process(app_handle: &tauri::AppHandle) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_exit_request, ExitRequestAction};
+    use super::{
+        classify_exit_request, redact_url_for_log, redact_url_for_log_with_secrets,
+        redact_url_origin_for_log, runtime_log_level_allows, ExitRequestAction,
+    };
+
+    #[test]
+    fn log_url_redaction_strips_credentials_and_query_keeps_path() {
+        // userinfo 与整个 query 剥离，path 保留用于诊断 base_url 配错。
+        assert_eq!(
+            redact_url_for_log(
+                "https://user:secret@example.com:8443/v1/models?key=top-secret&alt=sse"
+            ),
+            "https://example.com:8443/v1/models"
+        );
+        // scheme-relative 保持形态，userinfo 去掉。
+        assert_eq!(
+            redact_url_for_log("//user:sk-secret@gw.example.com/v1"),
+            "//gw.example.com/v1"
+        );
+        // 无 scheme 的裸 userinfo。
+        assert_eq!(
+            redact_url_for_log("user:sk-secret@gw.example.com/v1"),
+            "gw.example.com/v1"
+        );
+        // 无法解析为绝对 URL 时：丢 query，其余原样保留。
+        assert_eq!(redact_url_for_log("not-a-url?token=secret"), "not-a-url");
+        // 不再对 path 段做“看起来像密钥”的形状猜测，正常路径完整保留。
+        assert_eq!(
+            redact_url_for_log("https://host.example/v1/models/gemini-2.5-pro"),
+            "https://host.example/v1/models/gemini-2.5-pro"
+        );
+    }
+
+    #[test]
+    fn log_url_redaction_replaces_known_secret_values() {
+        // 精确匹配已知密钥值：无论它出现在 path 还是别处都被抹掉。
+        let secrets = vec!["k-9f3a7c2b1e".to_string()];
+        assert_eq!(
+            redact_url_for_log_with_secrets("https://gw.example.com/k-9f3a7c2b1e/v1", &secrets),
+            "https://gw.example.com/[REDACTED]/v1"
+        );
+        // 过短(<8)的已知值不参与子串脱敏，避免误伤 /v1/ 之类的正常路径。
+        let short_secrets = vec!["api".to_string()];
+        assert_eq!(
+            redact_url_for_log_with_secrets("https://api.example.com/v1", &short_secrets),
+            "https://api.example.com/v1"
+        );
+    }
+
+    #[test]
+    fn log_url_origin_drops_path_for_credential_in_path() {
+        // 没有已知密钥可脱敏时，凭据可能整个内嵌在 path，只记 origin。
+        assert_eq!(
+            redact_url_origin_for_log("https://gw.example.com/k-9f3a7c2b1e/v1"),
+            "https://gw.example.com"
+        );
+        assert_eq!(
+            redact_url_origin_for_log("https://user:pass@gw.example.com:8443/secret/v1"),
+            "https://gw.example.com:8443"
+        );
+        assert_eq!(
+            redact_url_origin_for_log("//gw.example.com/secret/v1"),
+            "//gw.example.com"
+        );
+    }
+
+    #[test]
+    fn runtime_log_filter_honors_dynamic_max_level() {
+        assert!(!runtime_log_level_allows(
+            log::Level::Error,
+            log::LevelFilter::Off
+        ));
+        assert!(runtime_log_level_allows(
+            log::Level::Error,
+            log::LevelFilter::Info
+        ));
+        assert!(runtime_log_level_allows(
+            log::Level::Info,
+            log::LevelFilter::Info
+        ));
+        assert!(!runtime_log_level_allows(
+            log::Level::Debug,
+            log::LevelFilter::Info
+        ));
+    }
 
     #[test]
     fn no_code_keeps_app_alive_in_tray() {

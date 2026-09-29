@@ -1030,7 +1030,7 @@ mod tests {
             provider_router: Arc::new(ProviderRouter::new(db.clone())),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle: None,
-            failover_manager: Arc::new(FailoverSwitchManager::new(db)),
+            failover_manager: Arc::new(FailoverSwitchManager::new()),
         }
     }
 

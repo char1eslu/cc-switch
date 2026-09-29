@@ -11,6 +11,25 @@ export interface AppConfig {
 
 export const APP_IDS: AppId[] = ["claude", "claude-desktop", "codex"];
 
+/**
+ * 切换只替换关键字段的应用：供应商编辑器显示「切到这个供应商之后配置文件的样子」，由后端
+ * `ProviderService::editor_view` 投影。
+ */
+export const EDITOR_VIEW_APP_IDS: AppId[] = ["claude", "codex"];
+
+export function usesEditorView(appId: AppId): boolean {
+  return EDITOR_VIEW_APP_IDS.includes(appId);
+}
+
+export type ProxyAppId = Extract<AppId, "claude" | "codex">;
+
+/** Apps with a complete local gateway + failover data plane. */
+export const PROXY_APP_IDS: ProxyAppId[] = ["claude", "codex"];
+
+export function isProxyAppId(appId: string): appId is ProxyAppId {
+  return (PROXY_APP_IDS as string[]).includes(appId);
+}
+
 /** App IDs shown in Skills panels. */
 export const SKILLS_APP_IDS: AppId[] = ["claude", "codex"];
 
