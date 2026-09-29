@@ -9,8 +9,8 @@
 | 项 | 值 |
 | --- | --- |
 | 已完整评估到的上游基线 | `846de29c` |
-| 当前已验证代码 head | `731ddb4a`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，远端 CI `36540493005` 前端与后端两个 job 全绿，macOS Ad Hoc `36540496472` 构建与产物验收通过） |
-| 最近一轮已适配的上游修复 | `incremental_vacuum` 回收整张 freelist、共享配置片段与 live 文件不再泄漏供应商设置（含 0600 私有写）、去掉供应商级与全局成本倍率 |
+| 当前已验证代码 head | `9c6e7671`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，远端 CI `36557781103` 两个 job 逐步全绿，macOS Ad Hoc `36557784030` 构建与产物验收通过） |
+| 最近一轮已适配的上游改动 | **关键字段写入引擎整体搬运**（`1ee2fdc3..69ff69dd`，11 个提交，130 文件 / +28,020 / −15,266），以及同日的三个独立修复（`incremental_vacuum` 回收整张 freelist、共享配置片段与 live 文件不再泄漏供应商设置、去掉供应商级与全局成本倍率） |
 
 **下次同步从这里开始**：
 
@@ -368,7 +368,128 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
 
+### 2026-09-29 续（架构：`1ee2fdc3..69ff69dd`，19 个）
+
+**关键字段写入引擎整体搬运，上一节登记的那个独立立项已闭环。** 分支
+`arch-2026-09-29`（基于 fork `dev` `e0287d9d`），fork 侧净变更 **130 文件 /
++28,020 / −15,266**（51 新增、4 删除、75 修改）。**无 schema 迁移**，
+`SCHEMA_VERSION` 保持 19、`FORK_SCHEMA_VERSION` 保持 1。
+
+#### 范围口径（与上一节重叠，别按 `1ee2fdc3..846de29c` 重算）
+
+按当前 ref 复核，`1ee2fdc3..846de29c` 是 **22** 个提交（上一节记为 24 个，
+是当时的读数偏差，以本次复核为准），`69ff69dd..846de29c` 是 3 个。22 个的分布：
+
+| 归属 | 数量 | 提交 |
+| --- | --- | --- |
+| 上一节已搬 | 3 | `b9c27393` / `2185498e` / `46fa2e0e` |
+| **本节搬/适配** | **11** | `bcb83d7c` `81df5a08` `63ed5002` `15c0b3ce` `0e6430ab` `fb564537`(部分) `143bc461` `a79d9ff1` `08a80b90` `b0875f4c` `69ff69dd` |
+| 本节跳过（fork 无该应用 / 纯文档） | 5 | `f33f9c41`(grokbuild) `bd9e8c90`(gemini 重启提示) `db468c39` `59b85196` `aa995848`(文档) |
+| 留在上游、上一节已判定超范围 | 3 | `846de29c`(skills 图标) `8f4a87d0`(mcode) `6064fc1c`(连通检测) |
+
+3 + 11 + 5 = 19。**搬完这 11 个，`1ee2fdc3..846de29c` 全部落地或已明确裁定**，
+上游基线保持 `846de29c`。
+
+`fb564537` 只取 `services/provider/editor_toml.rs` —— 该提交主体是 Gemini CLI 与
+Grok Build 的投影，fork 无这两个应用；`editor_toml.rs` 是被后续提交共用的 TOML
+编辑器 helper，与 Codex 无关但必须留下（`69ff69dd` 引用它）。
+
+#### 落地形态
+
+| 新增 | 内容 |
+| --- | --- |
+| `src-tauri/src/live/`（11 文件） | `floor.rs`（每应用「CC Switch 拥有哪些键」的声明）、`engine.rs`（写锁 / 暂存 / 重读比对再 rename / 逐字节首写备份）、`patch/{json,toml,dotenv}.rs`（保序改写器）、`project/{claude,codex}.rs`（纯函数投影）、`residue.rs`（旧版注入键的冻结清理清单） |
+| `src-tauri/src/mode/`（6 文件） | `state.rs`（设备本地 `live-state.json` 0600）、`operation.rs`（写前记意图、崩溃后前滚）、`controller.rs`（每应用 direct/proxy 状态机）、`contract.rs` / `current.rs` |
+| `services/provider/`（6 文件） | `claude_direct` / `codex_direct` / `claude_editor` / `codex_editor` / `codex_login` / `editor_toml` |
+| `tests/golden/` | 6 个 rs + 9 个快照（去掉 gemini/grokbuild 快照） |
+
+**旧机制整体退场**：`services/proxy.rs` −6,025（旧接管 / 备份 / 还原 / 热切换 /
+崩溃恢复那一整套，含 `start_with_takeover` 与 `has_backup && live_matches_current_proxy`
+启发式）、`codex_config.rs` 重写、`services/provider/live.rs` 重写。
+切换从「整份覆盖 + 备份还原」变成「只改点名的键」。
+
+#### fork 独有物的处置
+
+| 符号 / 能力 | 处置 | 依据 |
+| --- | --- | --- |
+| `services/proxy.rs` 的 `preserve_codex_mcp_servers_from_existing_config`、`preserve_codex_oauth_auth_in_backup`、`update_toml_base_url`（+2 测试） | **丢弃** | 旧机制专用。`live/project/codex.rs::apply_to` 是保序补丁，MCP 键与非点名键原样保留；`auth.json` 由新的 `codex_login.rs` 设备本地暂存接管 |
+| `codex_config.rs` 的推理档覆盖（上游改名 `apply_codex_reasoning_levels` → `apply_codex_reasoning_level_override`，`parse_codex_reasoning_levels` 内联） | **保留**（含 `native_responses_catalog_honors_per_model_reasoning_levels` / `vendor_catalog_honors_per_model_reasoning_levels` 两个测试） | fork 的 Codex 模型 / 推理档能力 |
+| `services/provider/mod.rs` 的 `claude_env_key_is_shared` / `claude_top_key_is_shared` / `sanitize_claude_common_config_snippet` | **保留** | `2185498e` 的 fork 适配（共享键白名单 + 片段归一化） |
+| `lib.rs` 里 16 条 fork 独有命令（`branch_session` / `move_session` / `repair_session` / `trash_session` / `trim_session` / `restore_codex_backup` / `list_codex_backups` / `move_codex_backup_to_trash` / `empty_codex_backup_trash` / `list_codex_trashed_threads` / `restore_codex_trashed_thread` / `empty_codex_thread_trash` / `delete_codex_trashed_thread` / `reveal_session_path` / `search_codex_sessions_raw` 等） | **保留** | 逐冲突解，不整取上游 `lib.rs` |
+| `tray.rs` 的 `_auto_label` / `AUTO_SUFFIX` / `handle_auto_click` 分发 | **删除** | 新架构下自动切换由 `mode/` 状态机接管，旧的菜单分发是死路径 |
+| 前端 `ProviderAdvancedConfig.tsx` | **保留**（只随上游摘掉计费段，测试段是 fork 自有） | 与上一节一致 |
+
+#### 三处必须自己解的架构适配
+
+1. **`CodexOAuthManager` 统一到 `AppState`。** 上游把 manager 挂在
+   `CodexOAuthState` 上，fork 的 `AppState` 已有自己的实例；两边各持一个会让
+   managed-token 写入与 switch-way guard 看到不同状态。改为 `AppState` 持有
+   `Arc<CodexOAuthManager>`，`CodexOAuthState` 降级为薄包装
+   （`pub struct CodexOAuthState(pub Arc<CodexOAuthManager>)`），`lib.rs` 注册同一个
+   `Arc`。一处改动消掉 47 个编译错误。
+2. **`proxy/providers/codex_oauth_auth.rs` 整取上游**（3,478 行），不写最小 shim ——
+   要的是它的 managed-token 写入与 switch-way guard 安全语义。原先依赖的
+   copilot 侧类型改成内联 `OAuthAccount` / `OAuthDeviceCodeResponse`。
+3. **`proxy/provider_router.rs` 不再自己读直连指针。** fork 的
+   `select_providers_with_current` 在「故障转移关闭」分支里直接调
+   `settings::get_effective_current_provider` + `db.get_current_provider`，
+   被新加的 `mode::current::tests::current_provider_is_read_through_provider_for`
+   拦下 —— 该测试要求「正在用的那家」只能由调用方经 `mode::current::provider_in_use`
+   给出。改为使用调用方传入的 `current_provider`，并补
+   `provider_supports_failover` 过滤 + `total_providers += 1`（与上游一致）。
+
+#### 前端
+
+新增 `ProviderStatusBadge.tsx`、`LiveEditConflictDialog.tsx`、`InactiveFieldsPanel.tsx`、
+`hooks/useDraftEditorProjection.ts`、`lib/errors/liveEditConflict.ts`、
+`utils/claudeEditorOverlay.ts` + 3 个测试。**删除 Codex 公共配置 UI**
+（`CodexCommonConfigModal.tsx`、`useCodexCommonConfig.ts`、`useCommonConfigSnippet.ts`、
+`lib/api/config.ts` —— 已核实 `configApi` 只被前两者引用），由关键字段编辑器取代。
+`ProviderForm` 的 Claude 分支新增「以 live 底 + 官方默认值合成初始 settingsConfig」，
+Codex 模板改为经 `projectCodexDraft` 投影。
+
+`OAUTH_PROVIDER_TYPES` 按 fork 裁剪到只剩 `PROVIDER_TYPES.CODEX_OAUTH`。
+
+**上游新增的 pi / profiles / subscription / openclaw / workspace / copilot 前端 API
+一律不跟。**
+
+#### 两个必须记下来的坑
+
+- **`tests/components/ProviderForm.presetRows.golden.test.tsx` 与
+  `ProviderForm.addDraftProjection.test.tsx` 删除，不搬。** 它们是本批次新增的，
+  但依赖 `ProviderPresetSelector` 这个 UI —— 该组件在基线 `1ee2fdc3` 就已存在、
+  fork 从未搬，所以 fork 的 `ProviderForm` 根本没有预设选择 UI，两个测试必然失败
+  （`预设按钮「…」应唯一: expected [] to have a length of 1`）。**预设 UI 的搬运
+  是另一件事，不要顺手做。**
+- **`update_current_claude_desktop_provider_syncs_profile_when_proxy_takeover_is_active`
+  必须保留 fork 的临时端口硬化。** 上游版本删掉了
+  `db.update_proxy_config(ProxyConfig { listen_port: 0, ..Default::default() })`，
+  并把断言写死成 `http://127.0.0.1:15721/claude-desktop`。15721 正是用户机器上
+  常驻的 CC Switch 自己占的默认端口，照抄上游会让**本机每一次三件套都必然撞上
+  `Address already in use (os error 48)`**（CI 的 runner 上没这个冲突，所以上游
+  一直没暴露）。已改回「端口取 0 让内核分配 + 断言按 `proxy_info.port` 动态比对」。
+  同类写法在 `services/provider/mod.rs:1407` / `:1499` 的兄弟测试里已经存在。
+
+#### 验证（代码 head `9c6e7671`）
+
+- 本机隔离工具链 `~/.rust-ci-iso`（rustup **1.95.0**，与 `rust-toolchain.toml`
+  的 `channel = "1.95"` 一致）：`fmt --all --check` / `clippy --all-targets -- -D warnings`
+  （**比 CI 严格**，CI 不带 `--all-targets`）/ `cargo test` —— **三项退出码均为 0**。
+- `cargo test` **1953 passed / 0 failed / 2 ignored**（13 个 test binary；lib 1819 + 集成 134）。
+  对照上一轮的 1793 → **+160**，主要来自新的 `tests/golden`（35 个）与
+  `mode/` / `live/` / `services/provider/` 的新增单元测试。
+- 前端：`tsc --noEmit` 0 error、`prettier --check "src/**/*.{js,jsx,ts,tsx,css,json}"`
+  通过、`vitest run` **62 files / 375 tests 全绿**。
+  （上一节记的「前端套件不在本机跑」已不成立：本轮 `pnpm install --frozen-lockfile`
+  在本机成功，三件套都能跑。）
+- 远端 CI `36557781103` 两个 job 全绿，Ad Hoc `36557784030` 全绿，artifact
+  `CC-Switch-macOS-arm64-ad-hoc` **11,793,638 bytes**（上轮 11,575,537，+218,101，与新增引擎代码量级相符）。
+
 ### 2026-09-29（`1ee2fdc3..846de29c`，24 个）
+
+> 标题里的「24 个」是当时的读数；按当前 ref 复核该区间是 **22 个**（见上一节）。
+> 本节搬的 3 个提交都落在上一节那个 19 个的子区间里，两节的提交集**有重叠**，
+> 不要相加。
 
 **搬 3 个（3 个都按 fork 边界适配）、跳过 21 个。** 分支 `sync-2026-09-29`（基于 fork
 `dev` `bca35170`），3 个提交，27 个文件，+712 / −869。**本轮无 schema 迁移**，fork 与
@@ -1365,32 +1486,39 @@ Clippy 零警告。CI 32041716595 / Ad Hoc 32041958536（run 已删，ID 记录�
 
 ## 未完成 / 待验证
 
-- **⚠️ 关键字段写入引擎（上游 `1ee2fdc3..846de29c` 的主体）尚未搬运，已独立立项。**
+- ~~**⚠️ 关键字段写入引擎（上游 `1ee2fdc3..846de29c` 的主体）尚未搬运，已独立立项。**~~
+  —— **2026-09-29 当日闭环**（分支 `arch-2026-09-29`，代码提交 `833c783b`，
+  合并提交 `9c6e7671`）。开工前的三个问题及答案：
 
-  2026-09-29 评估后决定单独立一轮做，不塞进常规同步。规模：上游新增
-  `src-tauri/src/live/`（engine/floor/patch/project/residue）与 `src-tauri/src/mode/`
-  （contract/controller/current/operation/state），并删掉 fork 仍在用的旧机制
-  （`services/proxy.rs` −10,498、`codex_config.rs` −4,336、
+  1. **旧机制里有多少 fork 独有行为被删掉** —— 三处（`preserve_codex_mcp_servers_from_existing_config`、
+     `preserve_codex_oauth_auth_in_backup`、`update_toml_base_url`）确认被新架构结构性覆盖
+     后丢弃；其余 fork 独有物（推理档覆盖、共享键白名单、16 条 Codex 会话/备份命令、
+     `ProviderAdvancedConfig` 的测试段）逐条贴回。详见审计节。
+  2. **`SCHEMA_VERSION` 是否随之变** —— 不变，双方仍是 19；`database/` 侧只有
+     `dao/proxy.rs` +18 行与一个 re-export。
+  3. **前端 `services/proxy` 相关面板的去留** —— `ProviderAdvancedConfig.tsx` 保留
+     （fork 自有的连通检测段），Codex 公共配置 UI 整体删除（被关键字段编辑器取代）。
+
+  **下一轮起，`846de29c` 之后的上游增量可以直接按常规同步流程看**，不必再绕开
+  依赖新引擎的提交。
+
+  历史留痕（当时的评估与心智模型说明）收在下面这段折叠块里，已过时，仅备查。
+
+  <details>
+  <summary>2026-09-29 开工前的评估（已过时，仅作留痕）</summary>
+
+  规模：上游新增 `src-tauri/src/live/`（engine/floor/patch/project/residue）与
+  `src-tauri/src/mode/`（contract/controller/current/operation/state），并删掉 fork
+  仍在用的旧机制（`services/proxy.rs` −10,498、`codex_config.rs` −4,336、
   `services/provider/mod.rs` +1,830/−1,992），后端约 12K 行 + 前端约 3K 行。
   fork 里 `live-state` 零命中，两个新目录都不存在。
 
-  开工前要先回答的：
-
-  1. **旧机制里有多少 fork 独有行为会被删掉。** `services/proxy.rs` 6,433 行里有协议桥、
-     接管（takeover）、恢复（recover）等 fork 侧改造，得逐块确认新引擎是否等价覆盖。
-  2. **`SCHEMA_VERSION` 是否随之变。** 本轮核对双方仍为 19，但架构替换常带迁移 ——
-     按守则 5，跳过的提交也要 grep `SCHEMA_VERSION` 与迁移链。
-  3. **前端 `services/proxy` 相关面板的去留**（`ProviderAdvancedConfig` 的测试段、
-     `ModelTestConfigPanel` 等 fork 自有能力）。
-
-  在此之前，`846de29c..upstream/main` 的增量里凡依赖新引擎的提交都应视为不可搬。
-
-  **它到底在改什么**（下一轮开工前先读这段，能省掉重新理解一遍的成本）：
+  **它到底在改什么**：
 
   核心是把「CC Switch 怎么改客户端配置文件」这件事换了个心智模型 ——
   **从「整份覆盖 + 备份还原」改成「只改它自己拥有的那几个键」**。
 
-  fork 现役（旧机制）：供应商在 DB 里存一份**整份** `settings_config` 快照，切换就是
+  fork 旧机制：供应商在 DB 里存一份**整份** `settings_config` 快照，切换就是
   整份写进 live 文件；为了不覆盖用户自己的设置，靠**通用配置片段**把共享部分拼回去
   （`2185498e` 修的正是这套拼回规则里的泄漏）。开本地路由则是**接管**：
   `backup_live_configs()` 把 live 存进 DB 的 `live_backups`，再写入指向本地代理的配置，
@@ -1410,11 +1538,12 @@ Clippy 零警告。CI 32041716595 / Ad Hoc 32041958536（run 已删，ID 记录�
   应用是 direct 还是 proxy、是否 attached、路由是什么、写进客户端的 contract 是什么；
   多文件操作**写前先记意图**，崩溃后启动时向前滚 / 丢弃 / 放弃，不再靠「有没有备份」推断。
 
-  迁移顺序（可作搬运时的依赖顺序参考）：`bcb83d7c` 先加 golden tests 锁住旧行为 →
+  迁移顺序（搬运时的依赖顺序）：`bcb83d7c` 先加 golden tests 锁住旧行为 →
   `81df5a08` 引擎 + Claude Desktop → `63ed5002` Claude Code → `15c0b3ce` 直连/代理模式
-  → `0e6430ab` Codex → `fb564537` Gemini/Grok。注意 `15c0b3ce` 删掉了
-  `start_with_takeover` 与整套备份/还原/热切换/崩溃恢复路径 —— 与本轮跳过的死代码清理
-  是同一批代码，所以那部分「跳过一次、下一轮一起删」是合理的。
+  → `0e6430ab` Codex → `fb564537` Gemini/Grok。
+
+  </details>
+
 
 - **Codex ↔ Anthropic 协议桥：转换 payload 已验证，应用内链路仍未跑过。**
 
@@ -1477,6 +1606,14 @@ CI 用 `dtolnay/rust-toolchain@stable` 也会读它），结果可直接对照�
 本机跑前端用 `node_modules/.bin` 下的项目锁定版二进制（tsc / vitest / prettier），
 不要用 `npx prettier`——会拉最新版，与 CI 的 `format:check` 结果不一致。
 另注意 `format:check` 只覆盖 `src/**`，改了 `tests/**` 要单独跑一次 prettier。
+
+⚠️ **本机跑 `cargo test` 前先确认用户没在运行已安装的 CC Switch。** 代理相关的测试会
+真起一个 HTTP server，默认端口 15721 正是 CC Switch 自己占的默认端口；用户开着 app 时
+`cargo test` 必然出现
+`启动代理服务器失败: 地址绑定失败: Address already in use (os error 48)`，
+看起来像回归其实是环境冲突。先 `lsof -nP -iTCP:15721 -sTCP:LISTEN` 确认占用者。
+CI 的 runner 上没有这个冲突，所以上游一直没暴露 —— **从上游搬这类测试时不要照抄
+写死 15721 的断言**，按 fork 既有的「端口取 0 + 断言按实际端口」写法（2026-09-29 续节）。
 
 ```bash
 gh workflow run "CI" --ref dev -R char1eslu/cc-switch
