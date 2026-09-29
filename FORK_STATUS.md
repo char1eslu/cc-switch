@@ -1385,6 +1385,37 @@ Clippy 零警告。CI 32041716595 / Ad Hoc 32041958536（run 已删，ID 记录�
 
   在此之前，`846de29c..upstream/main` 的增量里凡依赖新引擎的提交都应视为不可搬。
 
+  **它到底在改什么**（下一轮开工前先读这段，能省掉重新理解一遍的成本）：
+
+  核心是把「CC Switch 怎么改客户端配置文件」这件事换了个心智模型 ——
+  **从「整份覆盖 + 备份还原」改成「只改它自己拥有的那几个键」**。
+
+  fork 现役（旧机制）：供应商在 DB 里存一份**整份** `settings_config` 快照，切换就是
+  整份写进 live 文件；为了不覆盖用户自己的设置，靠**通用配置片段**把共享部分拼回去
+  （`2185498e` 修的正是这套拼回规则里的泄漏）。开本地路由则是**接管**：
+  `backup_live_configs()` 把 live 存进 DB 的 `live_backups`，再写入指向本地代理的配置，
+  关掉时 `restore_live_configs()` 还原。于是需要启发式判断「是不是真被接管了」
+  （`has_backup && live_matches_current_proxy`，见 `services/proxy.rs:629-651`），
+  还要 `recover_from_crash()` 处理崩在中间的状态。备份 / 还原 / 热切换 / 崩溃恢复
+  全在那 6,433 行里。
+
+  上游新架构：`live/floor.rs` 声明每个应用 CC Switch **拥有哪些键**（endpoint / 凭据 /
+  模型 / 协议选择器 + 供应商独有开关），这份清单同时供通用配置提取复用；
+  `live/project/*.rs` 是纯函数投影（供应商行 → 目标值）；`live/patch/{json,toml,dotenv}.rs`
+  是**保序改写器** —— 只改点名的键，其它键、顺序、注释、缩进、行尾、BOM 全部原样保留，
+  同一目标写两次字节稳定，**解析不了就拒绝并原样保留，绝不用空文档重建**；
+  `live/engine.rs` 负责写锁、暂存、**重读比对再 rename**、被外部改动时重新规划，每个文件
+  首写前留逐字节备份到 `~/.cc-switch/backups/live-first-write/`；`live/residue.rs` 清理旧版
+  注入过的键值（冻结清单）。`mode/` 侧用设备本地的 `live-state.json`(0600) 显式记录每个
+  应用是 direct 还是 proxy、是否 attached、路由是什么、写进客户端的 contract 是什么；
+  多文件操作**写前先记意图**，崩溃后启动时向前滚 / 丢弃 / 放弃，不再靠「有没有备份」推断。
+
+  迁移顺序（可作搬运时的依赖顺序参考）：`bcb83d7c` 先加 golden tests 锁住旧行为 →
+  `81df5a08` 引擎 + Claude Desktop → `63ed5002` Claude Code → `15c0b3ce` 直连/代理模式
+  → `0e6430ab` Codex → `fb564537` Gemini/Grok。注意 `15c0b3ce` 删掉了
+  `start_with_takeover` 与整套备份/还原/热切换/崩溃恢复路径 —— 与本轮跳过的死代码清理
+  是同一批代码，所以那部分「跳过一次、下一轮一起删」是合理的。
+
 - **Codex ↔ Anthropic 协议桥：转换 payload 已验证，应用内链路仍未跑过。**
 
   2026-07-27 对真实网关（智谱 `open.bigmodel.cn/api/anthropic`，模型 `glm-5.2`）
