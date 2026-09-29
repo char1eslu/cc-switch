@@ -12,7 +12,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::app_config::AppType;
-use crate::database::{validate_cost_multiplier, validate_pricing_source};
 use crate::error::AppError;
 use crate::provider::{Provider, UsageResult};
 use crate::services::mcp::McpService;
@@ -1873,12 +1872,6 @@ impl ProviderService {
 
         // Validate and clean UsageScript configuration (common for all app types)
         if let Some(meta) = &provider.meta {
-            if let Some(multiplier) = meta.cost_multiplier.as_deref() {
-                validate_cost_multiplier(multiplier)?;
-            }
-            if let Some(source) = meta.pricing_model_source.as_deref() {
-                validate_pricing_source(source)?;
-            }
             if let Some(usage_script) = &meta.usage_script {
                 validate_usage_script(usage_script)?;
             }
