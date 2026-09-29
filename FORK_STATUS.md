@@ -509,6 +509,7 @@ Codex 模板改为经 `projectCodexDraft` 投影。
   | `/tmp/cc-verify`（产物解包目录） | 36M |
   | `/tmp/cc-adhoc-9c6e7671.zip`（产物中转副本） | 12M |
   | `/tmp` 下本轮脚本、提交信息与日志（`arch-*.sh` / `arch-*.log` / `*.txt`） | ~0.3M |
+  | `~/.workbuddy-ai/binaries/node/workspace/node_modules`（隔离 pnpm 10.12.3 + prettier + smol-toml） | 28M |
 
   `src-tauri/target` 本就不存在（`CARGO_TARGET_DIR` 一直指向仓库外）。
 - **交付物**：`~/Downloads/CC-Switch-macOS-arm64-ad-hoc-20260929-9c6e7671.zip`
