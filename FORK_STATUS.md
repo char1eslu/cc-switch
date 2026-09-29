@@ -2,25 +2,25 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-09-26
+最后更新：2026-09-29
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `1ee2fdc3` |
-| 当前已验证代码 head | `7d3d28a0`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，远端 CI `36259615828` 前端与后端两个 job 全绿，macOS Ad Hoc `36259848002` 构建与产物验收通过） |
-| 最近一轮已适配的上游修复 | GPT-6 Sol/Luna 保留 max effort、Codex OAuth 客户端身份抬到 0.155.0、Homebrew Cask 安装走 `brew upgrade --cask`、Codex 官方独立安装器原地升级（#7650）、应用切换器未选中图标去色 |
+| 已完整评估到的上游基线 | `846de29c` |
+| 当前已验证代码 head | `731ddb4a`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，远端 CI `36540493005` 前端与后端两个 job 全绿，macOS Ad Hoc `36540496472` 构建与产物验收通过） |
+| 最近一轮已适配的上游修复 | `incremental_vacuum` 回收整张 freelist、共享配置片段与 live 文件不再泄漏供应商设置（含 0600 私有写）、去掉供应商级与全局成本倍率 |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 1ee2fdc3..upstream/main
+git log --oneline 846de29c..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-  **用上表第一行那个基线值起算**（本轮是 `8e478b2b..upstream/main`）才是真实增量。
+  **用上表第一行那个基线值起算**（本轮是 `1ee2fdc3..upstream/main`）才是真实增量。
 - ⚠️ 代码块里的基线值和上表第一行必须一起改。2026-08-18 曾发现两处不一致
   （表写 `1f38c838`，审计节已到 `a98829ba`），按表起算会把 35 个已审提交重算一遍。
 - 历轮增量范围与结论见下方「同步审计日志」，从新到旧。
@@ -355,10 +355,212 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
    另注意 `tests.rs` 里 `use super::super::*;` 才能看到 `misc.rs` 的私有项
    （`CodexStandaloneInstall`、`UpdateCommand` 等）。
 
+10. **`git merge` 没有 `-F -`，提交信息必须走临时文件（2026-09-29 首次书面化）。**
+   `git commit -F -` 能从 stdin 读提交信息，`git merge` 不行：会报
+   `error: could not read file '-'`，**且合并并未发生** —— 输出里没有任何提示，
+   只有一行 stderr，很容易以为已经合过了。正确写法：
+   ```bash
+   git merge --no-ff sync-YYYY-MM-DD -F /tmp/merge-msg.txt
+   ```
+
 ## 同步审计日志
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-09-29（`1ee2fdc3..846de29c`，24 个）
+
+**搬 3 个（3 个都按 fork 边界适配）、跳过 21 个。** 分支 `sync-2026-09-29`（基于 fork
+`dev` `bca35170`），3 个提交，27 个文件，+712 / −869。**本轮无 schema 迁移**，fork 与
+上游继续保持 `SCHEMA_VERSION = 19`。
+
+| 上游提交 | fork 提交 | 本轮适配 |
+| --- | --- | --- |
+| `b9c27393` | `0cd5a793` | `incremental_vacuum` 只回收 1 页 → 新增 `Database::incremental_vacuum_on_conn` 读完所有结果行，启动与周期维护两处调用点改用它；新增 `incremental_vacuum_reclaims_entire_freelist`。与上游逐字一致，+46 / −2 |
+| `2185498e` | `dde9272e` | 见下方专节 |
+| `46fa2e0e` | `de9654ae` | 见下方专节 |
+
+**本轮最大的结构性判断：上游增量里有一次核心架构替换，本轮不搬。**
+
+`1ee2fdc3..846de29c` 24 个提交、208 个文件、+25,517 / −27,200，主体是「关键字段写入
+引擎」：上游新增 `src-tauri/src/live/`（engine/floor/patch/project/residue）与
+`src-tauri/src/mode/`（contract/controller/current/operation/state），同时删掉 fork 仍在
+用的旧机制：
+
+| 上游文件 | 变化 | fork 现状 |
+| --- | --- | --- |
+| `src-tauri/src/mode/controller.rs` | +4,112 | 不存在 |
+| `src-tauri/src/services/proxy.rs` | −10,498 | 6,433 行（现役） |
+| `src-tauri/src/codex_config.rs` | −4,336 | 现役 |
+| `src-tauri/src/services/provider/mod.rs` | +1,830 / −1,992 | 现役 |
+
+fork 里 `live-state` 零命中，`live/` 与 `mode/` 两个目录都不存在。整体搬运等于重写后端
+约 12K 行 + 前端约 3K 行，不是「一次同步」的量级 —— 已按独立立项登记（见「未完成 /
+待验证」）。本轮只搬该增量里与之无关的独立修复。
+
+跳过 21 个：
+
+- **架构替换本体（约 14 个）**：`live/` + `mode/` 引擎、`services/proxy.rs` 与
+  `codex_config.rs` 的旧机制删除，以及随之而来的前端改造。
+- **6 个纯文档 / 赞助商 / 图标**：README 与 guides 类、`846de29c`（skills 新图标）。
+- **`6064fc1c`（连通检测设置与死批量/日志路径）—— 前提核实不成立。**
+  上游的判据是「批量检查无前端调用方」「删除高级设置面板」。fork 里两条都不成立：
+  `src/lib/api/model-test.ts` 仍导出 `streamCheckAllProviders` / `getStreamCheckConfig` /
+  `saveStreamCheckConfig`，且 `ModelTestConfigPanel` 被 `SettingsPage.tsx:471` 实际挂载
+  并调用后两者。只有「停写 `stream_check_logs`」这一子项的前提成立，不足以支撑整提交。
+
+#### `2185498e`：共享配置片段与 live 文件不再泄漏供应商设置
+
+安全修复，按守则 2 逐文件过 diff。四处实质改动：
+
+1. **凭据识别收紧**：`*_CUSTOM_HEADERS` 后缀与精确键 `HEADERS`、含 `COOKIE` /
+   `AUTHORIZATION` 的键都算凭据；普通 header 名（`CLAUDE_CODE_ATTRIBUTION_HEADER`、
+   `OTEL_EXPORTER_OTLP_HEADERS`）仍可共享。
+2. **关键字段不再共享**：`ANTHROPIC_*`、协议选择器（`CLAUDE_CODE_USE_BEDROCK/VERTEX/…`）、
+   `AWS_*` 与 Vertex region、顶层 `model` / `apiKeyHelper` / `fallbackModel`。
+   `extract_claude_common_config` 由「白名单挑」重写成 `retain` 式。
+3. **live 文件 0600**：`config.rs` 新增 `write_json_file_private` / `write_text_file_private`
+   / `atomic_write_private` / `atomic_write_with_unix_mode`；临时文件用 `OpenOptions` +
+   `.mode(0o600)` 创建，**不留「先 0644 再 chmod」的窗口**。调用点：Codex `auth.json` +
+   `config.toml`、Claude Code `settings.json`。
+4. **Bedrock API Key 走 `env.AWS_BEARER_TOKEN_BEDROCK`**：`claude.rs::extract_key()` 与前端
+   `providerConfigUtils.ts` 三处（读 / 判存 / 写）都优先读它，顶层 `apiKey` 降为旧版兼容
+   分支。
+
+fork 适配四处：
+
+- **存量片段的归一化换了位置。** 上游在「切走时按旧片段剥离供应商行」，靠
+  `retired_snippet_entries`；fork 没有 `sync_common_config_snippet_from_live`，片段条目只会
+  留在片段本身（供应商行由 `normalize_provider_common_config_for_storage` 剥离），所以改为
+  在 `initialize_common_config_snippets` 尾部对片段**归一化一次**
+  （`sanitize_claude_common_config_snippet`），只处理 Claude —— Codex 提取器不走这套规则。
+- **`is_sensitive_config_key` 取并集，不整体替换。** fork 这份名单是 `f7e4796b` 从
+  3.16.4/3.16.5 移植时的**刻意缩减版**（只留 `*_API_KEY` / `*_AUTH_TOKEN` / `*secret*` /
+  `*token*`）；上游的 `ff3bc242` 从未合入 fork。整体替换会把 fork 有意移除的条目重新引入，
+  故取「上游基线 ∪ 上游新增」。
+- **上游的预设改动不适用。** E-FlowCode / PIPELLM 去个人偏好、Codex E-FlowCode 去
+  `personality`、AWS Bedrock 预设改 key 字段 —— fork 的 `claudeProviderPresets.ts` 只剩
+  「Claude Official / Codex」两个预设（106 行），`codexProviderPresets.ts` 只剩
+  「OpenAI Official」（56 行），这些预设不存在。`tests/config/claudeProviderPresets.test.ts`
+  同理（fork 版本断言的是「只暴露官方预设」）。
+- **跳过上游的死代码清理。** `ConfigService::sync_current_providers_to_live` 一族
+  （`services/config.rs`）与 `ProxyService::start_with_takeover`（`services/proxy.rs`）在
+  fork 里同样只被测试引用（`grep -rn "ConfigService::" src-tauri/` 只命中测试），属非安全
+  实质；且 `services/proxy.rs` 会在下一轮架构搬运中整体替换，现在删是白做。代价：
+  `services/config.rs` 的 `sync_claude_live` 用非私有的 `write_json_file` 写
+  `~/.claude/settings.json`，这条 0644 路径仍在代码里（但不可达）。
+
+**补了一个上游没有、但 fork 需要的回归守卫。** 上游把权限断言写在
+`switch_writes_credential_files_owner_only` 里，但用了 Grok Build；fork 无 Grok，去掉该段后
+落在 `src-tauri/tests/provider_service.rs`。该测试断言 `ProviderService::switch` 写出的
+Codex `auth.json` / `config.toml` 与 Claude `settings.json` 都是 `0o600`（含「已有 0644
+文件被替换后收紧」的场景）。**已做变异测试确认它有杀伤力**：把 `atomic_write_private` 的
+`Some(0o600)` 改成 `None` 后该测试失败（`left: 420` = 0o644 vs `right: 384` = 0o600）。
+
+**用真实库（只读）验证了风险面**：`~/.cc-switch/cc-switch.db` 的 `common_config_claude`
+片段 1,422 字节，含 `"model": "sonnet"`（新规则下会被剥离），无 `ANTHROPIC_*` / `AWS_*` /
+凭据 —— 即无 Bedrock/Vertex 存量行受影响，风险完全在片段侧，归一化钩子足够。
+
+#### `46fa2e0e`：去掉供应商级与全局成本倍率
+
+上游判据：中继本身就在「官方价 × 自己的倍率」计价，CC Switch 再存一份只会漂移；且它只对
+经本地路由的请求生效（会话日志导入一律记 1.0），直连模式下设了没效果。
+
+后端：删 `get/set_default_cost_multiplier` 两条命令与 DAO 方法、`validate_cost_multiplier`
+（`validate_pricing_source` 由 `pub(crate)` 降为私有避免 dead_code）；
+`resolve_pricing_config` → `resolve_pricing_model_source`（去掉 `provider_id` 形参，返回
+`String`）；`log_with_calculation` 去掉 `cost_multiplier` 形参，一律传 `Decimal::ONE`，
+落库 `cost_multiplier: "1"`。
+
+前端：`PricingConfigPanel` 去掉倍率列、`PRICING_APPS` 保持 fork 的两项（claude/codex，上游的
+gemini/grokbuild 不在 fork 的 `AppType` 里）；`lib/api/proxy.ts` 删两个 API；`types.ts` 的
+`ProviderMeta` 删 `costMultiplier` / `pricingModelSource`；en/zh 两处 i18n。
+
+fork 适配两处：
+
+- **`ProviderAdvancedConfig.tsx` 不能整文件删。** 上游删掉了整个文件（182 行），但 fork 的
+  这个文件比上游多一段「模型测试配置」（`testConfig`），是 fork 自有能力。只摘掉计费段，
+  保留测试段；`ProviderForm.tsx` 的 `pricingConfig` state / 校验 / 提交字段 / 渲染传参同步
+  摘除。
+- **`normalizePricingSource` / `PricingModelSourceOption` 定义在 `ProviderForm.tsx` 内**
+  （上游在 `opencodeFormUtils.ts`），随本次一并删除；上游对 `opencodeFormUtils.ts` 与前端
+  opencode / connectivity 相关文件的改动在 fork 不适用。
+
+**值保留语义**：`ProviderMeta` 的这两个字段在 Rust 侧保留（`provider.rs` 注释改为「已停用，
+只为与旧版设备同步时原样往返保留」），`proxy_config.default_cost_multiplier` 列也保留，
+**无 schema 迁移**。前端侧因为 `ProviderForm` 用 `mergeProviderMeta` 合并既有 meta，保存时
+不会把旧值抹掉 —— 与上游「老设备同步同一行时不丢值」的意图一致。
+
+**测试语义改写**：`test_log_usage_uses_provider_override_config` →
+`test_log_usage_ignores_legacy_multiplier_and_provider_overrides`（旧值改用直接
+`UPDATE proxy_config SET default_cost_multiplier='1.5'` 塞回列里，断言新代码不再读它，
+倍率恒为 `Decimal::ONE`、成本按返回模型计价）；
+`test_claude_desktop_inherits_claude_global_defaults` → `..._pricing_source`；整个
+`test_log_usage_falls_back_to_global_defaults` 删除。
+
+**踩到的坑：`git merge -F -` 不存在。** `git commit -F -` 能从 stdin 读提交信息，`git merge`
+不行 —— 会报 `error: could not read file '-'`，且**合并并未发生**（工作区停在 `dev` 上，
+没有任何提示性输出，只有一行 stderr）。改用临时文件 `git merge --no-ff <branch> -F <file>`。
+
+验证（代码 head `731ddb4a`）：
+
+- 本机隔离工具链 `~/.cc-rust`（rustup **1.95.0**，与 `rust-toolchain.toml` 的
+  `channel = "1.95"` 一致）：`fmt --check` / `clippy --all-targets -- -D warnings`
+  （**比 CI 严格**，CI 不带 `--all-targets`）/ `cargo test` —— **三项退出码均为 0**。
+- `cargo test` **1793 passed / 0 failed / 2 ignored**（12 个 test binary 合计，lib 1702）。
+  对照 09-26 轮的 1792 → **+1**，恰为本轮新增的
+  `switch_writes_credential_files_owner_only`；本轮同时删掉 `46fa2e0e` 带来的 3 个倍率测试，
+  加减对得上。
+- 前端格式：隔离 prettier 3.6.2 对 7 个改动文件 `--check` 通过；en/zh 两个 JSON 解析通过。
+  另用静态脚本核对 8 个改动的 ts/tsx **无未使用导入**（`noUnusedLocals: true` 会让 CI 报错）。
+- 远端 CI `36540493005` 两个 job 全绿，**逐步核对**：后端 Create frontend dist placeholder /
+  Check Rust formatting / Clippy / Run tests 四步 success；前端 Install dependencies /
+  TypeScript type check / Check formatting / Unit tests / Build frontend 全部 success。
+- macOS Ad Hoc `36540496472` 全绿（含 Ad hoc sign app、Upload app artifact），artifact
+  `CC-Switch-macOS-arm64-ad-hoc` **11,575,537 bytes**（上轮 11,577,730，−2,193，与删掉计费 UI
+  的量级相符）。产物落盘
+  `~/Downloads/CC-Switch-macOS-arm64-ad-hoc-20260929-731ddb4a.zip`（**11,575,537 bytes**，
+  `Mach-O 64-bit executable arm64`、`codesign --verify --deep --strict` 通过、adhoc 签名、
+  `CFBundleShortVersionString = 3.16.3`），SHA-256 `fef1c642…7304ea`。
+- **前端套件仍不在本机跑**（本环境固有限制，见 09-26 节的 kill 拖死 Bash 层记录）。本轮改动含
+  8 个前端文件，由远端 Frontend Checks 把关，已确认全绿。
+
+**run 清理。** 只保留最新一轮，本轮删掉该 fork 上此前的两条旧 run `36259848002`（09-26
+Ad Hoc，head `7d3d28a0`）与 `36259615828`（09-26 CI，head `7d3d28a0`），两条均 success。
+删除前确认：`36259848002` 的 artifact（11,577,730 bytes）在 `~/Downloads` 下已无副本
+（但 **`~/.Trash/CC-Switch-macOS-arm64-ad-hoc-20260926-7d3d28a0.zip`（11,607,100 bytes）
+仍在**，可从废纸篓恢复 —— 09-26 节把它记成「按惯例保留」是不准的，它已被移入废纸篓）；
+`36259615828` 无 artifact。删除方式 `DELETE /actions/runs/{id}`，两条均 204，逐条回读确认
+404。清理后该 fork **恰余 2 条 run，均指向本轮 head `731ddb4a`**：CI `36540493005` 与
+Ad Hoc `36540496472`（`total_count = 2`）。
+
+**分支清理。** 收尾删除 `sync-2026-09-29`（tip `de9654ae`，删除前已用
+`git merge-base --is-ancestor` 确认它是 `dev` 的祖先）。**本轮远端从未推送该分支** ——
+`git ls-remote --heads origin` 自始至终只有 `refs/heads/dev`，故无远端删除动作；本地用
+`git branch -d`（安全形式，非 `-D`）删除。清理后本地与远端**均只剩 `dev`**，合并提交
+`731ddb4a` 的双亲仍是 `bca35170` 与 `de9654ae`。
+
+**本机临时缓存清理。** 用 `/bin/rm -rf` 绝对路径**真删**（本环境裸 `rm` 只是移入废纸篓、
+不回收空间），逐项校验全部 `absent`，可用空间 **89Gi → 97Gi（+8 GiB）**，与清单合计相符，
+且废纸篓中**无任何对应条目** —— 三项独立证据共同确认是真删：
+
+| 路径 | 大小 |
+| --- | --- |
+| `~/.cc-rust`（隔离 rustup 工具链 + CARGO_TARGET_DIR） | 7.7G |
+| `/tmp/cc-verify`（产物解包目录） | 35M |
+| `~/.workbuddy-ai/binaries/node/workspace/node_modules`（隔离 prettier 3.6.2 + smol-toml 1.7.1） | 8.5M |
+| `cc-switch/node_modules`（前端安装残留，gitignore 项） | 0B |
+| `cc-switch/dist`（空目录，CI 的 `mkdir -p dist` 步骤需要故曾建，gitignore 项） | 0B |
+| `/tmp` 下本轮脚本、补丁与日志（`A.patch` / `B.patch` / `cc-*.sh` / `cc-*.log` 等） | ~0.3M |
+
+`src-tauri/target` 本就不存在（`CARGO_TARGET_DIR` 一直指向仓库外），无额外残留；交付物
+`~/Downloads/CC-Switch-macOS-arm64-ad-hoc-20260929-731ddb4a.zip`（11,575,537 bytes）
+按惯例保留。
+
+**顺手修掉一个每轮都会复发的小毛病。** `~/.zshenv` 无条件 source
+`/Users/charles_lu/.cc-rust/cargo/env`，而该目录每轮同步收尾都会被真删 —— 于是此后**每次
+开 shell 都报 `no such file or directory`**。已改成 `[ -f … ] && . …` 的存在性守卫。
+下次建隔离工具链时不必再动 `.zshenv`。
 
 ### 2026-09-26（`da193d4f..1ee2fdc3`，16 个）
 
@@ -1163,6 +1365,26 @@ Clippy 零警告。CI 32041716595 / Ad Hoc 32041958536（run 已删，ID 记录�
 
 ## 未完成 / 待验证
 
+- **⚠️ 关键字段写入引擎（上游 `1ee2fdc3..846de29c` 的主体）尚未搬运，已独立立项。**
+
+  2026-09-29 评估后决定单独立一轮做，不塞进常规同步。规模：上游新增
+  `src-tauri/src/live/`（engine/floor/patch/project/residue）与 `src-tauri/src/mode/`
+  （contract/controller/current/operation/state），并删掉 fork 仍在用的旧机制
+  （`services/proxy.rs` −10,498、`codex_config.rs` −4,336、
+  `services/provider/mod.rs` +1,830/−1,992），后端约 12K 行 + 前端约 3K 行。
+  fork 里 `live-state` 零命中，两个新目录都不存在。
+
+  开工前要先回答的：
+
+  1. **旧机制里有多少 fork 独有行为会被删掉。** `services/proxy.rs` 6,433 行里有协议桥、
+     接管（takeover）、恢复（recover）等 fork 侧改造，得逐块确认新引擎是否等价覆盖。
+  2. **`SCHEMA_VERSION` 是否随之变。** 本轮核对双方仍为 19，但架构替换常带迁移 ——
+     按守则 5，跳过的提交也要 grep `SCHEMA_VERSION` 与迁移链。
+  3. **前端 `services/proxy` 相关面板的去留**（`ProviderAdvancedConfig` 的测试段、
+     `ModelTestConfigPanel` 等 fork 自有能力）。
+
+  在此之前，`846de29c..upstream/main` 的增量里凡依赖新引擎的提交都应视为不可搬。
+
 - **Codex ↔ Anthropic 协议桥：转换 payload 已验证，应用内链路仍未跑过。**
 
   2026-07-27 对真实网关（智谱 `open.bigmodel.cn/api/anthropic`，模型 `glm-5.2`）
@@ -1294,7 +1516,11 @@ export RUSTUP_HOME=<隔离目录>/rustup CARGO_HOME=<隔离目录>/cargo
 export PATH="$CARGO_HOME/bin:$PATH"
 export CARGO_TARGET_DIR=<隔离目录>/target   # 别落在仓库里
 curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-rustup toolchain install 1.95 --component rustfmt clippy --profile minimal
+rustup toolchain install 1.95 -c rustfmt -c clippy --profile minimal
+# ⚠️ 不要写成 `--component rustfmt clippy`：rustup 只吃一个值，会报
+#    `error: invalid value 'clippy' for '[TOOLCHAIN]...'`（2026-09-29 实测）。
+#    要装多个组件就重复 `-c`。装不上时后续 `rustc --version` 会连锁报
+#    「could not choose a version of rustc」，看起来像工具链坏了，其实是没装成。
 cd <repo>
 mkdir -p dist                                   # CI 有这步，tauri build script 需要
 cargo fmt --check --manifest-path src-tauri/Cargo.toml
@@ -1314,6 +1540,14 @@ cargo test        --manifest-path src-tauri/Cargo.toml
   只有 `cargo test` 才看得到。两个都要跑。
 - 改完 Rust 后跑一次 `cargo fmt`（**不是** `--check`）让 rustfmt 自己排版，
   比手写换行可靠；文件本来就干净时不会产生无关 diff。
+- **`~/.zshenv` 里 source 隔离工具链的那行要带存在性守卫。** 该目录每轮收尾都被
+  真删，无条件 `. "/Users/<user>/.cc-rust/cargo/env"` 会让此后**每次开 shell 都报
+  `no such file or directory`**（2026-09-29 已改成 `[ -f … ] && . …`）。
+- **一次工作区改动要拆成多个镜像上游的提交时，用 `git apply --cached` 分补丁。**
+  共享文件（本轮 `lib.rs`、`services/provider/mod.rs` 同时被两个上游提交动过）
+  按 hunk 分类：把每个 hunk 的正文丢给一个谓词函数（如「含
+  `validate_cost_multiplier` 则归 B」），`A.patch` 只含 A 的 hunk，`git apply --cached
+  A.patch` 暂存后提交 A，再 `git add -A` 提交 B。**不要**为此去手工回滚再重放。
 
 本轮新增两条守则：
 
