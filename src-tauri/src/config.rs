@@ -297,12 +297,26 @@ pub fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), AppErr
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
 
+    atomic_write(path, &sorted_json_bytes(data)?)
+}
+
+/// 同 [`write_json_file`]，用于含凭据的 live 文件（Codex `auth.json`、Claude Code
+/// `settings.json`）：Unix 下新文件和替换文件都是 0600。普通写入新建文件时按 umask
+/// 落成 0644，Key 就对同机其他用户可读。
+pub fn write_json_file_private<T: Serialize>(path: &Path, data: &T) -> Result<(), AppError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
+    }
+
+    atomic_write_private(path, &sorted_json_bytes(data)?)
+}
+
+fn sorted_json_bytes<T: Serialize>(data: &T) -> Result<Vec<u8>, AppError> {
     let value = serde_json::to_value(data).map_err(|e| AppError::JsonSerialize { source: e })?;
     let sorted_value = sort_json_keys(&value);
     let json = serde_json::to_string_pretty(&sorted_value)
         .map_err(|e| AppError::JsonSerialize { source: e })?;
-
-    atomic_write(path, json.as_bytes())
+    Ok(json.into_bytes())
 }
 
 /// 原子写入文本文件（用于 TOML/纯文本）
@@ -313,8 +327,34 @@ pub fn write_text_file(path: &Path, data: &str) -> Result<(), AppError> {
     atomic_write(path, data.as_bytes())
 }
 
+/// 同 [`write_text_file`]，用于含凭据的 live 文件（Codex 的 `config.toml`，
+/// 第三方 Key 就写在里面）：Unix 下 0600。
+pub fn write_text_file_private(path: &Path, data: &str) -> Result<(), AppError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
+    }
+    atomic_write_private(path, data.as_bytes())
+}
+
 /// 原子写入：写入临时文件后 rename 替换，避免半写状态
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
+    atomic_write_with_unix_mode(path, data, None)
+}
+
+/// 原子写入包含凭据的文件。Unix 上新文件和替换文件始终使用 0600。
+pub fn atomic_write_private(path: &Path, data: &[u8]) -> Result<(), AppError> {
+    atomic_write_with_unix_mode(path, data, Some(0o600))
+}
+
+/// 原子写入：`unix_mode` 为 `None` 时沿用目标文件现有的权限位。
+fn atomic_write_with_unix_mode(
+    path: &Path,
+    data: &[u8],
+    unix_mode: Option<u32>,
+) -> Result<(), AppError> {
+    #[cfg(not(unix))]
+    let _ = unix_mode;
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
@@ -335,7 +375,16 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
     tmp.push(format!("{file_name}.tmp.{ts}"));
 
     {
-        let mut f = fs::File::create(&tmp).map_err(|e| AppError::io(&tmp, e))?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        // 含凭据的文件在创建临时文件时就带上 0600，避免「先按 umask 落成 0644、
+        // 再改权限」的窗口。
+        #[cfg(unix)]
+        if let Some(mode) = unix_mode {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(mode);
+        }
+        let mut f = options.open(&tmp).map_err(|e| AppError::io(&tmp, e))?;
         f.write_all(data).map_err(|e| AppError::io(&tmp, e))?;
         f.flush().map_err(|e| AppError::io(&tmp, e))?;
     }
@@ -343,7 +392,12 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = fs::metadata(path) {
+        if let Some(mode) = unix_mode {
+            if let Err(source) = fs::set_permissions(&tmp, fs::Permissions::from_mode(mode)) {
+                let _ = fs::remove_file(&tmp);
+                return Err(AppError::io(&tmp, source));
+            }
+        } else if let Ok(meta) = fs::metadata(path) {
             let perm = meta.permissions().mode();
             let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(perm));
         }
