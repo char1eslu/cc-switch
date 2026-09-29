@@ -485,6 +485,42 @@ Codex 模板改为经 `projectCodexDraft` 投影。
 - 远端 CI `36557781103` 两个 job 全绿，Ad Hoc `36557784030` 全绿，artifact
   `CC-Switch-macOS-arm64-ad-hoc` **11,793,638 bytes**（上轮 11,575,537，+218,101，与新增引擎代码量级相符）。
 
+#### 收尾清理
+
+- **run 清理**：只保留最新一轮。删掉上一轮的 `36540496472`（Ad Hoc，head `731ddb4a`，
+  artifact 11,575,537 bytes）与 `36540493005`（CI，head `731ddb4a`，无 artifact）。
+  删前确认前者的 artifact 在
+  `~/Downloads/CC-Switch-macOS-arm64-ad-hoc-20260929-731ddb4a.zip` 有完整副本
+  （11,575,537 bytes）。删除方式 `DELETE /actions/runs/{id}`，两条均 204，逐条回读
+  **404**。清理后该 fork **恰余 2 条 run，均指向 `9c6e7671`**：CI `36557781103`
+  与 Ad Hoc `36557784030`。
+- **分支清理**：`arch-2026-09-29`（tip `833c783b`）**远端从未推送**
+  （`git ls-remote --heads origin` 自始至终只有 `refs/heads/dev`），故无远端删除动作；
+  本地用 `git branch -d`（安全形式，非 `-D`）删除。清理后本地与远端**均只剩 `dev`**，
+  合并提交 `9c6e7671` 的双亲仍是 `e0287d9d` 与 `833c783b`。
+- **本机临时缓存**：用 `/bin/rm -rf` 绝对路径**真删**，逐项校验全部 `absent`，
+  可用空间 **87Gi → 95Gi（+8 GiB）**，与清单合计相符：
+
+  | 路径 | 大小 |
+  | --- | --- |
+  | `~/.rust-ci-iso`（隔离 rustup 工具链 + CARGO_TARGET_DIR） | 8.7G |
+  | `cc-switch/node_modules`（前端安装残留，gitignore 项） | 295M |
+  | `cc-switch/dist`（空目录，CI 的 `mkdir -p dist` 步骤需要故曾建，gitignore 项） | 0B |
+  | `/tmp/cc-verify`（产物解包目录） | 36M |
+  | `/tmp/cc-adhoc-9c6e7671.zip`（产物中转副本） | 12M |
+  | `/tmp` 下本轮脚本、提交信息与日志（`arch-*.sh` / `arch-*.log` / `*.txt`） | ~0.3M |
+
+  `src-tauri/target` 本就不存在（`CARGO_TARGET_DIR` 一直指向仓库外）。
+- **交付物**：`~/Downloads/CC-Switch-macOS-arm64-ad-hoc-20260929-9c6e7671.zip`
+  （11,793,638 bytes，SHA-256 `9dce1429…79cd3`）按惯例保留。
+- **又修了一次同一个毛病。** 上一轮给 `~/.zshenv` 里 source `~/.cc-rust/cargo/env`
+  那行加了存在性守卫，但本轮新建的 `~/.rust-ci-iso` 又被**无条件** source 进去了 ——
+  于是每开一次 shell 都报 `no such file or directory`。这次把 `~/.zshenv` 与
+  `~/.profile` **两个文件里的全部 6 条 source 都加上守卫**（`.profile` 里还压着
+  `/private/tmp/cc-switch-rust-check` 与 `/private/tmp/cargo-once` 两条更早的残留，
+  两条路径早已不存在）。两处都实测 `zsh -c 'echo ok'` 与 `bash -lc 'echo ok'`
+  无输出噪声。**下次建隔离工具链时，无论目录叫什么名字，都要顺手加守卫。**
+
 ### 2026-09-29（`1ee2fdc3..846de29c`，24 个）
 
 > 标题里的「24 个」是当时的读数；按当前 ref 复核该区间是 **22 个**（见上一节）。
