@@ -12,7 +12,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::app_config::AppType;
-use crate::database::{validate_cost_multiplier, validate_pricing_source};
 use crate::error::AppError;
 use crate::provider::{Provider, UsageResult};
 use crate::services::mcp::McpService;
@@ -230,35 +229,6 @@ mod tests {
             err.to_string().contains("auth"),
             "expected auth error, got {err:?}"
         );
-    }
-
-    #[test]
-    fn validate_provider_settings_rejects_negative_cost_multiplier() {
-        let mut provider = Provider::with_id(
-            "claude".into(),
-            "Claude".into(),
-            json!({
-                "env": {
-                    "ANTHROPIC_AUTH_TOKEN": "token",
-                    "ANTHROPIC_BASE_URL": "https://claude.example"
-                }
-            }),
-            None,
-        );
-        provider.meta = Some(ProviderMeta {
-            cost_multiplier: Some("-1".to_string()),
-            ..ProviderMeta::default()
-        });
-
-        let err = ProviderService::validate_provider_settings(&AppType::Claude, &provider)
-            .expect_err("negative multiplier should be rejected");
-        assert!(matches!(
-            err,
-            AppError::Localized {
-                key: "error.invalidMultiplier",
-                ..
-            }
-        ));
     }
 
     #[test]
@@ -765,6 +735,145 @@ command = "legacy-cmd"
                 }
             }
         });
+    }
+
+    #[test]
+    fn sensitive_key_matcher_covers_common_credential_namings() {
+        for key in [
+            // 裸 `_KEY`：最常见的写法，却曾被"只枚举 `_API_KEY` 这些子类"漏在外面
+            "OPENAI_KEY",
+            "GROQ_KEY",
+            "XAI_KEY",
+            // 不带分隔符的复合写法
+            "VOLC_ACCESSKEY",
+            "ALIYUN_SECRETKEY",
+            "SOME_APITOKEN",
+            // personal access token：既不含 TOKEN 也不含 KEY
+            "GITHUB_PAT",
+            "gitlab_pat",
+            // 口令类缩写
+            "MYSQL_PWD",
+            "DB_PASS",
+            "GPG_PASSPHRASE",
+            "AWS_CREDS",
+            // 发往上游的自定义请求头、Cookie、Authorization
+            "ANTHROPIC_CUSTOM_HEADERS",
+            "GEMINI_CLI_CUSTOM_HEADERS",
+            "headers",
+            "UPSTREAM_COOKIE",
+            "PROXY_AUTHORIZATION",
+        ] {
+            assert!(
+                ProviderService::is_sensitive_config_key(key),
+                "{key} must be treated as a credential"
+            );
+        }
+
+        // 后缀必须带下划线，不能把正常配置一起卷进来
+        for key in [
+            "PATH",
+            "OLDPWD",
+            "GEMINI_COMPAT",
+            "SSL_BYPASS",
+            "GEMINI_TIMEOUT_MS",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+            // 名字带 HEADER 但不是发往上游的凭据：普通开关、用户自己的遥测端点
+            "CLAUDE_CODE_ATTRIBUTION_HEADER",
+            "OTEL_EXPORTER_OTLP_HEADERS",
+        ] {
+            assert!(
+                !ProviderService::is_sensitive_config_key(key),
+                "{key} is ordinary shareable config and must not be stripped"
+            );
+        }
+    }
+
+    /// 关键字段（协议选择器、Bedrock/Vertex 区域、`/model` 的选择等）不进共享片段；
+    /// 同在 `CLAUDE_CODE_USE_` 前缀下、与供应商无关的开关照常共享。
+    #[test]
+    fn extract_claude_common_config_keeps_key_fields_per_provider() {
+        let settings = json!({
+            "env": {
+                "CLAUDE_CODE_USE_BEDROCK": "1",
+                "CLAUDE_CODE_USE_VERTEX": "1",
+                "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1",
+                "AWS_REGION": "us-west-2",
+                "AWS_PROFILE": "work",
+                "CLOUD_ML_REGION": "us-east5",
+                "VERTEX_REGION_CLAUDE_4_0_OPUS": "europe-west1",
+                "ANTHROPIC_VERTEX_PROJECT_ID": "my-project",
+                "ANTHROPIC_SMALL_FAST_MODEL": "haiku",
+                "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1",
+                "CLAUDE_CODE_USE_POWERSHELL_TOOL": "1",
+                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                "DISABLE_TELEMETRY": "1"
+            },
+            "model": "opus",
+            "fallbackModel": "sonnet",
+            "apiKeyHelper": "~/bin/key.sh",
+            "awsAuthRefresh": "aws sso login",
+            "hooks": { "Stop": [] },
+            "theme": "dark"
+        });
+
+        let snippet = ProviderService::extract_claude_common_config(&settings)
+            .expect("extract should succeed");
+        let value: Value = serde_json::from_str(&snippet).expect("snippet is valid JSON");
+
+        assert_eq!(
+            value,
+            json!({
+                "env": {
+                    "CLAUDE_CODE_USE_POWERSHELL_TOOL": "1",
+                    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                    "DISABLE_TELEMETRY": "1"
+                },
+                "hooks": { "Stop": [] },
+                "theme": "dark"
+            })
+        );
+        assert!(
+            snippet.find("CLAUDE_CODE_USE_POWERSHELL_TOOL") < snippet.find("DISABLE_TELEMETRY"),
+            "removing keys must not reorder the ones that stay: {snippet}"
+        );
+    }
+
+    /// 存量片段里已经共享出去的条目（凭据、关键字段）在启动归一化时被剥掉；
+    /// 与供应商无关的设置保持原样，已经干净的片段不再改写。
+    #[test]
+    fn sanitize_claude_common_config_snippet_strips_retired_entries() {
+        let snippet = json!({
+            "env": {
+                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer leaked",
+                "ENABLE_TOOL_SEARCH": "true"
+            },
+            "model": "sonnet",
+            "theme": "dark"
+        })
+        .to_string();
+
+        let cleaned = ProviderService::sanitize_claude_common_config_snippet(&snippet)
+            .expect("snippet should be rewritten");
+        assert_eq!(
+            serde_json::from_str::<Value>(&cleaned).expect("valid JSON"),
+            json!({
+                "env": {
+                    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                    "ENABLE_TOOL_SEARCH": "true"
+                },
+                "theme": "dark"
+            })
+        );
+        assert!(
+            !cleaned.contains("Bearer leaked"),
+            "credentials must not survive: {cleaned}"
+        );
+        assert_eq!(
+            ProviderService::sanitize_claude_common_config_snippet(&cleaned),
+            None,
+            "an already-clean snippet must not be rewritten on every startup"
+        );
     }
 }
 
@@ -1326,24 +1435,54 @@ impl ProviderService {
         }
     }
 
-    /// Extract common config for Claude (JSON format)
     /// 凭据/机密键的模式匹配：剥掉任何凭据形态（`*_API_KEY` / `*_AUTH_TOKEN` /
     /// `*secret*` / `*token*` 等），同时保留 `MAX_OUTPUT_TOKENS` 这类合法可共享的
     /// 复数 `*_TOKENS` 值。
+    ///
+    /// 覆盖：Anthropic / OpenRouter / Google / OpenAI / Gemini 等 `*_API_KEY`
+    /// （Claude provider 的凭据见 `Provider::resolve_usage_credentials`，确实支持
+    /// `OPENROUTER_API_KEY` / `GOOGLE_API_KEY` 等回退）、各类 `*_AUTH_TOKEN` /
+    /// 单数 `*_TOKEN`、AWS Bedrock / Vertex 凭据、通用 secret / password /
+    /// 私钥命名，以及发往上游的自定义请求头、Cookie、Authorization。
     fn is_sensitive_config_key(name: &str) -> bool {
         let upper = name.to_ascii_uppercase();
 
         // 单数 `_TOKEN` 命中 AWS_SESSION_TOKEN 等，但**不**误伤复数 `_TOKENS`
         // （CLAUDE_CODE_MAX_OUTPUT_TOKENS / MAX_THINKING_TOKENS 是正常可共享配置）。
         const SENSITIVE_SUFFIXES: &[&str] = &[
+            // 裸 `_KEY` 是最常见的凭据写法（OPENAI_KEY / GROQ_KEY / XAI_KEY…），
+            // 必须单列：只枚举 `_API_KEY` / `_ACCESS_KEY` 这些子类，等于把最普通
+            // 的那一种漏在外面。下面几条 `_*_KEY` 被它蕴含，保留是为了说明覆盖面。
+            "_KEY",
             "_API_KEY",
-            "_APIKEY",
-            "_AUTH_TOKEN",
-            "_TOKEN",
             "_ACCESS_KEY",
             "_ACCESS_KEY_ID",
             "_KEY_ID",
             "_PRIVATE_KEY",
+            // 不带分隔符的复合写法各走各的后缀：`_KEY` 够不着 `..._APIKEY`
+            // （倒数第四个字符是 I 不是下划线）。VOLC_ACCESSKEY 是火山引擎文档
+            // 里的正式变量名，本仓库就实现了火山 AK/SK 用量查询。
+            "_APIKEY",
+            "_ACCESSKEY",
+            "_SECRETKEY",
+            "_APITOKEN",
+            "_AUTH_TOKEN",
+            "_TOKEN",
+            // GITHUB_PAT / GITLAB_PAT 等 personal access token 的惯用写法，
+            // 既不含 TOKEN 也不含 KEY，前面每一条规则都够不着。
+            "_PAT",
+            // 口令类的常见缩写。`_PASS` 不会误伤 `*_BYPASS`（那个以 `_BYPASS`
+            // 结尾），`_PWD` 也不会误伤 shell 的 PWD / OLDPWD。
+            "_PWD",
+            "_PASS",
+            "_PASSPHRASE",
+            "_CREDS",
+            // 发往上游的自定义请求头（ANTHROPIC_CUSTOM_HEADERS、
+            // GEMINI_CLI_CUSTOM_HEADERS）：常见写法是 `Authorization: Bearer …`
+            // 或 `Cookie: …`，整串就是凭据。只认 `_CUSTOM_HEADERS`，不按 HEADER
+            // 一刀切：CLAUDE_CODE_ATTRIBUTION_HEADER 是普通开关，
+            // OTEL_EXPORTER_OTLP_HEADERS 发往用户自己的遥测端点，都应照常共享。
+            "_CUSTOM_HEADERS",
         ];
         const SENSITIVE_EXACT: &[&str] = &[
             "APIKEY",
@@ -1352,6 +1491,7 @@ impl ProviderService {
             "SECRET",
             "PASSWORD",
             "CREDENTIALS",
+            "HEADERS",
         ];
         // contains：覆盖 AWS_SECRET_ACCESS_KEY / *_CLIENT_SECRET /
         // GOOGLE_APPLICATION_CREDENTIALS / AWS_BEARER_TOKEN_BEDROCK 等变体。
@@ -1362,6 +1502,8 @@ impl ProviderService {
             "CREDENTIAL",
             "PRIVATE_KEY",
             "BEARER_TOKEN",
+            "COOKIE",
+            "AUTHORIZATION",
         ];
 
         SENSITIVE_EXACT.contains(&upper.as_str())
@@ -1369,64 +1511,99 @@ impl ProviderService {
             || SENSITIVE_CONTAINS.iter().any(|c| upper.contains(c))
     }
 
+    /// Claude `env` 里的键能否进通用配置片段。
+    ///
+    /// 片段会合并进每一家勾选了它的供应商，所以只能放与供应商无关的设置。关键字段
+    /// （请求发到哪、凭什么鉴权、哪个模型名、哪种协议）一旦进了片段，就会跟着切换带给
+    /// 下一家：从 Bedrock 切到官方后，官方的 live 里还留着 `CLAUDE_CODE_USE_BEDROCK=1`，
+    /// Claude Code 继续走 Bedrock。凭据另由 `is_sensitive_config_key` 统一剥离。
+    fn claude_env_key_is_shared(key: &str) -> bool {
+        // `CLAUDE_CODE_USE_*` 不能按前缀：同一前缀下还有 USE_POWERSHELL_TOOL、
+        // USE_NATIVE_FILE_SEARCH 这类与供应商无关的开关（Claude Code 2.1.282 核实）。
+        const PROTOCOL_SELECTORS: &[&str] = &[
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+            "CLAUDE_CODE_USE_GATEWAY",
+            "CLAUDE_CODE_USE_MANTLE",
+            "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+            "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+        ];
+        // Context limits follow the actual upstream model. Sharing these
+        // across providers can cap GPT/Kimi to the wrong window and make
+        // Claude Code compact too early or miss the upstream limit.
+        const UPSTREAM_WINDOW_KEYS: &[&str] = &[
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+        ];
+
+        // `ANTHROPIC_*` 整个前缀都是地址、凭据、各档模型名（含 #4272 的 Fable 档）
+        // 和自定义头；`AWS_*` / `VERTEX_REGION_*` 是 Bedrock / Vertex 的区域与凭据。
+        let key_field = key.starts_with("ANTHROPIC_")
+            || PROTOCOL_SELECTORS.contains(&key)
+            || (key.starts_with("CLAUDE_CODE_SKIP_") && key.ends_with("_AUTH"))
+            || key.starts_with("AWS_")
+            || key.starts_with("VERTEX_REGION_")
+            || matches!(
+                key,
+                "CLAUDE_CODE_SUBAGENT_MODEL"
+                    | "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"
+                    | "CLOUD_ML_REGION"
+                    | "GOOGLE_APPLICATION_CREDENTIALS"
+                    | "CLAUDE_CODE_OAUTH_TOKEN"
+                    | "CLAUDE_CODE_OAUTH_REFRESH_TOKEN"
+                    | "CLAUDE_CODE_OAUTH_SCOPES"
+                    | "CLAUDE_CODE_API_KEY_HELPER_TTL_MS"
+            );
+        !key_field && !UPSTREAM_WINDOW_KEYS.contains(&key) && !Self::is_sensitive_config_key(key)
+    }
+
+    /// Claude 顶层键能否进通用配置片段，口径同 [`Self::claude_env_key_is_shared`]。
+    /// `model` 是 `/model` 保存的选择，属于当时那一家。
+    fn claude_top_key_is_shared(key: &str) -> bool {
+        const KEY_FIELDS: &[&str] = &[
+            "apiKeyHelper",
+            "apiBaseUrl",
+            "primaryModel",
+            "smallFastModel",
+            "apiKey",
+            "model",
+            "fallbackModel",
+            "modelOverrides",
+            "advisorModel",
+            "awsAuthRefresh",
+            "awsCredentialExport",
+            "gcpAuthRefresh",
+        ];
+        !KEY_FIELDS.contains(&key) && !Self::is_sensitive_config_key(key)
+    }
+
+    /// 提取规则收紧后，把存量通用配置片段里按现行规则不再共享的条目（凭据、关键字段）
+    /// 剥掉。返回 `None` 表示无需改动。
+    ///
+    /// 上游在「切走时按旧片段剥离供应商行」处理（`retired_snippet_entries`）；fork 没有
+    /// `sync_common_config_snippet_from_live`，片段的条目只会留在片段本身（供应商行由
+    /// `normalize_provider_common_config_for_storage` 负责剥离），所以在片段上归一化
+    /// 一次即可达到同样效果。
+    pub fn sanitize_claude_common_config_snippet(snippet: &str) -> Option<String> {
+        let original: Value = serde_json::from_str(snippet).ok()?;
+        let cleaned_text = Self::extract_claude_common_config(&original).ok()?;
+        let cleaned: Value = serde_json::from_str(&cleaned_text).ok()?;
+        (cleaned != original).then_some(cleaned_text)
+    }
+
+    /// Extract common config for Claude (JSON format)
     fn extract_claude_common_config(settings: &Value) -> Result<String, AppError> {
         let mut config = settings.clone();
 
-        // 供应商专属的**非机密**字段（模型 + 端点），不应共享。凭据/机密不在此列举，
-        // 改由 `is_sensitive_config_key`（模式匹配）统一剥离，新供应商的 `*_API_KEY`
-        // 等无需再手工补名单即可被覆盖。
-        const ENV_PROVIDER_SPECIFIC_EXCLUDES: &[&str] = &[
-            "ANTHROPIC_MODEL",
-            "ANTHROPIC_REASONING_MODEL", // legacy: 已废弃，但旧配置可能残留
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-            "ANTHROPIC_BASE_URL",
-        ];
-
-        const TOP_LEVEL_EXCLUDES: &[&str] = &[
-            "apiBaseUrl",
-            // Legacy model fields
-            "primaryModel",
-            "smallFastModel",
-        ];
-
-        // Remove env fields: provider-specific (models/endpoint) + 任何凭据键。
-        if let Some(env) = config.get_mut("env").and_then(|v| v.as_object_mut()) {
-            let sensitive: Vec<String> = env
-                .keys()
-                .filter(|k| Self::is_sensitive_config_key(k))
-                .cloned()
-                .collect();
-            for key in ENV_PROVIDER_SPECIFIC_EXCLUDES {
-                env.remove(*key);
-            }
-            for key in &sensitive {
-                env.remove(key);
-            }
-            // If env is empty after removal, remove the env object itself
-            if env.is_empty() {
-                config.as_object_mut().map(|obj| obj.remove("env"));
-            }
-        }
-
-        // Remove top-level fields: legacy model fields + 任何凭据键
-        // （例如非标准的顶层 apiKey / api_key / *_TOKEN）。
         if let Some(obj) = config.as_object_mut() {
-            let sensitive: Vec<String> = obj
-                .keys()
-                .filter(|k| Self::is_sensitive_config_key(k))
-                .cloned()
-                .collect();
-            for key in TOP_LEVEL_EXCLUDES {
-                obj.remove(*key);
+            if let Some(Value::Object(env)) = obj.get_mut("env") {
+                env.retain(|key, _| Self::claude_env_key_is_shared(key));
             }
-            for key in &sensitive {
-                obj.remove(key);
-            }
+            obj.retain(|key, value| match key.as_str() {
+                "env" => !value.as_object().is_some_and(|env| env.is_empty()),
+                _ => Self::claude_top_key_is_shared(key),
+            });
         }
 
         // Check if result is empty
@@ -1695,12 +1872,6 @@ impl ProviderService {
 
         // Validate and clean UsageScript configuration (common for all app types)
         if let Some(meta) = &provider.meta {
-            if let Some(multiplier) = meta.cost_multiplier.as_deref() {
-                validate_cost_multiplier(multiplier)?;
-            }
-            if let Some(source) = meta.pricing_model_source.as_deref() {
-                validate_pricing_source(source)?;
-            }
             if let Some(usage_script) = &meta.usage_script {
                 validate_usage_script(usage_script)?;
             }

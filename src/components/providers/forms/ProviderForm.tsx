@@ -27,7 +27,6 @@ import {
   setCodexWireApi,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
-import { isNonNegativeDecimalString } from "@/types/usage";
 import { getCodexCustomTemplate } from "@/config/codexTemplates";
 import { useSettingsQuery } from "@/lib/query";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -37,10 +36,7 @@ import { ClaudeFormFields } from "./ClaudeFormFields";
 import { CodexFormFields } from "./CodexFormFields";
 import CodexConfigEditor from "./CodexConfigEditor";
 import { CommonConfigEditor } from "./CommonConfigEditor";
-import {
-  ProviderAdvancedConfig,
-  type PricingModelSourceOption,
-} from "./ProviderAdvancedConfig";
+import { ProviderAdvancedConfig } from "./ProviderAdvancedConfig";
 import {
   useApiKeyLink,
   useApiKeyState,
@@ -175,9 +171,6 @@ const normalizeCodexChatReasoningForSave = (
   };
 };
 
-const normalizePricingSource = (value?: string): PricingModelSourceOption =>
-  value === "request" || value === "response" ? value : "inherit";
-
 export interface ProviderFormProps {
   appId: AppId;
   providerId?: string;
@@ -256,19 +249,6 @@ function ProviderFormCustom({
   const [testConfig, setTestConfig] = useState<ProviderTestConfig>(
     () => initialData?.meta?.testConfig ?? { enabled: false },
   );
-  const [pricingConfig, setPricingConfig] = useState<{
-    enabled: boolean;
-    costMultiplier?: string;
-    pricingModelSource: PricingModelSourceOption;
-  }>(() => ({
-    enabled:
-      initialData?.meta?.costMultiplier !== undefined ||
-      initialData?.meta?.pricingModelSource !== undefined,
-    costMultiplier: initialData?.meta?.costMultiplier,
-    pricingModelSource: normalizePricingSource(
-      initialData?.meta?.pricingModelSource,
-    ),
-  }));
   const [isEndpointModalOpen, setIsEndpointModalOpen] = useState(false);
   const [isCodexEndpointModalOpen, setIsCodexEndpointModalOpen] =
     useState(false);
@@ -339,15 +319,6 @@ function ProviderFormCustom({
     setEndpointAutoSelect(initialData?.meta?.endpointAutoSelect ?? true);
     setLocalIsFullUrl(initialData?.meta?.isFullUrl ?? false);
     setTestConfig(initialData?.meta?.testConfig ?? { enabled: false });
-    setPricingConfig({
-      enabled:
-        initialData?.meta?.costMultiplier !== undefined ||
-        initialData?.meta?.pricingModelSource !== undefined,
-      costMultiplier: initialData?.meta?.costMultiplier,
-      pricingModelSource: normalizePricingSource(
-        initialData?.meta?.pricingModelSource,
-      ),
-    });
     setCodexChatReasoning(initialData?.meta?.codexChatReasoning ?? {});
     setCustomUserAgent(initialData?.meta?.customUserAgent ?? "");
     setSelectedCodexAccountId(
@@ -652,20 +623,6 @@ function ProviderFormCustom({
       );
     }
 
-    const costMultiplier = pricingConfig.costMultiplier?.trim();
-    if (
-      pricingConfig.enabled &&
-      costMultiplier &&
-      !isNonNegativeDecimalString(costMultiplier)
-    ) {
-      toast.error(
-        t("settings.globalProxy.defaultCostMultiplierInvalid", {
-          defaultValue: "成本倍率必须为非负数",
-        }),
-      );
-      return;
-    }
-
     if (isCodexOauthProvider && !isCodexOauthAuthenticated) {
       toast.error(
         t("codexOauth.loginRequired", {
@@ -811,13 +768,6 @@ function ProviderFormCustom({
           ? customUserAgent.trim() || undefined
           : undefined,
       testConfig: testConfig.enabled ? testConfig : undefined,
-      costMultiplier: pricingConfig.enabled
-        ? pricingConfig.costMultiplier
-        : undefined,
-      pricingModelSource:
-        pricingConfig.enabled && pricingConfig.pricingModelSource !== "inherit"
-          ? pricingConfig.pricingModelSource
-          : undefined,
       apiFormat: appId === "claude" ? localApiFormat : localCodexApiFormat,
       // 两条路径共用 apiKeyField：Claude 直连，以及 Codex→Anthropic 桥。
       // 都只在非默认值时落库，保持默认 ANTHROPIC_AUTH_TOKEN 不写入。
@@ -1024,9 +974,7 @@ function ProviderFormCustom({
 
           <ProviderAdvancedConfig
             testConfig={testConfig}
-            pricingConfig={pricingConfig}
             onTestConfigChange={setTestConfig}
-            onPricingConfigChange={setPricingConfig}
           />
 
           {showButtons && (

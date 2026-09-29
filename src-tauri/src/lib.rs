@@ -1077,8 +1077,6 @@ pub fn run() {
             commands::update_global_proxy_config,
             commands::get_proxy_config_for_app,
             commands::update_proxy_config_for_app,
-            commands::get_default_cost_multiplier,
-            commands::set_default_cost_multiplier,
             commands::get_pricing_model_source,
             commands::set_pricing_model_source,
             commands::is_proxy_running,
@@ -1515,6 +1513,28 @@ fn initialize_common_config_snippets(state: &store::AppState) {
 
         if let Err(e) = state.db.set_legacy_common_config_migrated(true) {
             log::warn!("✗ Failed to persist legacy common-config migration flag: {e}");
+        }
+    }
+
+    // 提取规则收紧后（凭据、关键字段不再共享），存量片段里可能还留着这些条目。
+    // 上游在「切走时按旧片段剥离供应商行」处理；fork 没有
+    // `sync_common_config_snippet_from_live`，片段的条目只会留在片段本身（供应商行由
+    // `normalize_provider_common_config_for_storage` 剥离），所以在片段上归一化一次
+    // 即可达到同样效果。只处理 Claude：Codex 提取器不走这套规则。
+    if let Ok(Some(snippet)) = state.db.get_config_snippet("claude") {
+        if let Some(cleaned) =
+            crate::services::provider::ProviderService::sanitize_claude_common_config_snippet(
+                &snippet,
+            )
+        {
+            match state.db.set_config_snippet("claude", Some(cleaned)) {
+                Ok(()) => log::info!(
+                    "✓ Stripped non-shareable entries from the claude common config snippet"
+                ),
+                Err(e) => {
+                    log::warn!("✗ Failed to normalize the claude common config snippet: {e}")
+                }
+            }
         }
     }
 }

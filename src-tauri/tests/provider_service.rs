@@ -2374,3 +2374,87 @@ fn recover_from_crash_without_backup_cleans_placeholder_instead_of_writing_it_ba
         "recovery must drop the local proxy base URL"
     );
 }
+
+/// 切换写出的 live 文件里有 Key（Codex 的 auth.json 与 config.toml、Claude Code 的
+/// settings.json），新建或替换时都只给本人读写：普通写入新建文件按 umask 落成 0644，
+/// 同机其他用户就能读到 Key。
+#[cfg(unix)]
+#[test]
+fn switch_writes_credential_files_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    for dir in [".claude", ".codex"] {
+        std::fs::create_dir_all(home.join(dir)).expect("create client dir");
+    }
+    // 已有的 settings.json 是 0644：替换写入后也收紧。
+    let claude_settings = get_claude_settings_path();
+    std::fs::write(&claude_settings, "{}").expect("seed claude settings");
+    std::fs::set_permissions(&claude_settings, std::fs::Permissions::from_mode(0o644))
+        .expect("chmod 644");
+
+    let mut config = MultiAppConfig::default();
+    {
+        let claude = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        claude.current = "claude-a".to_string();
+        for (id, key) in [("claude-a", "sk-a"), ("claude-b", "sk-b")] {
+            claude.providers.insert(
+                id.to_string(),
+                Provider::with_id(
+                    id.to_string(),
+                    id.to_string(),
+                    json!({ "env": { "ANTHROPIC_AUTH_TOKEN": key } }),
+                    None,
+                ),
+            );
+        }
+    }
+    {
+        let codex = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        codex.current = "codex-official".to_string();
+        let mut official = Provider::with_id(
+            "codex-official".to_string(),
+            "OpenAI".to_string(),
+            json!({ "auth": { "OPENAI_API_KEY": "sk-official" }, "config": "" }),
+            None,
+        );
+        official.category = Some("official".to_string());
+        codex
+            .providers
+            .insert("codex-official".to_string(), official);
+        codex.providers.insert(
+            "codex-relay".to_string(),
+            Provider::with_id(
+                "codex-relay".to_string(),
+                "Relay".to_string(),
+                json!({
+                    "auth": { "OPENAI_API_KEY": "sk-relay" },
+                    "config": "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"Relay\"\nbase_url = \"https://relay.example/v1\"\nwire_api = \"responses\"\n"
+                }),
+                None,
+            ),
+        );
+    }
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    let mode = |path: &std::path::Path| {
+        std::fs::metadata(path)
+            .unwrap_or_else(|e| panic!("stat {}: {e}", path.display()))
+            .permissions()
+            .mode()
+            & 0o777
+    };
+
+    ProviderService::switch(&state, AppType::Codex, "codex-official").expect("codex official");
+    assert_eq!(mode(&cc_switch_lib::get_codex_auth_path()), 0o600);
+    ProviderService::switch(&state, AppType::Codex, "codex-relay").expect("codex relay");
+    assert_eq!(mode(&cc_switch_lib::get_codex_config_path()), 0o600);
+    ProviderService::switch(&state, AppType::Claude, "claude-b").expect("claude b");
+    assert_eq!(mode(&claude_settings), 0o600);
+}
