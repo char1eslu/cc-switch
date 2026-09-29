@@ -71,8 +71,41 @@ impl Provider {
         self.provider_type() == Some("codex_oauth")
     }
 
+    pub fn is_xai_oauth(&self) -> bool {
+        self.provider_type() == Some("xai_oauth")
+    }
+
+    pub fn is_github_copilot(&self) -> bool {
+        self.provider_type() == Some("github_copilot")
+            || self.claude_base_url_contains("githubcopilot.com")
+    }
+
     pub fn uses_managed_account_auth(&self) -> bool {
-        self.is_codex_oauth() || self.claude_base_url_contains("chatgpt.com/backend-api/codex")
+        self.is_github_copilot()
+            || self.is_codex_oauth()
+            || self.is_xai_oauth()
+            || self.claude_base_url_contains("chatgpt.com/backend-api/codex")
+    }
+
+    /// Third-party managed OAuth (xai_oauth, github_copilot, …): the real
+    /// credential is injected per-request by the local proxy, so the card is
+    /// keyless by design and its stored config is only an upstream snapshot.
+    /// `codex_oauth` is deliberately excluded — the official ChatGPT login
+    /// in auth.json IS its credential, so the `requires_openai_auth = true`
+    /// fallback is its correct shape, never a legacy leftover.
+    pub fn uses_proxy_injected_oauth(&self) -> bool {
+        self.is_xai_oauth() || self.is_github_copilot()
+    }
+
+    /// Whether the provider form's "auth field" was explicitly set to
+    /// ANTHROPIC_API_KEY. The form only persists `meta.apiKeyField` for the
+    /// non-default choice, so `None` means the default ANTHROPIC_AUTH_TOKEN.
+    pub fn claude_uses_api_key_field(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|m| m.api_key_field.as_deref())
+            .map(|field| field.eq_ignore_ascii_case("ANTHROPIC_API_KEY"))
+            .unwrap_or(false)
     }
 
     fn provider_type(&self) -> Option<&str> {
@@ -219,6 +252,22 @@ pub struct UsageScript {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "codingPlanProvider")]
     pub coding_plan_provider: Option<String>,
+    /// 火山方舟控制面 OpenAPI 的 AccessKey ID（用量查询签名用，与推理 Key 是两套凭据）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "accessKeyId")]
+    pub access_key_id: Option<String>,
+    /// 火山方舟控制面 OpenAPI 的 SecretAccessKey（同上）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "secretAccessKey")]
+    pub secret_access_key: Option<String>,
+    /// 智谱团队套餐（Team Plan）的组织 ID（用量查询请求头 bigmodel-organization）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "teamOrganizationId")]
+    pub team_organization_id: Option<String>,
+    /// 智谱团队套餐（Team Plan）的项目 ID（用量查询请求头 bigmodel-project）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "teamProjectId")]
+    pub team_project_id: Option<String>,
 }
 
 /// 用量数据

@@ -9,7 +9,14 @@ import {
   type ProviderFormValues,
 } from "@/components/providers/forms/ProviderForm";
 import { providersApi, vscodeApi, type AppId } from "@/lib/api";
-import { extractCodexExperimentalBearerToken } from "@/utils/providerConfigUtils";
+import type {
+  EditorConflictPolicy,
+  ProviderEditorSave,
+  ProviderEditorView,
+} from "@/lib/api/providers";
+import { useLiveEditConflict } from "@/components/providers/LiveEditConflictDialog";
+import { toastEditorViewFailed } from "@/components/providers/forms/hooks/useDraftEditorProjection";
+import { usesEditorView } from "@/config/appConfig";
 
 interface EditProviderDialogProps {
   open: boolean;
@@ -18,6 +25,7 @@ interface EditProviderDialogProps {
   onSubmit: (payload: {
     provider: Provider;
     originalId?: string;
+    editorSave?: ProviderEditorSave;
   }) => Promise<void> | void;
   appId: AppId;
   isProxyTakeover?: boolean; // 代理接管模式下不读取 live（避免显示被接管后的代理配置）
@@ -27,72 +35,6 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
   typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
-
-const hasAuthMaterial = (value: unknown): boolean => {
-  if (value === null || value === undefined) return false;
-  if (typeof value === "string") return value.trim().length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value).length > 0;
-  return true;
-};
-
-const hasCodexAuthMaterial = (auth: Record<string, unknown> | null): boolean =>
-  auth !== null &&
-  Object.entries(auth).some(
-    ([key, value]) => key !== "auth_mode" && hasAuthMaterial(value),
-  );
-
-/**
- * Rebuild the provider auth only for a current Codex provider's live snapshot.
- *
- * In official-auth-preservation mode, live config.toml owns the active
- * provider bearer while the shared auth.json may belong to another provider or
- * contain the user's ChatGPT login. Stored provider auth remains the template:
- * this mirrors the backend switch-away backfill and avoids copying shared auth
- * material into the provider row. DB snapshots and presets must keep their
- * normal auth-first precedence.
- */
-const reconcileCodexLiveAuth = (
-  liveSettings: Record<string, unknown>,
-  storedSettings: Record<string, unknown> | null,
-  category: string | undefined,
-): Record<string, unknown> => {
-  if (category === "official") return liveSettings;
-
-  const configText =
-    typeof liveSettings.config === "string" ? liveSettings.config : "";
-  const bearer = extractCodexExperimentalBearerToken(configText);
-  const liveAuth = asRecord(liveSettings.auth);
-  const storedAuth = asRecord(storedSettings?.auth);
-
-  if (!bearer) {
-    if (!hasCodexAuthMaterial(liveAuth) && hasCodexAuthMaterial(storedAuth)) {
-      return { ...liveSettings, auth: storedAuth };
-    }
-    return liveSettings;
-  }
-
-  const authTemplate = storedAuth ?? liveAuth ?? {};
-  const hasProviderApiKey =
-    typeof authTemplate.OPENAI_API_KEY === "string" &&
-    authTemplate.OPENAI_API_KEY.trim().length > 0;
-  const hasOauthLogin = Object.entries(authTemplate).some(
-    ([key, value]) =>
-      key !== "auth_mode" && key !== "OPENAI_API_KEY" && hasAuthMaterial(value),
-  );
-
-  // Match should_restore_codex_provider_token_for_backfill: an OAuth-only
-  // provider must not be silently converted into an API-key provider.
-  if (hasOauthLogin && !hasProviderApiKey) return liveSettings;
-
-  return {
-    ...liveSettings,
-    auth: {
-      ...authTemplate,
-      OPENAI_API_KEY: bearer,
-    },
-  };
-};
 
 export function EditProviderDialog({
   open,
@@ -114,17 +56,57 @@ export function EditProviderDialog({
   // 使用 ref 标记是否已经加载过，防止重复读取覆盖用户编辑
   const [hasLoadedLive, setHasLoadedLive] = useState(false);
 
+  // 切换式应用的投影：编辑器显示的是「切到这个供应商之后配置文件的样子」，也是保存时
+  // 三方比较的底。
+  const [editorView, setEditorView] = useState<ProviderEditorView | null>(null);
+  const { submitWithConflictRetry, conflictDialog } = useLiveEditConflict();
+
+  const closeDialog = useCallback(() => {
+    setEditorView(null);
+    onOpenChange(false);
+  }, [onOpenChange]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       if (!open || !provider) {
         setLiveSettings(null);
+        setEditorView(null);
         setHasLoadedLive(false);
         return;
       }
 
       // 关键修复：只在首次打开时加载一次
       if (hasLoadedLive) {
+        return;
+      }
+
+      // 切换式应用：编辑任何供应商都显示切换投影（关键字段、独有字段来自这一行，其余
+      // 来自 live），代理模式下也一样，关键字段显示的是这个供应商自己的值。
+      if (usesEditorView(appId)) {
+        try {
+          const view = await providersApi.getEditorView(
+            appId,
+            asRecord(provider.settingsConfig) ?? {},
+            provider.category,
+            provider.id,
+          );
+          if (!cancelled) {
+            setEditorView(view);
+            setLiveSettings(view.settings);
+          }
+        } catch (error) {
+          // 读不了配置文件（比如手改坏了）：退回显示保存的供应商配置。
+          if (!cancelled) {
+            setEditorView(null);
+            setLiveSettings(null);
+            toastEditorViewFailed(t, error);
+          }
+        } finally {
+          if (!cancelled) {
+            setHasLoadedLive(true);
+          }
+        }
         return;
       }
 
@@ -170,39 +152,12 @@ export function EditProviderDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, provider?.id, appId, hasLoadedLive, isProxyTakeover]); // 只依赖 provider.id，不依赖整个 provider 对象
+  }, [open, provider?.id, appId, hasLoadedLive, isProxyTakeover, t]); // 只依赖 provider.id，不依赖整个 provider 对象
 
-  const initialSettingsConfig = useMemo(() => {
-    const storedSettings = asRecord(provider?.settingsConfig);
-    const base =
-      appId === "codex" && liveSettings
-        ? reconcileCodexLiveAuth(
-            liveSettings,
-            storedSettings,
-            provider?.category,
-          )
-        : (liveSettings ?? storedSettings ?? {});
-
-    // Codex 的 modelCatalog 是 cc-switch 私有字段，SSOT 在数据库。Live 的 config.toml
-    // 仅在写入时投影出 model_catalog_json 指针；Codex.app 改写配置、代理接管/恢复周期、
-    // 来回切换供应商都可能让 Live 丢失该投影，从而 read_live_settings 反解为空。
-    // 若放任 Live 覆盖，编辑界面会显示空映射表，保存后连同数据库里的映射一起清空（数据丢失）。
-    // 因此始终以数据库 SSOT 的 modelCatalog 为准，仅在数据库确实没有时才回退到 Live 反解结果。
-    if (
-      appId === "codex" &&
-      liveSettings &&
-      provider?.settingsConfig &&
-      typeof provider.settingsConfig === "object"
-    ) {
-      const dbCatalog = (provider.settingsConfig as Record<string, unknown>)
-        .modelCatalog;
-      if (dbCatalog !== undefined) {
-        return { ...base, modelCatalog: dbCatalog };
-      }
-    }
-
-    return base;
-  }, [liveSettings, provider?.settingsConfig, provider?.category, appId]); // 只依赖表单初始化所需字段，不依赖整个 provider
+  const initialSettingsConfig = useMemo(
+    () => liveSettings ?? asRecord(provider?.settingsConfig) ?? {},
+    [liveSettings, provider?.settingsConfig],
+  ); // 只依赖表单初始化所需字段，不依赖整个 provider
 
   // 固定 initialData，防止 provider 对象更新时重置表单
   const initialData = useMemo(() => {
@@ -248,18 +203,26 @@ export function EditProviderDialog({
         ...(values.meta ? { meta: values.meta } : {}),
       };
 
-      await onSubmit({
-        provider: updatedProvider,
-        originalId: provider.id,
-      });
-      onOpenChange(false);
+      const submit = async (onConflict: EditorConflictPolicy) => {
+        await onSubmit({
+          provider: updatedProvider,
+          originalId: provider.id,
+          ...(editorView
+            ? { editorSave: { base: editorView.settings, onConflict } }
+            : {}),
+        });
+        closeDialog();
+      };
+      await submitWithConflictRetry(submit);
     },
-    [appId, onSubmit, onOpenChange, provider],
+    [onSubmit, closeDialog, provider, editorView, submitWithConflictRetry],
   );
 
   if (!provider || !initialData) {
     return null;
   }
+
+  const waitingForEditorView = usesEditorView(appId) && !hasLoadedLive;
 
   return (
     <FullScreenPanel
@@ -278,17 +241,25 @@ export function EditProviderDialog({
         </Button>
       }
     >
-      <ProviderForm
-        appId={appId}
-        providerId={provider.id}
-        submitLabel={t("common.save")}
-        onSubmit={handleSubmit}
-        onCancel={() => onOpenChange(false)}
-        onSubmittingChange={setIsFormSubmitting}
-        initialData={initialData}
-        showButtons={false}
-        isProxyTakeover={isProxyTakeover}
-      />
+      {waitingForEditorView ? (
+        <div className="py-12 text-center text-sm text-muted-foreground">
+          {t("common.loading")}
+        </div>
+      ) : (
+        <ProviderForm
+          appId={appId}
+          providerId={provider.id}
+          submitLabel={t("common.save")}
+          onSubmit={handleSubmit}
+          onCancel={closeDialog}
+          onSubmittingChange={setIsFormSubmitting}
+          initialData={initialData}
+          showButtons={false}
+          isProxyTakeover={isProxyTakeover}
+          inactiveFields={editorView?.inactive}
+        />
+      )}
+      {conflictDialog}
     </FullScreenPanel>
   );
 }

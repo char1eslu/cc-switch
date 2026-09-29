@@ -6,6 +6,16 @@ use crate::error::AppError;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::store::AppState;
+use std::str::FromStr;
+
+fn require_proxy_app(app_type: &str) -> Result<crate::app_config::AppType, String> {
+    let app = crate::app_config::AppType::from_str(app_type)
+        .map_err(|error| format!("无效的应用类型: {error}"))?;
+    if !app.supports_local_proxy() {
+        return Err(format!("{} 不支持本地路由", app.as_str()));
+    }
+    Ok(app)
+}
 
 /// 启动代理服务器（仅启动服务，不接管 Live 配置）
 #[tauri::command]
@@ -28,10 +38,10 @@ pub async fn stop_proxy_server(state: tauri::State<'_, AppState>) -> Result<(), 
     state.proxy_service.stop().await
 }
 
-/// 停止代理服务器（恢复 Live 配置）
+/// 关闭本地路由：所有应用退回直连，再停止代理服务器
 #[tauri::command]
 pub async fn stop_proxy_with_restore(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.proxy_service.stop_with_restore().await
+    crate::mode::controller::exit_all(state.inner()).await
 }
 
 /// 获取各应用接管状态
@@ -42,17 +52,29 @@ pub async fn get_proxy_takeover_status(
     state.proxy_service.get_takeover_status().await
 }
 
-/// 为指定应用开启/关闭接管
+/// 为指定应用进入 / 退出代理模式
 #[tauri::command]
 pub async fn set_proxy_takeover_for_app(
     state: tauri::State<'_, AppState>,
     app_type: String,
     enabled: bool,
 ) -> Result<(), String> {
-    state
-        .proxy_service
-        .set_takeover_for_app(&app_type, enabled)
-        .await
+    let app = require_proxy_app(&app_type)?;
+    if enabled {
+        crate::mode::controller::enter(state.inner(), &app).await
+    } else {
+        crate::mode::controller::exit(state.inner(), &app).await
+    }
+}
+
+/// 直连指针：代理模式下退出代理时写回的供应商
+#[tauri::command]
+pub fn get_direct_provider(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+) -> Result<Option<String>, String> {
+    let app = require_proxy_app(&app_type)?;
+    crate::mode::controller::direct_provider_id(state.inner(), &app).map_err(|e| e.to_string())
 }
 
 /// 获取代理服务器状态
@@ -73,7 +95,11 @@ pub async fn update_proxy_config(
     state: tauri::State<'_, AppState>,
     config: ProxyConfig,
 ) -> Result<(), String> {
-    state.proxy_service.update_config(&config).await
+    if state.proxy_service.update_config(&config).await? {
+        // 代理换了地址：按新地址重写接上代理的客户端。
+        crate::mode::controller::resync_routes(state.inner()).await?;
+    }
+    Ok(())
 }
 
 // ==================== Global & Per-App Config ====================
@@ -129,7 +155,11 @@ pub async fn update_proxy_config_for_app(
 ) -> Result<(), String> {
     let db = &state.db;
     let app_type = config.app_type.clone();
+    let app = require_proxy_app(&app_type)?;
     let circuit_config = CircuitBreakerConfig::from(&config);
+    // `enabled` 是模式的镜像，只由进入 / 退出代理改写。
+    let mut config = config;
+    config.enabled = crate::mode::current::is_proxy(&app);
 
     db.update_proxy_config_for_app(config)
         .await
@@ -217,23 +247,8 @@ pub async fn switch_proxy_provider(
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
-    // Block official providers during proxy takeover
-    let provider = state
-        .db
-        .get_provider_by_id(&provider_id, &app_type)
-        .map_err(|e| format!("读取供应商失败: {e}"))?
-        .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
-    if provider.category.as_deref() == Some("official") {
-        return Err(
-            "代理接管模式下不能切换到官方供应商 (Cannot switch to official provider during proxy takeover)"
-                .to_string(),
-        );
-    }
-
-    state
-        .proxy_service
-        .switch_proxy_target(&app_type, &provider_id)
-        .await
+    let app = require_proxy_app(&app_type)?;
+    crate::mode::controller::switch_route(state.inner(), &app, &provider_id).await
 }
 
 // ==================== 故障转移相关命令 ====================
@@ -263,6 +278,7 @@ pub async fn reset_circuit_breaker(
     provider_id: String,
     app_type: String,
 ) -> Result<(), String> {
+    let app = require_proxy_app(&app_type)?;
     // 1. 重置数据库健康状态
     let db = &state.db;
     db.update_provider_health(&provider_id, &app_type, true, None)
@@ -275,21 +291,22 @@ pub async fn reset_circuit_breaker(
         .reset_provider_circuit_breaker(&provider_id, &app_type)
         .await?;
 
-    // 3. 检查是否应该切回优先级更高的供应商（从 proxy_config 表读取）
-    // 只有当该应用已被代理接管（enabled=true）且开启了自动故障转移时才执行
-    let (app_enabled, auto_failover_enabled) = match db.get_proxy_config_for_app(&app_type).await {
-        Ok(config) => (config.enabled, config.auto_failover_enabled),
+    // 3. 检查是否应该切回优先级更高的供应商
+    // 只有当该应用处于代理模式且开启了自动故障转移时才执行
+    let app_in_proxy = crate::mode::current::is_proxy(&app);
+    let auto_failover_enabled = match db.get_proxy_config_for_app(&app_type).await {
+        Ok(config) => config.auto_failover_enabled,
         Err(e) => {
             log::error!("[{app_type}] Failed to read proxy_config: {e}, defaulting to disabled");
-            (false, false)
+            false
         }
     };
 
-    if app_enabled && auto_failover_enabled && state.proxy_service.is_running().await {
-        // 获取当前供应商 ID
-        let current_id = db
-            .get_current_provider(&app_type)
-            .map_err(|e| e.to_string())?;
+    if app_in_proxy && auto_failover_enabled && state.proxy_service.is_running().await {
+        // 代理当前路由到的供应商
+        let current_id =
+            crate::mode::current::provider_for(db, &app, crate::mode::current::Purpose::InUse)
+                .map_err(|e| e.to_string())?;
 
         if let Some(current_id) = current_id {
             // 获取故障转移队列
@@ -324,7 +341,7 @@ pub async fn reset_circuit_breaker(
 
                     // 创建故障转移切换管理器并执行切换
                     let switch_manager =
-                        crate::proxy::failover_switch::FailoverSwitchManager::new(db.clone());
+                        crate::proxy::failover_switch::FailoverSwitchManager::new();
                     if let Err(e) = switch_manager
                         .try_switch(Some(&app_handle), &app_type, &provider_id, &provider_name)
                         .await

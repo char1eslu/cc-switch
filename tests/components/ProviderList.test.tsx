@@ -1,9 +1,18 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactElement } from "react";
+import { http, HttpResponse } from "msw";
 import type { Provider } from "@/types";
 import { ProviderList } from "@/components/providers/ProviderList";
+import { server } from "../msw/server";
+
+const TAURI_ENDPOINT = "http://tauri.local";
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
@@ -262,6 +271,45 @@ describe("ProviderList Component", () => {
       { a: providerA, b: providerB },
       "claude",
     );
+  });
+
+  it("marks the direct provider while the app is in routing mode", async () => {
+    const providerA = createProvider({ id: "a", name: "A" });
+    const providerB = createProvider({ id: "b", name: "B" });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerA, providerB],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/get_direct_provider`, () =>
+        HttpResponse.json("a"),
+      ),
+    );
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ a: providerA, b: providerB }}
+        currentProviderId="b"
+        appId="claude"
+        isProxyTakeover
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onConfigureUsage={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    const lastProps = (id: string) =>
+      providerCardRenderSpy.mock.calls
+        .map((call) => call[0])
+        .filter((props) => props.provider.id === id)
+        .at(-1);
+    await waitFor(() => expect(lastProps("a")?.isDirectProvider).toBe(true));
+    expect(lastProps("b")?.isCurrent).toBe(true);
+    expect(lastProps("b")?.isDirectProvider).toBe(false);
   });
 
   it("filters providers with the search input", () => {

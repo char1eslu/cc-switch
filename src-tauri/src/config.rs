@@ -152,6 +152,62 @@ fn derive_wsl_default_mcp_path(dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Derive the WSL-side home directory from a WSL UNC path inside a user's
+/// home: `\\wsl$\<distro>\home\<user>\...` -> `\\wsl$\<distro>\home\<user>`,
+/// and `\\wsl.localhost\<distro>\root\...` -> `\\wsl.localhost\<distro>\root`.
+/// Returns None for non-WSL paths and for WSL paths outside a home directory
+/// (e.g. `\\wsl$\<distro>\etc`), where no home can be derived safely.
+#[cfg(windows)]
+pub(crate) fn derive_wsl_home_dir(dir: &Path) -> Option<PathBuf> {
+    use std::path::Prefix;
+
+    let normalized = normalize_path_lexically(dir);
+    let mut components = normalized.components();
+    let prefix = match components.next()? {
+        Component::Prefix(prefix) => prefix,
+        _ => return None,
+    };
+
+    let server = match prefix.kind() {
+        Prefix::UNC(server, _) | Prefix::VerbatimUNC(server, _) => server.to_string_lossy(),
+        _ => return None,
+    };
+
+    if !server.eq_ignore_ascii_case("wsl$") && !server.eq_ignore_ascii_case("wsl.localhost") {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    for component in components {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(part) => parts.push(part.to_string_lossy().to_string()),
+            Component::ParentDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    let home_len = match parts.as_slice() {
+        [home, user, ..] if home == "home" && !user.is_empty() => 2,
+        [root, ..] if root == "root" => 1,
+        _ => return None,
+    };
+
+    // Rebuild prefix + root + the first `home_len` components.
+    let mut home_dir = PathBuf::new();
+    let mut normal_seen = 0usize;
+    for component in normalized.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => home_dir.push(component.as_os_str()),
+            Component::Normal(_) if normal_seen < home_len => {
+                home_dir.push(component.as_os_str());
+                normal_seen += 1;
+            }
+            _ => break,
+        }
+    }
+    Some(home_dir)
+}
+
 fn default_mcp_path_for_config_dir(dir: &Path) -> Option<PathBuf> {
     let default_config_dir = get_home_dir().join(".claude");
     if path_eq_lexical(dir, &default_config_dir) {
@@ -290,33 +346,39 @@ fn sort_json_keys(value: &Value) -> Value {
     }
 }
 
-/// 写入 JSON 配置文件（键按字母排序，确保确定性输出）
-pub fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), AppError> {
+/// 写入 JSON 配置文件并返回实际写入的字节。
+pub fn write_json_file_with_contents<T: Serialize>(
+    path: &Path,
+    data: &T,
+) -> Result<Vec<u8>, AppError> {
     // 确保目录存在
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
 
-    atomic_write(path, &sorted_json_bytes(data)?)
+    let contents = sorted_json_bytes(data)?;
+    atomic_write(path, &contents)?;
+    Ok(contents)
+}
+
+pub(crate) fn sorted_json_bytes<T: Serialize>(data: &T) -> Result<Vec<u8>, AppError> {
+    let value = serde_json::to_value(data).map_err(|e| AppError::JsonSerialize { source: e })?;
+    let sorted_value = sort_json_keys(&value);
+    let json = serde_json::to_string_pretty(&sorted_value)
+        .map_err(|e| AppError::JsonSerialize { source: e })?;
+    Ok(json.into_bytes())
+}
+
+/// 写入 JSON 配置文件（键按字母排序，确保确定性输出）
+pub fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), AppError> {
+    write_json_file_with_contents(path, data).map(|_| ())
 }
 
 /// 同 [`write_json_file`]，用于含凭据的 live 文件（Codex `auth.json`、Claude Code
 /// `settings.json`）：Unix 下新文件和替换文件都是 0600。普通写入新建文件时按 umask
 /// 落成 0644，Key 就对同机其他用户可读。
 pub fn write_json_file_private<T: Serialize>(path: &Path, data: &T) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    }
-
     atomic_write_private(path, &sorted_json_bytes(data)?)
-}
-
-fn sorted_json_bytes<T: Serialize>(data: &T) -> Result<Vec<u8>, AppError> {
-    let value = serde_json::to_value(data).map_err(|e| AppError::JsonSerialize { source: e })?;
-    let sorted_value = sort_json_keys(&value);
-    let json = serde_json::to_string_pretty(&sorted_value)
-        .map_err(|e| AppError::JsonSerialize { source: e })?;
-    Ok(json.into_bytes())
 }
 
 /// 原子写入文本文件（用于 TOML/纯文本）
@@ -327,12 +389,9 @@ pub fn write_text_file(path: &Path, data: &str) -> Result<(), AppError> {
     atomic_write(path, data.as_bytes())
 }
 
-/// 同 [`write_text_file`]，用于含凭据的 live 文件（Codex 的 `config.toml`，
-/// 第三方 Key 就写在里面）：Unix 下 0600。
+/// 同 [`write_text_file`]，用于含凭据的 live 文件（Codex 的
+/// `config.toml`，第三方 Key 就写在里面）：Unix 下 0600。
 pub fn write_text_file_private(path: &Path, data: &str) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    }
     atomic_write_private(path, data.as_bytes())
 }
 
@@ -346,12 +405,43 @@ pub fn atomic_write_private(path: &Path, data: &[u8]) -> Result<(), AppError> {
     atomic_write_with_unix_mode(path, data, Some(0o600))
 }
 
-/// 原子写入：`unix_mode` 为 `None` 时沿用目标文件现有的权限位。
 fn atomic_write_with_unix_mode(
     path: &Path,
     data: &[u8],
     unix_mode: Option<u32>,
 ) -> Result<(), AppError> {
+    stage_write(path, data, unix_mode, false)?.commit()
+}
+
+/// 已写好、还没替换目标的临时文件。原子写的前半步：写入引擎先把一次操作涉及的
+/// 所有文件都备好临时文件、记下写前意图，再逐个 [`StagedWrite::commit`]。
+#[derive(Debug)]
+pub struct StagedWrite {
+    tmp: PathBuf,
+    path: PathBuf,
+}
+
+impl StagedWrite {
+    pub fn tmp_path(&self) -> &Path {
+        &self.tmp
+    }
+
+    /// 用临时文件替换目标（失败时删掉临时文件）。
+    pub fn commit(self) -> Result<(), AppError> {
+        commit_staged(&self.tmp, &self.path).inspect_err(|_| {
+            let _ = fs::remove_file(&self.tmp);
+        })
+    }
+}
+
+/// 写入临时文件：Unix 下 `unix_mode` 为 `None` 时沿用目标文件现有的权限位。
+/// `durable` 为真时写完先 fsync，崩溃恢复要靠这份临时文件前滚。
+pub(crate) fn stage_write(
+    path: &Path,
+    data: &[u8],
+    unix_mode: Option<u32>,
+    durable: bool,
+) -> Result<StagedWrite, AppError> {
     #[cfg(not(unix))]
     let _ = unix_mode;
 
@@ -362,7 +452,6 @@ fn atomic_write_with_unix_mode(
     let parent = path
         .parent()
         .ok_or_else(|| AppError::Config("无效的路径".to_string()))?;
-    let mut tmp = parent.to_path_buf();
     let file_name = path
         .file_name()
         .ok_or_else(|| AppError::Config("无效的文件名".to_string()))?
@@ -372,22 +461,45 @@ fn atomic_write_with_unix_mode(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    tmp.push(format!("{file_name}.tmp.{ts}"));
-
-    {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        // 含凭据的文件在创建临时文件时就带上 0600，避免「先按 umask 落成 0644、
-        // 再改权限」的窗口。
-        #[cfg(unix)]
-        if let Some(mode) = unix_mode {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(mode);
+    static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let (tmp, mut file) = (|| -> Result<(PathBuf, fs::File), AppError> {
+        let mut last_collision = None;
+        for _ in 0..16 {
+            let counter = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let candidate = parent.join(format!(
+                "{file_name}.tmp.{}.{ts}.{counter}",
+                std::process::id()
+            ));
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            if let Some(mode) = unix_mode {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(mode);
+            }
+            match options.open(&candidate) {
+                Ok(file) => return Ok((candidate, file)),
+                Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_collision = Some((candidate, source));
+                }
+                Err(source) => return Err(AppError::io(&candidate, source)),
+            }
         }
-        let mut f = options.open(&tmp).map_err(|e| AppError::io(&tmp, e))?;
-        f.write_all(data).map_err(|e| AppError::io(&tmp, e))?;
-        f.flush().map_err(|e| AppError::io(&tmp, e))?;
+
+        let (candidate, source) = last_collision.expect("temporary filename loop must run");
+        Err(AppError::io(&candidate, source))
+    })()?;
+
+    let written = file
+        .write_all(data)
+        .and_then(|_| file.flush())
+        .and_then(|_| if durable { file.sync_all() } else { Ok(()) });
+    if let Err(source) = written {
+        drop(file);
+        let _ = fs::remove_file(&tmp);
+        return Err(AppError::io(&tmp, source));
     }
+    drop(file);
 
     #[cfg(unix)]
     {
@@ -403,24 +515,102 @@ fn atomic_write_with_unix_mode(
         }
     }
 
+    Ok(StagedWrite {
+        tmp,
+        path: path.to_path_buf(),
+    })
+}
+
+/// 原子写的后半步：用 `tmp` 替换 `path`。崩溃恢复也用它提交上次留下的临时文件。
+///
+/// 失败时临时文件留在原处：写入引擎的 pending 指着它，下次恢复要靠它前滚（目标文件被
+/// 占用、只读这类失败，过后多半能补完）。只做一次性原子写的调用方自己删。
+pub(crate) fn commit_staged(tmp: &Path, path: &Path) -> Result<(), AppError> {
     #[cfg(windows)]
     {
-        // Windows 上 rename 目标存在会失败，先移除再重命名（尽量接近原子性）
-        if path.exists() {
-            let _ = fs::remove_file(path);
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::{
+            Foundation::ERROR_NOT_SUPPORTED, Storage::FileSystem::ReplaceFileW,
+        };
+
+        let replaced: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let replacement: Vec<u16> = tmp
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut completed = false;
+        let mut last_error = None;
+
+        for _ in 0..3 {
+            // SAFETY: both path buffers are NUL-terminated UTF-16 and remain alive for the
+            // duration of the call. Backup, exclusion, and reserved pointers are intentionally null.
+            let replaced_ok = unsafe {
+                ReplaceFileW(
+                    replaced.as_ptr(),
+                    replacement.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            };
+            if replaced_ok != 0 {
+                completed = true;
+                break;
+            }
+
+            let replace_error = std::io::Error::last_os_error();
+            // WSL UNC paths reject ReplaceFileW with ERROR_NOT_SUPPORTED (50).
+            // std::fs::rename uses a different replace-existing API on Windows.
+            let replace_not_supported =
+                replace_error.raw_os_error() == Some(ERROR_NOT_SUPPORTED as i32);
+            if replace_error.kind() != std::io::ErrorKind::NotFound && !replace_not_supported {
+                last_error = Some(replace_error);
+                break;
+            }
+
+            match fs::rename(tmp, path) {
+                Ok(()) => {
+                    completed = true;
+                    break;
+                }
+                Err(source)
+                    if matches!(
+                        source.kind(),
+                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                    ) =>
+                {
+                    last_error = Some(source);
+                }
+                Err(source) => {
+                    last_error = Some(source);
+                    break;
+                }
+            }
         }
-        fs::rename(&tmp, path).map_err(|e| AppError::IoContext {
-            context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
-            source: e,
-        })?;
+
+        if !completed {
+            let source = last_error.unwrap_or_else(std::io::Error::last_os_error);
+            return Err(AppError::IoContext {
+                context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
+                source,
+            });
+        }
     }
 
     #[cfg(not(windows))]
     {
-        fs::rename(&tmp, path).map_err(|e| AppError::IoContext {
-            context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
-            source: e,
-        })?;
+        if let Err(source) = fs::rename(tmp, path) {
+            return Err(AppError::IoContext {
+                context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
+                source,
+            });
+        }
     }
     Ok(())
 }
@@ -428,6 +618,107 @@ fn atomic_write_with_unix_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_atomic_write_replaces_existing_file(dir: &Path) {
+        let path = dir.join("atomic-write-contract.json");
+        std::fs::write(&path, b"old contents").unwrap();
+
+        atomic_write(&path, b"new contents").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new contents");
+        let tmp_prefix = "atomic-write-contract.json.tmp.";
+        let leftovers: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(tmp_prefix))
+            .map(|entry| entry.path())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files remain: {leftovers:?}"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_atomic_write_replaces_existing_file(dir.path());
+    }
+
+    #[test]
+    fn a_failed_replace_keeps_the_staged_file_for_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        // 目标是个非空目录：替换一定失败。
+        let path = dir.path().join("target");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("occupied"), b"x").unwrap();
+        let staged = stage_write(&path, b"new contents", Some(0o600), false).unwrap();
+        let tmp = staged.tmp_path().to_path_buf();
+
+        assert!(commit_staged(&tmp, &path).is_err());
+        assert_eq!(std::fs::read(&tmp).unwrap(), b"new contents");
+
+        // 一次性的原子写不留临时文件。
+        assert!(staged.commit().is_err());
+        assert!(!tmp.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_preserves_destination_when_windows_replace_fails() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, b"old contents").unwrap();
+        let held_file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .unwrap();
+
+        let result = atomic_write(&path, b"new contents");
+
+        assert!(result.is_err());
+        drop(held_file);
+        assert_eq!(std::fs::read(&path).unwrap(), b"old contents");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires CC_SWITCH_WSL_TEST_DIR to point to a WSL2 UNC directory"]
+    fn atomic_write_replaces_existing_wsl_unc_file() {
+        let root = PathBuf::from(
+            std::env::var_os("CC_SWITCH_WSL_TEST_DIR").expect("CC_SWITCH_WSL_TEST_DIR must be set"),
+        );
+        let home = get_home_dir();
+        let temp = std::env::temp_dir();
+        for (name, path) in [
+            ("test root", root.as_path()),
+            ("test home", home.as_path()),
+            ("temporary directory", temp.as_path()),
+        ] {
+            let unc = path.to_string_lossy();
+            assert!(
+                unc.starts_with(r"\\wsl.localhost\") || unc.starts_with(r"\\wsl$\"),
+                "expected {name} to be a WSL UNC path, got {unc}"
+            );
+            assert!(
+                path.starts_with(&root),
+                "expected {name} to be under {}, got {unc}",
+                root.display()
+            );
+        }
+
+        let dir = tempfile::Builder::new()
+            .prefix("atomic-write-contract-")
+            .tempdir_in(&root)
+            .unwrap();
+        assert_atomic_write_replaces_existing_file(dir.path());
+    }
 
     #[test]
     fn derive_mcp_path_from_override_uses_config_dir_for_custom_path() {
@@ -462,6 +753,73 @@ mod tests {
         let override_dir = PathBuf::from("../../profiles/work/.claude");
         let derived = derive_mcp_path_from_override(&override_dir);
         assert_eq!(derived, override_dir.join(".claude.json"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_unc_home_default_uses_split_mcp_path() {
+        let override_dir = PathBuf::from(r"\\wsl$\Ubuntu\home\travis\.claude");
+        let derived = default_mcp_path_for_config_dir(&override_dir)
+            .expect("WSL home default should use split MCP path");
+        assert_eq!(
+            derived,
+            PathBuf::from(r"\\wsl$\Ubuntu\home\travis\.claude.json")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_unc_root_default_uses_split_mcp_path() {
+        let override_dir = PathBuf::from(r"\\wsl.localhost\Ubuntu\root\.claude");
+        let derived = default_mcp_path_for_config_dir(&override_dir)
+            .expect("WSL root default should use split MCP path");
+        assert_eq!(
+            derived,
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\root\.claude.json")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn derive_wsl_home_dir_from_opencode_config_dir() {
+        let dir = PathBuf::from(r"\\wsl.localhost\Ubuntu-26.04\home\travis\.config\opencode");
+        let home = derive_wsl_home_dir(&dir).expect("WSL home should be derived");
+        assert_eq!(
+            home,
+            PathBuf::from(r"\\wsl.localhost\Ubuntu-26.04\home\travis")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn derive_wsl_home_dir_supports_wsl_dollar_and_root() {
+        let dir = PathBuf::from(r"\\wsl$\Ubuntu\root\.config\opencode");
+        let home = derive_wsl_home_dir(&dir).expect("WSL root home should be derived");
+        assert_eq!(home, PathBuf::from(r"\\wsl$\Ubuntu\root"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn derive_wsl_home_dir_rejects_non_home_and_non_wsl_paths() {
+        assert_eq!(
+            derive_wsl_home_dir(&PathBuf::from(r"\\wsl$\Ubuntu\etc\opencode")),
+            None
+        );
+        assert_eq!(
+            derive_wsl_home_dir(&PathBuf::from(r"C:\Users\travis\.config\opencode")),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_unc_custom_dir_uses_nested_mcp_path() {
+        let override_dir = PathBuf::from(r"\\wsl$\Ubuntu\opt\claude\.claude");
+        assert!(default_mcp_path_for_config_dir(&override_dir).is_none());
+        assert_eq!(
+            derive_mcp_path_from_override(&override_dir),
+            PathBuf::from(r"\\wsl$\Ubuntu\opt\claude\.claude\.claude.json")
+        );
     }
 
     #[test]

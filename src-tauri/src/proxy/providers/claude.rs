@@ -596,6 +596,17 @@ impl ClaudeAdapter {
                 log::debug!("[Claude] 使用 AWS_BEARER_TOKEN_BEDROCK");
                 return Some(key.to_string());
             }
+            // Bedrock API Key：Claude Code 读的变量名。旧版预设写在顶层 apiKey，
+            // 由下面的直接获取兜底。
+            if let Some(key) = env
+                .get("AWS_BEARER_TOKEN_BEDROCK")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                log::debug!("[Claude] 使用 AWS_BEARER_TOKEN_BEDROCK");
+                return Some(key.to_string());
+            }
         }
 
         // 尝试直接获取

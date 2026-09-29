@@ -40,6 +40,7 @@ import {
   type ProviderSwitchEvent,
 } from "@/lib/api";
 import { checkAllEnvConflicts, checkEnvConflicts } from "@/lib/api/env";
+import type { ProviderEditorSave } from "@/lib/api/providers";
 import { useProviderActions } from "@/hooks/useProviderActions";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useAutoCompact } from "@/hooks/useAutoCompact";
@@ -568,11 +569,13 @@ function App() {
   const handleEditProvider = async ({
     provider,
     originalId,
+    editorSave,
   }: {
     provider: Provider;
     originalId?: string;
+    editorSave?: ProviderEditorSave;
   }) => {
-    await updateProvider(provider, originalId);
+    await updateProvider(provider, originalId, editorSave);
     setEditingProvider(null);
   };
 

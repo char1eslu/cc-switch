@@ -32,7 +32,9 @@ mod schema;
 mod tests;
 
 // DAO 类型导出供外部使用
-pub(crate) use dao::providers_seed::{is_official_seed_id, CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID};
+pub(crate) use dao::providers_seed::{
+    is_official_seed_id, CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID, CODEX_OFFICIAL_PROVIDER_ID,
+};
 pub(crate) use dao::proxy::{PRICING_SOURCE_REQUEST, PRICING_SOURCE_RESPONSE};
 pub use dao::FailoverQueueItem;
 

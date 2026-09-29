@@ -4,12 +4,15 @@ import type { Provider } from "@/types";
 
 const apiMocks = vi.hoisted(() => ({
   getCurrent: vi.fn(),
+  getEditorView: vi.fn(),
   getLiveProviderSettings: vi.fn(),
 }));
+let mockCodexManagedAccountSelected = false;
 
 vi.mock("@/lib/api", () => ({
   providersApi: {
     getCurrent: apiMocks.getCurrent,
+    getEditorView: apiMocks.getEditorView,
   },
   vscodeApi: {
     getLiveProviderSettings: apiMocks.getLiveProviderSettings,
@@ -69,7 +72,17 @@ vi.mock("@/components/providers/forms/ProviderForm", () => ({
           websiteUrl: initialData.websiteUrl ?? "",
           notes: initialData.notes,
           settingsConfig: JSON.stringify(initialData.settingsConfig ?? {}),
-          meta: initialData.meta,
+          meta: mockCodexManagedAccountSelected
+            ? {
+                ...(initialData.meta ?? {}),
+                providerType: "codex_oauth",
+                authBinding: {
+                  source: "managed_account",
+                  authProvider: "codex_oauth",
+                  accountId: "acct-managed",
+                },
+              }
+            : initialData.meta,
           icon: initialData.icon,
           iconColor: initialData.iconColor,
         });
@@ -89,42 +102,40 @@ import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 
 describe("EditProviderDialog", () => {
   beforeEach(() => {
+    mockCodexManagedAccountSelected = false;
     apiMocks.getCurrent.mockReset();
+    apiMocks.getEditorView.mockReset();
+    apiMocks.getEditorView.mockImplementation(
+      async (_app: string, settingsConfig: Record<string, unknown>) => ({
+        settings: settingsConfig,
+        inactive: [],
+      }),
+    );
     apiMocks.getLiveProviderSettings.mockReset();
   });
 
-  it("保留 Codex 数据库中的 modelCatalog，避免 live 配置缺字段时清空模型映射", async () => {
-    const dbModelCatalog = {
-      models: [
-        {
-          model: "deepseek-v4-flash",
-          displayName: "DeepSeek V4 Flash",
-          contextWindow: 1000000,
-        },
-      ],
+  it("Codex 显示后端算出的切换投影，并把它作为保存时三方比较的基准", async () => {
+    const modelCatalog = {
+      models: [{ model: "deepseek-v4-flash", contextWindow: 1000000 }],
     };
     const provider: Provider = {
       id: "deepseek",
       name: "DeepSeek",
       category: "aggregator",
       settingsConfig: {
-        auth: {
-          OPENAI_API_KEY: "db-key",
-        },
+        auth: { OPENAI_API_KEY: "db-key" },
         config: 'model_provider = "custom"\nmodel = "deepseek-v4-flash"\n',
-        modelCatalog: dbModelCatalog,
+        modelCatalog,
       },
     };
-    const liveSettings = {
-      auth: {
-        OPENAI_API_KEY: "live-key",
-      },
-      config: 'model_provider = "custom"\nmodel = "deepseek-v4-pro"\n',
+    const view = {
+      auth: { OPENAI_API_KEY: "db-key" },
+      config:
+        'approval_policy = "never"\nmodel_provider = "custom"\nmodel = "deepseek-v4-flash"\n',
+      modelCatalog,
     };
+    apiMocks.getEditorView.mockResolvedValue({ settings: view, inactive: [] });
     const handleSubmit = vi.fn().mockResolvedValue(undefined);
-
-    apiMocks.getCurrent.mockResolvedValue(provider.id);
-    apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
 
     render(
       <EditProviderDialog
@@ -139,22 +150,58 @@ describe("EditProviderDialog", () => {
     await waitFor(() => {
       expect(
         JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-      ).toEqual({
-        ...liveSettings,
-        modelCatalog: dbModelCatalog,
-      });
+      ).toEqual(view);
     });
+    expect(apiMocks.getEditorView).toHaveBeenCalledWith(
+      "codex",
+      provider.settingsConfig,
+      "aggregator",
+      provider.id,
+    );
+    expect(apiMocks.getLiveProviderSettings).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
 
     await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
-    expect(handleSubmit.mock.calls[0][0].provider.settingsConfig).toEqual({
-      ...liveSettings,
-      modelCatalog: dbModelCatalog,
-    });
+    const payload = handleSubmit.mock.calls[0][0];
+    expect(payload.provider.settingsConfig).toEqual(view);
+    expect(payload.editorSave).toEqual({ base: view, onConflict: "refuse" });
   });
 
-  it("代理接管中编辑 Codex 供应商时展示数据库配置而不是读取 live 代理配置", async () => {
+  it("Codex 读不了配置文件时退回显示保存的供应商配置", async () => {
+    const provider: Provider = {
+      id: "relay",
+      name: "Relay",
+      category: "custom",
+      settingsConfig: {
+        auth: { OPENAI_API_KEY: "db-key" },
+        config: 'model_provider = "custom"\n',
+      },
+    };
+    apiMocks.getEditorView.mockRejectedValue(new Error("broken config.toml"));
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <EditProviderDialog
+        open
+        provider={provider}
+        onOpenChange={vi.fn()}
+        onSubmit={handleSubmit}
+        appId="codex"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
+      ).toEqual(provider.settingsConfig);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
+    expect(handleSubmit.mock.calls[0][0].editorSave).toBeUndefined();
+  });
+
+  it("代理模式下编辑 Codex 供应商也显示它自己的关键字段，不读 live 里的代理契约", async () => {
     const provider: Provider = {
       id: "deepseek",
       name: "DeepSeek",
@@ -167,15 +214,6 @@ describe("EditProviderDialog", () => {
           'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://api.deepseek.com/v1"\n',
       },
     };
-
-    apiMocks.getCurrent.mockResolvedValue(provider.id);
-    apiMocks.getLiveProviderSettings.mockResolvedValue({
-      auth: {
-        OPENAI_API_KEY: "PROXY_MANAGED",
-      },
-      config:
-        'model_provider = "custom"\n[model_providers.custom]\nbase_url = "http://127.0.0.1:15721/v1"\nexperimental_bearer_token = "PROXY_MANAGED"\n',
-    });
 
     render(
       <EditProviderDialog
@@ -193,194 +231,83 @@ describe("EditProviderDialog", () => {
     });
 
     expect(apiMocks.getLiveProviderSettings).not.toHaveBeenCalled();
-    expect(
-      JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-    ).toEqual(provider.settingsConfig);
-  });
-
-  it("uses the current Codex live bearer with the stored provider auth template", async () => {
-    const provider: Provider = {
-      id: "provider-a",
-      name: "Provider A",
-      category: "custom",
-      settingsConfig: {
-        auth: {
-          OPENAI_API_KEY: "sk-db-stale",
-          provider_note: "keep-me",
-        },
-        config:
-          'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://proxy.example/v1"\n',
-      },
-    };
-    const liveSettings = {
-      // Shared auth.json belongs to another provider / official login cache.
-      auth: {
-        OPENAI_API_KEY: "sk-shared-other-provider",
-        tokens: { account_id: "shared-account" },
-      },
-      config:
-        'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://proxy.example/v1"\nexperimental_bearer_token = "sk-provider-a"\n',
-    };
-    const handleSubmit = vi.fn().mockResolvedValue(undefined);
-
-    apiMocks.getCurrent.mockResolvedValue(provider.id);
-    apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
-
-    render(
-      <EditProviderDialog
-        open
-        provider={provider}
-        onOpenChange={vi.fn()}
-        onSubmit={handleSubmit}
-        appId="codex"
-      />,
-    );
-
-    const expectedSettings = {
-      ...liveSettings,
-      auth: {
-        OPENAI_API_KEY: "sk-provider-a",
-        provider_note: "keep-me",
-      },
-    };
-
     await waitFor(() => {
       expect(
         JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-      ).toEqual(expectedSettings);
+      ).toEqual(provider.settingsConfig);
     });
-
-    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
-
-    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
-    expect(handleSubmit.mock.calls[0][0].provider.settingsConfig).toEqual(
-      expectedSettings,
-    );
-  });
-
-  it("keeps stored Codex auth when Live has no credential", async () => {
-    const provider: Provider = {
-      id: "header-auth",
-      name: "Header Auth",
-      category: "custom",
-      settingsConfig: {
-        auth: { OPENAI_API_KEY: "sk-db-only" },
-        config: 'model_provider = "custom"\nmodel = "old-model"\n',
-      },
-    };
-    const liveSettings = {
-      auth: {},
-      config: 'model_provider = "custom"\nmodel = "live-model"\n',
-    };
-    const handleSubmit = vi.fn().mockResolvedValue(undefined);
-    apiMocks.getCurrent.mockResolvedValue(provider.id);
-    apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
-
-    render(
-      <EditProviderDialog
-        open
-        provider={provider}
-        onOpenChange={vi.fn()}
-        onSubmit={handleSubmit}
-        appId="codex"
-      />,
-    );
-
-    const expectedSettings = {
-      ...liveSettings,
-      auth: { OPENAI_API_KEY: "sk-db-only" },
-    };
-    await waitFor(() => {
-      expect(
-        JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-      ).toEqual(expectedSettings);
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
-    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
-    expect(handleSubmit.mock.calls[0][0].provider.settingsConfig).toEqual(
-      expectedSettings,
-    );
-  });
-
-  it("does not convert an OAuth-only Codex provider into an API-key provider", async () => {
-    const provider: Provider = {
-      id: "oauth-provider",
-      name: "OAuth Provider",
-      category: "custom",
-      settingsConfig: {
-        auth: {
-          auth_mode: "chatgpt",
-          tokens: { account_id: "stored-account" },
-        },
-        config: 'model_provider = "custom"\n',
-      },
-    };
-    const liveSettings = {
-      auth: {
-        auth_mode: "chatgpt",
-        tokens: { account_id: "live-account" },
-      },
-      config:
-        'model_provider = "custom"\nexperimental_bearer_token = "sk-route-only"\n',
-    };
-
-    apiMocks.getCurrent.mockResolvedValue(provider.id);
-    apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
-
-    render(
-      <EditProviderDialog
-        open
-        provider={provider}
-        onOpenChange={vi.fn()}
-        onSubmit={vi.fn()}
-        appId="codex"
-      />,
-    );
-
-    await waitFor(() => {
-      expect(
-        JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-      ).toEqual(liveSettings);
-    });
-  });
-
-  it("does not let a stored bearer override a non-current Codex provider auth", async () => {
-    const provider: Provider = {
-      id: "provider-a",
-      name: "Provider A",
-      category: "custom",
-      settingsConfig: {
-        auth: { OPENAI_API_KEY: "sk-db-authoritative" },
-        config:
-          'model_provider = "custom"\nexperimental_bearer_token = "sk-leftover-live"\n',
-      },
-    };
-    const handleSubmit = vi.fn().mockResolvedValue(undefined);
-
-    apiMocks.getCurrent.mockResolvedValue("provider-b");
-
-    render(
-      <EditProviderDialog
-        open
-        provider={provider}
-        onOpenChange={vi.fn()}
-        onSubmit={handleSubmit}
-        appId="codex"
-      />,
-    );
-
-    await waitFor(() => expect(apiMocks.getCurrent).toHaveBeenCalledTimes(1));
-    expect(apiMocks.getLiveProviderSettings).not.toHaveBeenCalled();
-    expect(
-      JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-    ).toEqual(provider.settingsConfig);
-
-    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
-
-    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
-    expect(handleSubmit.mock.calls[0][0].provider.settingsConfig).toEqual(
+    expect(apiMocks.getEditorView).toHaveBeenCalledWith(
+      "codex",
       provider.settingsConfig,
+      "custom",
+      provider.id,
     );
+  });
+
+  it("keeps an unbound Codex Official provider ID unchanged", async () => {
+    apiMocks.getCurrent.mockResolvedValue(null);
+    const onSubmit = vi.fn();
+    const provider: Provider = {
+      id: "legacy-unbound-official",
+      name: "Legacy OpenAI Official",
+      category: "official",
+      settingsConfig: { auth: {}, config: "" },
+    };
+
+    render(
+      <EditProviderDialog
+        open
+        provider={provider}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+        appId="codex"
+      />,
+    );
+
+    await screen.findByTestId("settings-config");
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        originalId: "legacy-unbound-official",
+        provider: expect.objectContaining({ id: "legacy-unbound-official" }),
+      }),
+    );
+  });
+
+  it("keeps the fixed Codex provider ID when an account is bound", async () => {
+    mockCodexManagedAccountSelected = true;
+    apiMocks.getCurrent.mockResolvedValue(null);
+    const onSubmit = vi.fn();
+    const provider: Provider = {
+      id: "codex-official",
+      name: "OpenAI Official",
+      category: "official",
+      settingsConfig: { auth: {}, config: "" },
+    };
+
+    render(
+      <EditProviderDialog
+        open
+        provider={provider}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+        appId="codex"
+      />,
+    );
+
+    await screen.findByTestId("settings-config");
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    expect(submitted.originalId).toBe("codex-official");
+    expect(submitted.provider.id).toBe("codex-official");
+    expect(submitted.provider.meta?.authBinding).toEqual({
+      source: "managed_account",
+      authProvider: "codex_oauth",
+      accountId: "acct-managed",
+    });
   });
 });

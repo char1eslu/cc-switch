@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { providersApi, settingsApi, type AppId } from "@/lib/api";
 import type { Provider, UsageScript } from "@/types";
+import type { ProviderEditorSave } from "@/lib/api/providers";
 import { injectCodingPlanUsageScript } from "@/config/codingPlanProviders";
 import {
   useAddProviderMutation,
@@ -69,6 +70,7 @@ export function useProviderActions(
         providerKey?: string;
         addToLive?: boolean;
         ensureClaudeDesktopOfficialSeed?: boolean;
+        editorSave?: ProviderEditorSave;
       },
     ) => {
       const enhanced = injectCodingPlanUsageScript(activeApp, provider);
@@ -79,8 +81,16 @@ export function useProviderActions(
 
   // 更新供应商
   const updateProvider = useCallback(
-    async (provider: Provider, originalId?: string) => {
-      await updateProviderMutation.mutateAsync({ provider, originalId });
+    async (
+      provider: Provider,
+      originalId?: string,
+      editorSave?: ProviderEditorSave,
+    ) => {
+      await updateProviderMutation.mutateAsync({
+        provider,
+        originalId,
+        editorSave,
+      });
 
       // 更新托盘菜单（失败不影响主操作）
       try {

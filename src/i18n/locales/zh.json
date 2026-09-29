@@ -73,16 +73,15 @@
     "editCommonConfigTitle": "编辑通用配置片段",
     "commonConfigHint": "该片段会在勾选\"写入通用配置\"时合并到 settings.json 中",
     "fullSettingsHint": "完整的 Claude Code settings.json 配置内容",
-    "extractFromCurrent": "从编辑内容提取",
-    "extractNoCommonConfig": "当前编辑内容没有可提取的通用配置",
-    "extractFailed": "提取失败: {{error}}",
-    "saveFailed": "保存失败: {{error}}",
     "hideAttribution": "隐藏 AI 署名",
     "enableTeammates": "Teammates 模式",
     "enableToolSearch": "启用 Tool Search",
     "effortMax": "最大强度思考",
     "disableAutoUpgrade": "禁用自动升级",
-    "disableArtifact": "禁用 Artifact 工具"
+    "disableArtifact": "禁用 Artifact 工具",
+    "keyFieldsHint": "地址、Key、模型、上下文窗口和兼容开关随供应商切换；其余字段是 Claude Code 全局设置，保存后对所有供应商生效。",
+    "inactiveFieldsHint": "这个供应商还保存着 {{count}} 个不随切换生效的字段。点击可加入上方的全局设置，保存后写入配置文件；供应商里保存的原值不会删除。",
+    "addToGlobalSettings": "加入全局设置"
   },
   "header": {
     "viewOnGithub": "在 GitHub 上查看",
@@ -104,13 +103,15 @@
     "tabUniversal": "统一供应商",
     "noProviders": "还没有添加任何供应商",
     "noProvidersDescription": "如果你已有配置，请点击\"导入当前配置\"，所有数据将安全保存在 default 供应商中",
-    "noProvidersDescriptionSnippet": "除 Key 和请求地址外的数据（如插件配置）会被保存到通用配置片段，用于在不同供应商之间共享",
+    "noProvidersDescriptionKeyFields": "切换供应商只替换 Key、请求地址和模型，插件等其他设置保留在配置文件里，对所有供应商生效",
     "importCurrent": "导入当前配置",
     "importFromClaude": "将 Claude Code 中已有的供应商导入",
     "importCurrentDescription": "将当前正在使用的配置导入为默认供应商",
     "currentlyUsing": "当前使用",
     "enable": "启用",
     "inUse": "使用中",
+    "directProvider": "直连",
+    "directProviderHint": "退出路由后恢复为这个供应商",
     "blockedByProxyHint": "代理接管模式下不可切换到官方供应商",
     "editProvider": "编辑供应商",
     "editProviderHint": "更新配置后将立即应用到当前供应商。",
@@ -154,12 +155,18 @@
     "writeCommonConfig": "写入通用配置",
     "editCommonConfigButton": "编辑通用配置",
     "configJsonHint": "请填写完整的 Claude Code 配置",
-    "editCommonConfigTitle": "编辑通用配置片段",
-    "editCommonConfigHint": "通用配置片段将合并到所有启用它的供应商配置中",
     "addProvider": "添加供应商",
     "sortUpdated": "排序已更新",
     "usageSaved": "用量查询配置已保存",
     "usageSaveFailed": "用量查询配置保存失败",
+    "duplicateLiveIdsLoadFailed": "读取配置中的供应商标识失败，请先修复配置后再试",
+    "editorViewFailed": "无法读取客户端配置文件，下面显示的是保存的供应商配置：{{error}}",
+    "editConflict": {
+      "title": "配置文件在编辑期间被修改",
+      "message": "打开编辑器之后，下面这些设置被其他程序（比如 Claude Code）改过。要用你的修改覆盖，还是保留外部的修改？其余改动都会照常保存。",
+      "keepTheirs": "保留外部修改",
+      "keepMine": "用我的修改覆盖"
+    },
     "form": {}
   },
   "claudeCode": {
@@ -1175,8 +1182,6 @@
     "enableRemoteCompaction": "启用远程压缩",
     "remoteCompactionHint": "开启后会将当前 model_providers 条目的 name 写为 OpenAI，使 Codex 尝试使用远程压缩。",
     "apiUrlLabel": "API 请求地址",
-    "extractFromCurrent": "从编辑内容提取",
-    "extractNoCommonConfig": "当前编辑内容没有可提取的通用配置",
     "extractFailed": "提取失败: {{error}}",
     "saveFailed": "保存失败: {{error}}",
     "modelNameHint": "指定使用的模型，将自动更新到 config.toml 中",
@@ -1227,7 +1232,10 @@
     "impersonateClaudeCodeLabel": "模拟 Claude Code 客户端",
     "impersonateClaudeCodeHint": "网关限制只能通过 Claude Code 使用时开启：伪装 User-Agent、anthropic-beta、x-app 请求头，并在系统提示首行注入 Claude Code 身份。默认关闭，避免向通用网关泄露指纹。",
     "maxOutputTokensLabel": "输出上限覆盖（max_tokens）",
-    "maxOutputTokensHint": "留空则在 Codex 未提供时回落到 8192。Codex 不会在请求体里转发 model_max_output_tokens，长回答或思考较多时可在此调高。"
+    "maxOutputTokensHint": "留空则在 Codex 未提供时回落到 8192。Codex 不会在请求体里转发 model_max_output_tokens，长回答或思考较多时可在此调高。",
+    "keyFieldsHint": "地址、Key、模型、推理档位、上下文窗口和兼容开关随供应商切换；其余是 Codex 全局设置，保存后对所有供应商生效。",
+    "inactiveFieldsHint": "这个供应商还保存着 {{count}} 个不随切换生效的设置。点击复制它的 TOML，按需粘贴到上方；供应商里保存的原值不会删除。",
+    "inactiveFieldCopied": "已复制"
   },
   "providerPreset": {
     "label": "预设供应商",
@@ -2198,7 +2206,7 @@
       "disabled": "{{app}} 路由已关闭",
       "failed": "切换路由状态失败: {{detail}}",
       "tooltip": {
-        "active": "{{appLabel}} 路由中 - {{address}}:{{port}}\n切换该应用供应商为热切换",
+        "active": "{{appLabel}} 路由中 - {{address}}:{{port}}\n切换供应商只改路由，直连供应商不变",
         "broken": "{{appLabel}} 路由中，但路由服务未运行",
         "inactive": "路由 {{appLabel}} 的请求，让该应用请求走本地路由"
       }
@@ -2271,7 +2279,7 @@
       "started": "路由服务已启动 - {{address}}:{{port}}",
       "startFailed": "启动路由服务失败: {{detail}}"
     },
-    "stoppedWithRestore": "路由服务已关闭，已恢复所有路由配置",
+    "stoppedWithRestore": "路由服务已关闭，所有应用已退回直连",
     "stopWithRestoreFailed": "停止失败: {{detail}}"
   },
   "streamCheck": {

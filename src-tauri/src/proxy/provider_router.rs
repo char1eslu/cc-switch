@@ -12,6 +12,15 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// 该供应商是否允许参与故障转移。
+///
+/// Codex 的官方卡（`codex-official` / 托管 ChatGPT 账号）是一次显式的账号选择：
+/// 即使库里还留着旧的故障转移开关，也不能把它的入站 token 拿去重试别的卡。
+pub(crate) fn provider_supports_failover(app_type: &str, provider: &Provider) -> bool {
+    app_type != AppType::Codex.as_str()
+        || !crate::proxy::providers::is_codex_official_provider(provider)
+}
+
 /// 供应商路由器
 pub struct ProviderRouter {
     /// 数据库连接
@@ -35,6 +44,24 @@ impl ProviderRouter {
     /// - 故障转移关闭时：仅返回当前供应商
     /// - 故障转移开启时：仅使用故障转移队列，按队列顺序依次尝试（P1 → P2 → ...）
     pub async fn select_providers(&self, app_type: &str) -> Result<Vec<Provider>, AppError> {
+        // 代理模式下路由到代理路由那家，和直连指针无关。
+        let current_provider = AppType::from_str(app_type).ok().and_then(|app_enum| {
+            crate::mode::current::provider_in_use(&self.db, &app_enum)
+                .ok()
+                .flatten()
+        });
+        self.select_providers_with_current(app_type, current_provider)
+            .await
+    }
+
+    /// 同 [`Self::select_providers`]，正在用的那家由调用方给出：处理请求时上下文已经读过
+    /// 一次（要读 `live-state.json` 和这一行），不用每个请求再读一遍，两处用的也一定是
+    /// 同一家。
+    pub async fn select_providers_with_current(
+        &self,
+        app_type: &str,
+        current_provider: Option<Provider>,
+    ) -> Result<Vec<Provider>, AppError> {
         let mut result = Vec::new();
         let mut total_providers = 0usize;
         let mut circuit_open_count = 0usize;
@@ -48,7 +75,17 @@ impl ProviderRouter {
             }
         };
 
-        if auto_failover_enabled {
+        if auto_failover_enabled
+            && current_provider
+                .as_ref()
+                .is_some_and(|provider| !provider_supports_failover(app_type, provider))
+        {
+            // A selected Codex Official account is an explicit account choice.
+            // Keep it as a single route even if an old failover setting remains
+            // enabled; retrying would reuse its inbound token for another card.
+            total_providers = 1;
+            result.push(current_provider.expect("checked above"));
+        } else if auto_failover_enabled {
             // 故障转移开启：仅按队列顺序依次尝试（P1 → P2 → ...）
             let all_providers = self.db.get_all_providers(app_type)?;
 
@@ -60,12 +97,15 @@ impl ProviderRouter {
                 .map(|item| item.provider_id)
                 .collect();
 
-            total_providers = ordered_ids.len();
-
             for provider_id in ordered_ids {
                 let Some(provider) = all_providers.get(&provider_id).cloned() else {
                     continue;
                 };
+
+                if !provider_supports_failover(app_type, &provider) {
+                    continue;
+                }
+                total_providers += 1;
 
                 let circuit_key = format!("{app_type}:{}", provider.id);
                 let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
@@ -77,21 +117,11 @@ impl ProviderRouter {
                 }
             }
         } else {
-            // 故障转移关闭：仅使用当前供应商，跳过熔断器检查
-            let current_id = AppType::from_str(app_type)
-                .ok()
-                .and_then(|app_enum| {
-                    crate::settings::get_effective_current_provider(&self.db, &app_enum)
-                        .ok()
-                        .flatten()
-                })
-                .or_else(|| self.db.get_current_provider(app_type).ok().flatten());
-
-            if let Some(current_id) = current_id {
-                if let Some(current) = self.db.get_provider_by_id(&current_id, app_type)? {
-                    total_providers = 1;
-                    result.push(current);
-                }
+            // 故障转移关闭：仅使用当前供应商，跳过熔断器检查。正在用的那家由调用方
+            // 经 `mode::current::provider_in_use` 给出，这里不再直接读直连指针。
+            if let Some(current) = current_provider {
+                total_providers = 1;
+                result.push(current);
             }
         }
 

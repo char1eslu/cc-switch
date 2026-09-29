@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -7,7 +7,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Provider, CustomEndpoint, UniversalProvider } from "@/types";
 import type { AppId } from "@/lib/api";
-import { universalProvidersApi } from "@/lib/api";
+import { providersApi, universalProvidersApi } from "@/lib/api";
+import type {
+  EditorConflictPolicy,
+  ProviderEditorSave,
+} from "@/lib/api/providers";
+import { useLiveEditConflict } from "@/components/providers/LiveEditConflictDialog";
+import { toastEditorViewFailed } from "@/components/providers/forms/hooks/useDraftEditorProjection";
+import { usesEditorView } from "@/config/appConfig";
 import {
   ProviderForm,
   type ProviderFormValues,
@@ -28,6 +35,7 @@ interface AddProviderDialogProps {
     provider: Omit<Provider, "id"> & {
       providerKey?: string;
       ensureClaudeDesktopOfficialSeed?: boolean;
+      editorSave?: ProviderEditorSave;
     },
   ) => Promise<void> | void;
 }
@@ -47,6 +55,62 @@ export function AddProviderDialog({
   const [selectedUniversalPreset, setSelectedUniversalPreset] =
     useState<UniversalProviderPreset | null>(null);
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+
+  // Claude：预设的关键字段套在当前 live 上显示（去掉当前供应商的关键字段），保存时
+  // 其余部分的改动写进 live，这份底也用来三方比较。
+  const [claudeLiveBase, setClaudeLiveBase] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
+  const [claudeBaseLoaded, setClaudeBaseLoaded] = useState(false);
+  // Codex：表单把预设投影到当前配置文件上显示，投影结果就是保存时三方比较的底
+  // （投影进行中或失败时为 null，保存只存供应商）。投影成它的草稿一起留着，
+  // 后端按草稿分开预设带的字段和从 live 带进来的字段。
+  const [draftEditorBase, setDraftEditorBase] = useState<{
+    base: Record<string, unknown>;
+    draft?: Record<string, unknown>;
+  } | null>(null);
+  const handleDraftEditorBase = useCallback(
+    (base: Record<string, unknown> | null, draft?: Record<string, unknown>) =>
+      setDraftEditorBase(base ? { base, draft } : null),
+    [],
+  );
+  // 新增时表单自己把预设投影到配置文件上的应用（Claude Code 在对话框里取底，见上）。
+  const projectsDraft = appId !== "claude" && usesEditorView(appId);
+  const { submitWithConflictRetry, conflictDialog } = useLiveEditConflict();
+
+  useEffect(() => {
+    if (!open || appId !== "claude") {
+      setClaudeLiveBase(null);
+      setClaudeBaseLoaded(false);
+      return;
+    }
+    let cancelled = false;
+    providersApi
+      .getEditorView(appId, {})
+      .then((view) => {
+        if (!cancelled) setClaudeLiveBase(view.settings);
+      })
+      .catch((error: unknown) => {
+        // 读不了 settings.json：退回只显示预设。
+        if (!cancelled) {
+          setClaudeLiveBase(null);
+          toastEditorViewFailed(t, error);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setClaudeBaseLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, appId, t]);
+
+  const closeDialog = useCallback(() => {
+    // 表单每次打开都会重新投影；这里清掉，免得下次打开时先用上一次的底。
+    setDraftEditorBase(null);
+    onOpenChange(false);
+  }, [onOpenChange]);
 
   const handleUniversalProviderSave = useCallback(
     async (provider: UniversalProvider) => {
@@ -213,11 +277,33 @@ export function AddProviderDialog({
         }
       }
 
-      await onSubmit(providerData);
-      onOpenChange(false);
+      const editorBase =
+        appId === "claude"
+          ? claudeLiveBase && { base: claudeLiveBase }
+          : projectsDraft
+            ? draftEditorBase
+            : null;
+      const submit = async (onConflict: EditorConflictPolicy) => {
+        await onSubmit({
+          ...providerData,
+          ...(editorBase ? { editorSave: { ...editorBase, onConflict } } : {}),
+        });
+        closeDialog();
+      };
+      await submitWithConflictRetry(submit);
     },
-    [appId, onSubmit, onOpenChange],
+    [
+      appId,
+      onSubmit,
+      closeDialog,
+      claudeLiveBase,
+      projectsDraft,
+      draftEditorBase,
+      submitWithConflictRetry,
+    ],
   );
+
+  const waitingForClaudeBase = appId === "claude" && !claudeBaseLoaded;
 
   const footer =
     !showUniversalTab || activeTab === "app-specific" ? (
@@ -280,14 +366,24 @@ export function AddProviderDialog({
           </TabsList>
 
           <TabsContent value="app-specific" className="mt-0">
-            <ProviderForm
-              appId={appId}
-              submitLabel={t("common.add")}
-              onSubmit={handleSubmit}
-              onCancel={() => onOpenChange(false)}
-              onSubmittingChange={setIsFormSubmitting}
-              showButtons={false}
-            />
+            {waitingForClaudeBase ? (
+              <div className="py-12 text-center text-sm text-muted-foreground">
+                {t("common.loading")}
+              </div>
+            ) : (
+              <ProviderForm
+                appId={appId}
+                submitLabel={t("common.add")}
+                onSubmit={handleSubmit}
+                onCancel={closeDialog}
+                onSubmittingChange={setIsFormSubmitting}
+                showButtons={false}
+                claudeLiveBase={claudeLiveBase ?? undefined}
+                onEditorBaseChange={
+                  projectsDraft ? handleDraftEditorBase : undefined
+                }
+              />
+            )}
           </TabsContent>
 
           <TabsContent value="universal" className="mt-0">
@@ -302,6 +398,7 @@ export function AddProviderDialog({
           onCancel={() => onOpenChange(false)}
           onSubmittingChange={setIsFormSubmitting}
           showButtons={false}
+          onEditorBaseChange={projectsDraft ? handleDraftEditorBase : undefined}
         />
       )}
 
@@ -313,6 +410,8 @@ export function AddProviderDialog({
           initialPreset={selectedUniversalPreset}
         />
       )}
+
+      {conflictDialog}
     </FullScreenPanel>
   );
 }

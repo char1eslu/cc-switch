@@ -23,7 +23,6 @@ use super::{
     ProxyError,
 };
 use crate::commands::CodexOAuthState;
-use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::{app_config::AppType, provider::Provider};
 use futures::StreamExt;
 use http::Extensions;
@@ -33,6 +32,70 @@ use tauri::Manager;
 use tokio::sync::RwLock;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
+
+/// 取 `Authorization: Bearer <token>` 里的 token（严格单段 Bearer）。
+fn codex_bearer_access_token(headers: &http::HeaderMap) -> Option<&str> {
+    let authorization = headers
+        .get(http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .trim();
+    let mut parts = authorization.split_whitespace();
+    let scheme = parts.next()?;
+    let token = parts.next()?;
+    if !scheme.eq_ignore_ascii_case("bearer") || token.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some(token)
+}
+
+/// 校验发往 Codex 官方后端的请求确实带着「当前 live auth.json 属于所选托管账号」的凭据。
+///
+/// workspace ID 单独不足以判定身份（同一 Team 的不同用户可能共用一个值），所以
+/// 还要比对 live access_token 与账号记录是否一致。
+fn validate_codex_official_authorization(
+    headers: &http::HeaderMap,
+    provider: &Provider,
+    expected_chatgpt_account_id: Option<&str>,
+    managed_session_matches: Option<bool>,
+) -> Result<(), ProxyError> {
+    let authorization = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim);
+    match authorization {
+        None | Some("") => Err(ProxyError::AuthError(
+            "Codex 官方登录不可用，请先在 Codex 中完成 ChatGPT 登录".to_string(),
+        )),
+        Some(value) if value.contains(PROXY_AUTH_PLACEHOLDER) => Err(ProxyError::AuthError(
+            "已切换到 OpenAI 官方供应商，请重启 Codex 或新建会话以加载官方登录配置".to_string(),
+        )),
+        Some(_) => {
+            let managed_account_id = provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+                .map(|account_id| account_id.trim().to_string())
+                .filter(|account_id| !account_id.is_empty());
+            if managed_account_id.is_some() {
+                let request_account_id = headers
+                    .get("chatgpt-account-id")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::trim)
+                    .filter(|account_id| !account_id.is_empty());
+                if request_account_id != expected_chatgpt_account_id
+                    || managed_session_matches != Some(true)
+                {
+                    return Err(ProxyError::AuthError(
+                        "当前 Codex 会话未加载所选 ChatGPT 账号，请重启 Codex 或新建会话后重试"
+                            .to_string(),
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+}
 
 pub struct ForwardResult {
     pub response: ProxyResponse,
@@ -1135,6 +1198,51 @@ impl RequestForwarder {
         };
         let codex_responses_to_chat = matches!(app_type, AppType::Codex)
             && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
+        let codex_official_auth_passthrough = matches!(app_type, AppType::Codex)
+            && super::providers::is_codex_official_provider(provider);
+
+        if codex_official_auth_passthrough {
+            let (expected_chatgpt_account_id, managed_session_matches) = match provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+            {
+                Some(local_account_id) => {
+                    let app_handle = self.app_handle.as_ref().ok_or_else(|| {
+                        ProxyError::AuthError("Codex OAuth 认证不可用（无 AppHandle）".to_string())
+                    })?;
+                    let codex_state = app_handle.state::<CodexOAuthState>();
+                    let chatgpt_account_id = codex_state
+                        .0
+                        .chatgpt_account_id_for_account(&local_account_id)
+                        .await
+                        .map_err(|error| {
+                            ProxyError::AuthError(format!("Codex OAuth 账号解析失败: {error}"))
+                        })?;
+                    let session_matches = match codex_bearer_access_token(headers) {
+                        Some(access_token) => {
+                            crate::codex_config::codex_live_auth_matches_managed_request(
+                                &local_account_id,
+                                access_token,
+                            )
+                            .map_err(|error| {
+                                ProxyError::AuthError(format!("Codex OAuth 会话校验失败: {error}"))
+                            })?
+                        }
+                        None => false,
+                    };
+                    (Some(chatgpt_account_id), Some(session_matches))
+                }
+                None => (None, None),
+            };
+            validate_codex_official_authorization(
+                headers,
+                provider,
+                expected_chatgpt_account_id.as_deref(),
+                managed_session_matches,
+            )?;
+        }
+
         // 仅在用户显式开启时伪装成 Claude Code 客户端（User-Agent / anthropic-beta /
         // x-app / system 首行），用于通过某些网关的「仅限 Claude Code」指纹校验。
         // 默认关闭：避免把 Claude Code 指纹与身份提示泄露给通用网关。
@@ -1326,13 +1434,15 @@ impl RequestForwarder {
         let mut should_send_codex_oauth_session_headers = false;
 
         // 获取认证头（提前准备，用于内联替换）
+        // 获取认证头（提前准备，用于内联替换），同时保留仅用于日志脱敏的
+        // 精确认证材料。实际日志永远不输出这些值。
+        let mut log_secrets: Vec<String> = Vec::new();
         let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
             // Codex OAuth 特殊处理：从 CodexOAuthManager 获取真实 access_token
             if auth.strategy == AuthStrategy::CodexOAuth {
                 if let Some(app_handle) = &self.app_handle {
                     let codex_state = app_handle.state::<CodexOAuthState>();
-                    let codex_auth: tokio::sync::RwLockReadGuard<'_, CodexOAuthManager> =
-                        codex_state.0.read().await;
+                    let codex_auth = codex_state.0.clone();
 
                     // 从 provider.meta 获取关联的 ChatGPT 账号 ID
                     let account_id = provider
@@ -1378,6 +1488,13 @@ impl RequestForwarder {
                         "Codex OAuth 认证不可用（无 AppHandle）".to_string(),
                     ));
                 }
+            }
+
+            // fork 的 AuthInfo 只有 api_key（Codex OAuth 路径下它承载的就是真实
+            // access_token），因此这里只需收这一个值。
+            let secret = &auth.api_key;
+            if !secret.is_empty() && !log_secrets.contains(secret) {
+                log_secrets.push(secret.clone());
             }
 
             adapter.get_auth_headers(&auth)?
@@ -1687,13 +1804,24 @@ impl RequestForwarder {
 
         reject_proxy_placeholder_for_managed_account_upstream(&url, &ordered_headers)?;
 
+        // 日志目标 URL 的脱敏分两种情形：
+        // - 有已知密钥(log_secrets 非空)：记录脱敏后的完整 URL，剥 userinfo/query
+        //   并抹掉已知密钥值，保留 host+path 便于诊断 base_url 配错路径导致的 404。
+        // - 无已知密钥：凭据可能整个内嵌在 path 里且无从脱敏，只记 origin，
+        //   避免默认 Info 级把形如 https://gw/<KEY>/v1 的 path 完整落盘。
+        let target_for_log = if log_secrets.is_empty() {
+            crate::redact_url_origin_for_log(&url)
+        } else {
+            crate::url_for_log_with_secrets(&url, &log_secrets).to_string()
+        };
+
         // 输出请求信息日志
         let tag = adapter.name();
         let request_model = filtered_body
             .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("<none>");
-        log::info!("[{tag}] >>> 请求 URL: {url} (model={request_model})");
+        log::info!("[{tag}] >>> 请求 URL: {target_for_log} (model={request_model})");
         if log::log_enabled!(log::Level::Debug) {
             if let Ok(body_str) = serde_json::to_string(&filtered_body) {
                 log::debug!(
@@ -2616,7 +2744,7 @@ mod tests {
             status: Arc::new(RwLock::new(ProxyStatus::default())),
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
-            failover_manager: Arc::new(FailoverSwitchManager::new(db)),
+            failover_manager: Arc::new(FailoverSwitchManager::new()),
             app_handle: None,
             current_provider_id_at_start: String::new(),
             session_id: String::new(),
