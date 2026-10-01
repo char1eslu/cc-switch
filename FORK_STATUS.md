@@ -2,25 +2,25 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-09-29
+最后更新：2026-10-01
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `846de29c` |
-| 当前已验证代码 head | `9c6e7671`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，远端 CI `36557781103` 两个 job 逐步全绿，macOS Ad Hoc `36557784030` 构建与产物验收通过） |
-| 最近一轮已适配的上游改动 | **关键字段写入引擎整体搬运**（`1ee2fdc3..69ff69dd`，11 个提交，130 文件 / +28,020 / −15,266），以及同日的三个独立修复（`incremental_vacuum` 回收整张 freelist、共享配置片段与 live 文件不再泄漏供应商设置、去掉供应商级与全局成本倍率） |
+| 已完整评估到的上游基线 | `7c0d0fc6` |
+| 当前已验证代码 head | `7e6e5f78`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，远端 CI `36832727280` 两个 job 全绿，macOS Ad Hoc `36832735586` 构建与产物验收通过） |
+| 最近一轮已适配的上游改动 | **工具生命周期写入串行化 + 工具升级状态跨重挂载保留 + 代理重试循环记账重构**（`846de29c..7c0d0fc6`，11 个提交里只搬 3 个；fork 侧净变更 11 文件 / +2,347 / −565） |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 846de29c..upstream/main
+git log --oneline 7c0d0fc6..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-  **用上表第一行那个基线值起算**（本轮是 `1ee2fdc3..upstream/main`）才是真实增量。
+  **用上表第一行那个基线值起算**（本轮是 `7c0d0fc6..upstream/main`）才是真实增量。
 - ⚠️ 代码块里的基线值和上表第一行必须一起改。2026-08-18 曾发现两处不一致
   （表写 `1f38c838`，审计节已到 `a98829ba`），按表起算会把 35 个已审提交重算一遍。
 - 历轮增量范围与结论见下方「同步审计日志」，从新到旧。
@@ -367,6 +367,146 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-10-01（`846de29c..7c0d0fc6`，11 个）
+
+**11 个提交里只搬 3 个，其余 8 个按裁剪边界 / 放弃区 / 无落点跳过。** 分支
+`sync-2026-10-01`（基于 fork `dev` `cc4b5c07`），合并提交 `7e6e5f78`
+（`git merge --no-ff`），fork 侧净变更 **11 文件 / +2,347 / −565**（3 新增、8 修改）。
+**无 schema 迁移**：增量未触碰 `src-tauri/src/database/` 任何文件，
+`SCHEMA_VERSION` 上游与 fork **同为 19**、`FORK_SCHEMA_VERSION` 保持 1。
+
+#### 归属分布
+
+| 归属 | 数量 | 提交 |
+| --- | --- | --- |
+| **本节搬** | **3** | `482f57b3` `60cc14f8` `c26e6ec3` |
+| 跳过：OpenCode（fork 无该应用，涉及文件全部不存在） | 6 | `a1216b7e` `f678f7c5` `38a7c9c4` `74f46143` `19b7c170` `36d95041` |
+| 跳过：Alpha Search / hosted WebSearch 放弃区 | 1 | `2cdfc6ae` |
+| 跳过：上游作者自己的 sponsor 归因，fork 无落点 | 1 | `7c0d0fc6` |
+
+3 + 6 + 1 + 1 = 11。搬完基线推进到 `7c0d0fc6`（= 当时上游 head）。
+
+#### 落地的 3 个
+
+| 上游 | fork | 内容 |
+| --- | --- | --- |
+| `482f57b3` | `3fd24a9c` | 工具生命周期写入串行化：新增 `ToolLifecycleCoordinator`（全局 `execution` 互斥 + 每工具 `try_lock_owned()` 互斥），Windows `.bat` 移入每次调用独立的 `tempfile` 临时目录 |
+| `60cc14f8` | `c90d932a` | 工具升级状态跨组件重挂载保留（模块级 store + `useSyncExternalStore`），错误提示抽成 `ToolErrorMessage.tsx` |
+| `c26e6ec3` | `8b3cf032` | 代理重试循环记账改走 outcome helper（`note_attempt` / `finish_success` / `record_provider_failure` / `finish_neutral_failure` / `record_failed_request`），并补 `forward_with_retry` 的表征测试 |
+
+**`c26e6ec3` 必须丢 `is_bedrock_provider`。** 上游该 helper 里带
+`is_bedrock_provider` 分支，fork 在 `dc1e760e` 已删掉 Bedrock 优化器；照搬会成为
+死代码并在 `clippy --all-targets -- -D warnings` 下失败。已整段去掉。
+
+**`60cc14f8` 的错误码改成稳定标识。** fork 侧把「同一工具已有动作在跑」的文案改成
+稳定码 `TOOL_ACTION_IN_PROGRESS`（上游是含 `in progress` 的自然语言），
+4 个新测试的断言相应从 `.contains("in progress")` 改为 `assert_eq!`。
+
+**这 3 个提交的产物体积增量极小（+33 bytes），原因已核实。** `c26e6ec3` 对
+`forwarder.rs` 加了 **786** 行，其中 **596 行落在 `#[cfg(test)]` 区**（该文件测试
+模块从第 2387 行起，共 3821 行），**只有 190 行进发布二进制**，且该提交本身是
+「把内联记账抽成 helper」的重构（−357 行）。所以「+2,347 行却只 +33 bytes」
+不是异常读数。
+
+#### 跳过的依据（逐条可复核）
+
+- **6 个 OpenCode 提交**：fork 裁剪边界不含 OpenCode。逐一核实其涉及文件在 fork
+  **全部不存在** —— `services/session_usage_opencode.rs`、`opencode_config.rs`、
+  `session_manager/providers/opencode.rs`、`jsonc_document.rs`、`services/omo.rs`、
+  `services/provider/opencode_tests.rs`、
+  `components/providers/forms/OpenCodeFormFields.tsx` 实测均为 `absent`。
+  `19b7c170` 里唯一「看着通用」的 `jsonc_document.rs` 也是上游新增文件，
+  fork 侧没有调用方。
+- **`2cdfc6ae`**：动的是 `streaming_responses.rs`（冻结漂移区）。实测新增的
+  114 行只含 `web_search_tool_result` / `web_search_call`，而 fork 中
+  `hosted_web_search_name` 与 `max_web_search_uses` 两个符号 grep 均为 **0** ——
+  属 `bdeaac75` 永久放弃区，**不重新评估**。该文件同时是漂移区，即便要搬也得
+  逐 hunk 手工适配。
+- **`7c0d0fc6`**：只改各 preset 的 `websiteUrl` sponsor `track_id` 与 4 份 README
+  的赞助横幅，是上游作者自己的归因。fork 的 `src/config/*.ts` 里 `aff=cc-switch`
+  出现 **0** 次、`track_id` **0** 次，README 也没有赞助段 —— 早已整体剥离，
+  **不存在可搬的落点**。
+
+#### 验证（代码 head `7e6e5f78`）
+
+- 本机隔离工具链 `~/.rust-ci-iso`（rustup 1.95.0，与 `rust-toolchain.toml` 的
+  `channel = "1.95"` 一致）：`cargo fmt --all --check` /
+  `cargo clippy --all-targets -- -D warnings`（**比 CI 严格**，CI 不带
+  `--all-targets`）/ `cargo test` —— **三项退出码均为 0**。
+- `cargo test` **1968 passed / 0 failed**（上一轮 1953 → **+15**）。
+- 前端：`tsc --noEmit` 0 error；`vitest run` **64 files / 401 tests 全绿**
+  （上一轮 62 files / 375 → **+2 文件 / +26 测试**）。
+- 远端 CI `36832727280`：**Frontend Checks** 与 **Backend Checks** 两个 job 均
+  `completed / success`；Ad Hoc `36832735586`：**macOS Ad Hoc App** `success`。
+  两条 run 的 head 均为 `7e6e5f78`。
+
+#### 三处必须记下来的坑
+
+1. **`tests/setupGlobals.ts` 缺三个 pointer-capture polyfill。** 上游由
+   `251b13e5` 加入（`hasPointerCapture` / `setPointerCapture` /
+   `releasePointerCapture`），fork 从未搬。缺了以后 Radix Select 在 jsdom 下抛
+   `TypeError: target.hasPointerCapture is not a function`，表面症状却是
+   `Unable to find role "option" name "bash"` 这类误导性断言失败。
+   **已补进 fork 的 `tests/setupGlobals.ts`；下次搬任何 Radix 相关组件前先确认它在。**
+2. **上游测试写死了 9 个工具，fork 只有 2 个。** 上游 `TOOL_NAMES` 含 9 个
+   AppType，fork 只有 `claude` / `codex`。`ignores a late probe...` 的期望调用数
+   从 9 改为 2。
+3. **批量结果的分支会因工具数变少而翻转。** `keeps genuine failures in the batch
+   summary...` 原断言 `settings.toolActionPartial`：9 工具下是「部分失败」，但 fork
+   只有 2 个工具、其中一个已在运行，唯一幸存者的失败会落到
+   `succeeded === 0 && hardFailures.length > 0` → 走 `settings.toolActionFailed`。
+   已改写为断言 `settings.toolActionFailed` + `mocks.error`，并显式断言
+   `mocks.warning` **未**被调用。
+
+> ⚠️ **第 2、3 条属于「按结构推理得出的期望值」，不是上游原文。** 两处失败的根因
+> 是 fork 的裁剪（工具数 9 → 2）而非 fork 有 bug，改期望值是正确处置；但
+> **期望值本身未经上游对照验证**。若日后 fork 增回第三个 AppType，这两处断言
+> 需要重新推导。
+
+#### 收尾清理
+
+- **run 清理**：只保留最新一轮。删掉 `36557784030`（Ad Hoc，head `9c6e7671`，
+  artifact 11,793,638 bytes）与 `36557781103`（CI，head `9c6e7671`，无 artifact），
+  两条均走 `DELETE /actions/runs/{id}`，逐条回读 **404**。清理后该 fork **恰余
+  2 条 run，均指向 `7e6e5f78`**：CI `36832727280` 与 Ad Hoc `36832735586`。
+- **⚠️ 不可逆损失，必须记下：`9c6e7671` 的构建产物已无处可寻。** 上一节声明它
+  留存在 `~/Downloads/CC-Switch-macOS-arm64-ad-hoc-20260929-9c6e7671.zip`，
+  本轮实测该文件在 `~/Downloads`、`~/.Trash`、`/tmp` **三处均不存在**；其 run 又已
+  随本轮清理删除，**artifact 不可恢复**。
+  **结论：不要相信台账里「产物按惯例保留」这类表述 —— 它是当时的事实陈述，不是
+  持续有效的保证。删 run 前必须当场重新确认落盘副本，而不是引用上一轮的记录。**
+- **分支清理**：`sync-2026-10-01`（tip `8b3cf032`）**远端从未推送**，故无远端删除
+  动作；本地先 `git merge-base --is-ancestor 8b3cf032 dev` 通过，再用
+  `git branch -d`（安全形式，非 `-D`）删除。清理后本地与远端**均只剩 `dev`**
+  （`git ls-remote --heads origin` 只有 `refs/heads/dev`），合并提交 `7e6e5f78`
+  的双亲仍是 `cc4b5c07` 与 `8b3cf032`。
+- **本机临时缓存**：用 `/bin/rm -rf` 绝对路径**真删**，每条命令单独执行（绝不与其他
+  参数拼进同一串）。可用空间 **121Gi → 128Gi（+7 GiB）**，与清单相符：
+
+  | 路径 | 大小 |
+  | --- | --- |
+  | `~/.rust-ci-iso`（隔离 rustup 工具链 + CARGO_TARGET_DIR） | 7.8G |
+  | `cc-switch/node_modules`（前端安装残留，gitignore 项） | 304M |
+  | `cc-switch/dist`（构建输出，gitignore 项） | 3.4M |
+  | `~/.workbuddy-ai/binaries/node/workspace/node_modules`（隔离 pnpm + prettier 等） | 30M |
+  | `/tmp/ccsw-verify`（产物解包目录） | 36M |
+  | `/tmp` 下本轮脚本、提交信息与日志（28 个文件） | 812K |
+  | `~/.Trash/CC-Switch-macOS-arm64-ad-hoc-20261001-7e6e5f78.zip`（下载失败留下的 128 字节残片） | 128B |
+
+  三个独立信号一致：逐项 `absent`（5/5）、`~/.Trash` 中无任何匹配项（grep 无命中）、
+  `df` 增加 ~7 GiB。
+- **交付物**：`~/Downloads/CC-Switch-macOS-arm64-ad-hoc-20261001-7e6e5f78.zip`
+  —— 本地文件与 `artifacts` API 元数据**双向核对一致**：**11,793,671 bytes**，
+  SHA-256 `c1e759cbfab7e61b11d44c02cd03b3b09afed3428710e4144f95c5cab9776b10`，
+  API 侧 `expired=False`。
+- **shell 守卫**：`~/.zshenv` 与 `~/.profile` 里本轮新建的 `~/.rust-ci-iso` source 行
+  **建的时候就带了存在性守卫**（`[ -f <path> ] && . <path>`），工具链删除后成为惰性
+  空操作 —— 这次没有重犯 2026-09-29 那个「无条件 source 导致每开一次 shell 都报错」
+  的毛病。本轮顺手把这两行删掉（路径已不存在）。`~/.profile` 里仍压着
+  `/private/tmp/cc-switch-rust-check` 与 `/private/tmp/cargo-once` 两条更早的残留
+  （路径同样不存在，但有守卫、无害），**下次可一并清掉**。实测
+  `zsh -c 'echo ok'` 与 `bash -lc 'echo ok'` 均无输出噪声。
 
 ### 2026-09-29 续（架构：`1ee2fdc3..69ff69dd`，19 个）
 
