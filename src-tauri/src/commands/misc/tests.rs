@@ -1619,11 +1619,13 @@ async fn lifecycle_coordinator_serializes_writes_and_rejects_duplicate_tools() {
     started_rx.await.unwrap();
 
     // 独立调用者（例如重挂后的页面）不能重复启动正在执行的工具。
-    assert!(coordinator
-        .run(vec!["codex"], |_| panic!("duplicate must not execute"))
-        .await
-        .unwrap_err()
-        .contains("in progress"));
+    assert_eq!(
+        coordinator
+            .run(vec!["codex"], |_| panic!("duplicate must not execute"))
+            .await
+            .unwrap_err(),
+        "TOOL_ACTION_IN_PROGRESS"
+    );
     // 批次部分取锁失败时，已取得的其他工具锁也必须释放。
     assert!(coordinator
         .run(vec!["claude", "codex"], |_| panic!(
@@ -1641,13 +1643,15 @@ async fn lifecycle_coordinator_serializes_writes_and_rejects_duplicate_tools() {
     tokio::pin!(second);
     assert!(futures::poll!(second.as_mut()).is_pending());
     assert!(!output.exists(), "first write has not finished yet");
-    assert!(coordinator
-        .run(vec!["claude"], |_| panic!(
-            "queued duplicate must not execute"
-        ))
-        .await
-        .unwrap_err()
-        .contains("in progress"));
+    assert_eq!(
+        coordinator
+            .run(vec!["claude"], |_| panic!(
+                "queued duplicate must not execute"
+            ))
+            .await
+            .unwrap_err(),
+        "TOOL_ACTION_IN_PROGRESS"
+    );
 
     finish_tx.send(()).unwrap();
     first.await.unwrap().unwrap();

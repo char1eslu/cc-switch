@@ -201,12 +201,8 @@ impl ToolLifecycleCoordinator {
                     .ok_or_else(|| format!("Unsupported tool action target: {tool}"))?
                     .clone()
                     .try_lock_owned()
-                    .map_err(|_| {
-                        format!(
-                            "{} already has an installation or update in progress",
-                            tool_display_name(tool)
-                        )
-                    })
+                    // 稳定错误码供前端区分后台任务仍在进行与真正的执行失败。
+                    .map_err(|_| "TOOL_ACTION_IN_PROGRESS".to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
         let execution_guard = self.execution.clone().lock_owned().await;
