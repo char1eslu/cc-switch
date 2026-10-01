@@ -33,3 +33,17 @@ if (
     configurable: true,
   });
 }
+
+// jsdom 不实现 Pointer Events 的捕获 API，而 Radix Select 在 pointerdown 里直接调用
+// 它们，缺一个就会在事件监听器里抛 TypeError、下拉打不开。
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+}
+
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {};
+}
+
+if (!Element.prototype.releasePointerCapture) {
+  Element.prototype.releasePointerCapture = () => {};
+}

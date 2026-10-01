@@ -1594,3 +1594,159 @@ fn resolve_launch_cwd_rejects_missing_directory() {
 
     assert!(error.contains("目录不存在"));
 }
+
+#[tokio::test]
+async fn lifecycle_coordinator_serializes_writes_and_rejects_duplicate_tools() {
+    let coordinator = Arc::new(ToolLifecycleCoordinator::default());
+    let output_dir = tempfile::tempdir().unwrap();
+    let output = output_dir.path().join("installed.txt");
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+    let first = {
+        let coordinator = coordinator.clone();
+        let output = output.clone();
+        tokio::spawn(async move {
+            coordinator
+                .run(vec!["codex"], move |_| {
+                    started_tx.send(()).unwrap();
+                    finish_rx.recv().unwrap();
+                    std::fs::write(output, "codex").unwrap();
+                    Ok(())
+                })
+                .await
+        })
+    };
+    started_rx.await.unwrap();
+
+    // 独立调用者（例如重挂后的页面）不能重复启动正在执行的工具。
+    assert_eq!(
+        coordinator
+            .run(vec!["codex"], |_| panic!("duplicate must not execute"))
+            .await
+            .unwrap_err(),
+        "TOOL_ACTION_IN_PROGRESS"
+    );
+    // 批次部分取锁失败时，已取得的其他工具锁也必须释放。
+    assert!(coordinator
+        .run(vec!["claude", "codex"], |_| panic!(
+            "batch must not execute"
+        ))
+        .await
+        .is_err());
+
+    let second_output = output.clone();
+    let second = coordinator.run(vec!["claude"], move |_| {
+        assert_eq!(std::fs::read_to_string(&second_output).unwrap(), "codex");
+        std::fs::write(second_output, "codex,claude").unwrap();
+        Ok(())
+    });
+    tokio::pin!(second);
+    assert!(futures::poll!(second.as_mut()).is_pending());
+    assert!(!output.exists(), "first write has not finished yet");
+    assert_eq!(
+        coordinator
+            .run(vec!["claude"], |_| panic!(
+                "queued duplicate must not execute"
+            ))
+            .await
+            .unwrap_err(),
+        "TOOL_ACTION_IN_PROGRESS"
+    );
+
+    finish_tx.send(()).unwrap();
+    first.await.unwrap().unwrap();
+    second.await.unwrap();
+    assert_eq!(std::fs::read_to_string(output).unwrap(), "codex,claude");
+}
+
+#[tokio::test]
+async fn lifecycle_coordinator_keeps_running_locks_when_caller_is_cancelled() {
+    let coordinator = Arc::new(ToolLifecycleCoordinator::default());
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+    let first = {
+        let coordinator = coordinator.clone();
+        tokio::spawn(async move {
+            coordinator
+                .run(vec!["codex"], move |_| {
+                    started_tx.send(()).unwrap();
+                    finish_rx.recv().unwrap();
+                    Ok(())
+                })
+                .await
+        })
+    };
+    started_rx.await.unwrap();
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    assert!(coordinator
+        .run(vec!["codex"], |_| panic!(
+            "running duplicate must not execute"
+        ))
+        .await
+        .is_err());
+
+    {
+        let cancelled = coordinator.run(vec!["claude"], |_| {
+            panic!("cancelled queued operation must not execute")
+        });
+        tokio::pin!(cancelled);
+        assert!(futures::poll!(cancelled.as_mut()).is_pending());
+    }
+    // 尚未开始的排队请求取消后可以重试，但仍须等待正在运行的子任务退出。
+    let retry = coordinator.run(vec!["claude"], |_| Ok(()));
+    tokio::pin!(retry);
+    assert!(futures::poll!(retry.as_mut()).is_pending());
+    finish_tx.send(()).unwrap();
+    retry.await.unwrap();
+    coordinator.run(vec!["codex"], |_| Ok(())).await.unwrap();
+}
+
+#[tokio::test]
+async fn lifecycle_coordinator_releases_locks_after_error_or_panic() {
+    let coordinator = ToolLifecycleCoordinator::default();
+    assert_eq!(
+        coordinator
+            .run(vec!["claude"], |_| Err("installer failed".to_string()))
+            .await,
+        Err("installer failed".to_string())
+    );
+    coordinator.run(vec!["claude"], |_| Ok(())).await.unwrap();
+    assert!(coordinator
+        .run(vec!["claude"], |_| panic!("installer panicked"))
+        .await
+        .unwrap_err()
+        .contains("tool lifecycle task join error"));
+    coordinator.run(vec!["claude"], |_| Ok(())).await.unwrap();
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn concurrent_lifecycle_runs_use_independent_scripts() {
+    let output_dir = tempfile::tempdir().unwrap();
+    let outputs = [
+        output_dir.path().join("first.txt"),
+        output_dir.path().join("second.txt"),
+    ];
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        for output in &outputs {
+            let barrier = &barrier;
+            scope.spawn(move || {
+                let command = format!("@echo off\r\n>\"{}\" echo %~f0\r\n", output.display());
+                barrier.wait();
+                run_tool_lifecycle_silently(&command, "tool_update").unwrap();
+            });
+        }
+    });
+    let script_paths =
+        outputs.map(|output| PathBuf::from(std::fs::read_to_string(output).unwrap().trim()));
+    assert_ne!(script_paths[0], script_paths[1]);
+    for script_path in script_paths {
+        assert!(!script_path.exists(), "temporary script must be cleaned up");
+        assert!(
+            !script_path.parent().unwrap().exists(),
+            "temporary directory must be cleaned up"
+        );
+    }
+}
