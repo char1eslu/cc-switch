@@ -396,6 +396,16 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/get_direct_provider`, () => success(null)),
 
+  http.post(`${TAURI_ENDPOINT}/get_proxy_stack`, () =>
+    success({ active: false, members: [] }),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/set_proxy_stack_member`, () => success(null)),
+
+  http.post(`${TAURI_ENDPOINT}/restart_codex_app_server_daemon`, () =>
+    success("restarted"),
+  ),
+
   http.post(`${TAURI_ENDPOINT}/get_proxy_takeover_status`, () =>
     success({
       claude: false,

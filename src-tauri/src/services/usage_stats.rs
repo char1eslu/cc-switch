@@ -2737,6 +2737,15 @@ mod tests {
                 3_000_000,
                 ["4.000000", "10.000000", "0.200000", "2.500000", "16.700000"],
             ),
+            // gpt-6.1-sol 期望值同样按 fork 口径重算（可计费输入 = input - cache_read）：
+            // 2M × 2 + 1M × 10 + 1M × 0.10 + 1M × 2.50 = 16.60。
+            // 上游写 14.600000，是因为其 input_token_semantics 分支不扣 cache_read，不能照抄。
+            (
+                "OpenAI/GPT-6.1-SOL@HIGH",
+                "codex",
+                3_000_000,
+                ["4.000000", "10.000000", "0.100000", "2.500000", "16.600000"],
+            ),
             (
                 "gpt-6-luna",
                 "codex",
@@ -2769,7 +2778,8 @@ mod tests {
             // Simulate an existing database with unpriced usage before the update.
             conn.execute(
                 "DELETE FROM model_pricing WHERE model_id IN
-                 ('claude-opus-5-5', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5-pro', 'gpt-4o-mini')",
+                 ('claude-opus-5-5', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.5-pro',
+                  'gpt-4o-mini')",
                 [],
             )?;
             for (model, app, input, _) in &cases {
