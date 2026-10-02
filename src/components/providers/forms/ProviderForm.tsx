@@ -481,6 +481,7 @@ function ProviderFormCustom({
     codexConfig,
     codexApiKey,
     codexBaseUrl,
+    codexModel,
     codexCatalogModels,
     codexAuthError,
     setCodexAuth,
@@ -488,6 +489,7 @@ function ProviderFormCustom({
     setCodexCatalogModels,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
+    handleCodexModelChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
     resetCodexConfig,
   } = useCodexConfigState({
@@ -756,8 +758,11 @@ function ProviderFormCustom({
         let normalizedCodexConfig = (codexConfig ?? "").trim()
           ? setCodexWireApi(codexConfig ?? "", "responses")
           : (codexConfig ?? "");
+        // 模型映射与「路由接管」解耦：对所有非官方供应商，填了就持久化
+        //（Chat 生成兼容路由、原生 Responses 生成 model-catalogs.json），
+        // 留空归一化为 [] 即不写。后端只看 modelCatalog.models 是否非空。
         const normalizedCatalogModels =
-          localCodexApiFormat === "openai_chat"
+          category !== "official"
             ? normalizeCodexCatalogModelsForSave(codexCatalogModels)
             : [];
         // 默认模型字段会随输入把顶层 `model` 写进 TOML；只有它空着才回落到目录第一行，
@@ -1021,6 +1026,8 @@ function ProviderFormCustom({
               }
               autoSelect={endpointAutoSelect}
               onAutoSelectChange={setEndpointAutoSelect}
+              codexModel={codexModel}
+              onModelChange={handleCodexModelChange}
               apiFormat={localCodexApiFormat}
               onApiFormatChange={handleCodexApiFormatChange}
               anthropicAuthField={localCodexAnthropicAuthField}

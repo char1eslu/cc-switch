@@ -5,6 +5,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
+import { getAppLabel } from "@/config/appConfig";
 import { proxyApi } from "@/lib/api/proxy";
 import {
   proxyKeys,
@@ -21,10 +22,12 @@ export function useProxyStatus() {
   const { t } = useTranslation();
 
   // 查询状态（自动轮询）
-  const { data: status } = useProxyStatusQuery();
+  const { data: status, isPending: isProxyStatusPending } =
+    useProxyStatusQuery();
 
   // 查询各应用接管状态
-  const { data: takeoverStatus } = useProxyTakeoverStatus(false);
+  const { data: takeoverStatus, isPending: isTakeoverStatusPending } =
+    useProxyTakeoverStatus(false);
 
   // 启动服务器（总开关：仅启动服务，不接管）
   const startProxyServerMutation = useMutation({
@@ -206,6 +209,7 @@ export function useProxyStatus() {
     exitAppsInMode: exitAppsInModeMutation.mutateAsync,
 
     // 加载状态
+    isInitialStatusPending: isProxyStatusPending || isTakeoverStatusPending,
     isStarting: startProxyServerMutation.isPending,
     isStoppingServer: stopProxyServerMutation.isPending,
     isPending:
