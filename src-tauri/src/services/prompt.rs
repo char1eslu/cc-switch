@@ -180,7 +180,15 @@ impl PromptService {
             Vec::new()
         };
 
-        let is_enabled = prompt.enabled;
+        // 只有停用最后一条启用中的提示词时才清空文件；新建、导入或重存
+        // 停用条目时，文件可能是用户自己写的，必须原样保留。
+        // 读的是保存前的快照：既要判断这一条「之前」是否启用，也要数还有没有别的启用项。
+        let prompts = state.db.get_prompts(app.as_str())?;
+        let clear_live = !prompt.enabled
+            && prompts.get(id).is_some_and(|previous| previous.enabled)
+            && !prompts
+                .iter()
+                .any(|(key, prompt)| key != id && prompt.enabled);
 
         state.db.save_prompt(app.as_str(), &prompt)?;
 
@@ -188,21 +196,14 @@ impl PromptService {
             state.db.save_prompt(app.as_str(), &prompt_to_disable)?;
         }
 
-        if is_enabled {
+        if prompt.enabled {
             // 启用提示词：写入内容到文件
             let target_path = prompt_file_path(&app)?;
             write_text_file(&target_path, &prompt.content)?;
-        } else {
-            // 禁用提示词：检查是否还有其他已启用的提示词
-            let prompts = state.db.get_prompts(app.as_str())?;
-            let any_enabled = prompts.values().any(|p| p.enabled);
-
-            if !any_enabled {
-                // 所有提示词都已禁用，清空文件
-                let target_path = prompt_file_path(&app)?;
-                if target_path.exists() {
-                    write_text_file(&target_path, "")?;
-                }
+        } else if clear_live {
+            let target_path = prompt_file_path(&app)?;
+            if target_path.exists() {
+                write_text_file(&target_path, "")?;
             }
         }
 
@@ -604,4 +605,106 @@ mod tests {
             "local content"
         );
     }
+    /// 上游 370d089b 的回归：保存「停用」条目不得清空用户手写的提示词文件。
+    /// 旧逻辑只要「当前没有任何启用条目」就清空文件，于是新建、导入或重存一条
+    /// 停用提示词都会把手写的 AGENTS.md / CLAUDE.md 直接抹掉，且没有备份。
+    /// 只有停用「最后一条启用中的」条目时才该清空。
+    #[test]
+    #[serial]
+    fn saving_inactive_prompts_keeps_a_hand_written_file_until_the_last_enabled_one_is_disabled() {
+        let _home = TempHome::new();
+        let state = test_state();
+
+        // Claude Desktop 不支持 Prompts，故只测这两个应用。
+        for app in [AppType::Claude, AppType::Codex] {
+            let path = prompt_file_path(&app).expect("prompt path");
+            let hand_written = "hand-written instructions\n";
+            fs::create_dir_all(path.parent().expect("prompt parent")).expect("create parent");
+            fs::write(&path, hand_written).expect("seed hand-written file");
+
+            // 界面新建提示词时以停用状态落库：文件必须原样保留。
+            let draft = prompt("draft", "draft content", false);
+            PromptService::upsert_prompt(&state, app.clone(), "draft", draft)
+                .expect("save disabled draft");
+            assert_eq!(
+                fs::read_to_string(&path).expect("read prompt"),
+                hand_written,
+                "{app:?}: saving a disabled draft emptied the live file"
+            );
+
+            // 重存同一条停用提示词同样不能清空。
+            PromptService::upsert_prompt(
+                &state,
+                app.clone(),
+                "draft",
+                prompt("draft", "edited draft", false),
+            )
+            .expect("re-save disabled draft");
+            assert_eq!(
+                fs::read_to_string(&path).expect("read prompt"),
+                hand_written,
+                "{app:?}: re-saving a disabled prompt emptied the live file"
+            );
+
+            // 导入把手写内容收进库，但不掏空文件。
+            let imported_id =
+                PromptService::import_from_file(&state, app.clone()).expect("import from file");
+            assert_eq!(
+                fs::read_to_string(&path).expect("read prompt"),
+                hand_written,
+                "{app:?}: importing emptied the live file"
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_prompts(app.as_str())
+                    .expect("get prompts")[&imported_id]
+                    .content,
+                hand_written
+            );
+
+            // 手写文件又变了，再存一条停用提示词（旧逻辑的第二个触发点）。
+            fs::write(&path, "fresh hand-written\n").expect("rewrite hand-written file");
+            PromptService::upsert_prompt(
+                &state,
+                app.clone(),
+                "linked",
+                prompt("linked", "linked content", false),
+            )
+            .expect("save disabled linked prompt");
+            assert_eq!(
+                fs::read_to_string(&path).expect("read prompt"),
+                "fresh hand-written\n",
+                "{app:?}: saving a disabled prompt emptied the live file"
+            );
+
+            // 启用它：文件被接管，手写内容必须已经被备份下来。
+            PromptService::enable_prompt(&state, app.clone(), "linked").expect("enable linked");
+            assert_eq!(
+                fs::read_to_string(&path).expect("read prompt"),
+                "linked content"
+            );
+            assert!(state
+                .db
+                .get_prompts(app.as_str())
+                .expect("get prompts")
+                .values()
+                .any(|prompt| !prompt.enabled && prompt.content == "fresh hand-written\n"));
+
+            // 停用最后一条启用中的提示词：这时才清空文件。
+            PromptService::upsert_prompt(
+                &state,
+                app.clone(),
+                "linked",
+                prompt("linked", "linked content", false),
+            )
+            .expect("disable the last enabled prompt");
+            assert_eq!(
+                fs::read_to_string(&path).expect("read prompt"),
+                "",
+                "{app:?}: disabling the last enabled prompt must empty the live file"
+            );
+        }
+    }
+
 }
