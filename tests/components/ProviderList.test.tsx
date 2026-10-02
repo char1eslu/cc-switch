@@ -539,10 +539,13 @@ describe("ProviderList Component", () => {
       });
     const route = thirdParty("route");
     const deepseek = thirdParty("deepseek");
-    // 早期绑定托管账号的官方卡没有 category，按身份认。
+    // 上游这里靠 isOfficialAccount 的「按身份认」启发式（托管账号绑定 = 官方），fork
+    // 的官方判定是显式 category === "official"（SSOT，理由见 ProviderCard 同名注释），
+    // 所以这张官方卡必须带 category；authBinding 保留，仍代表「托管账号的官方卡」。
     const managed = createProvider({
       id: "managed",
       name: "ChatGPT",
+      category: "official",
       settingsConfig: { auth: {}, config: "" },
       meta: {
         authBinding: {

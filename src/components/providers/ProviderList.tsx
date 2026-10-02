@@ -411,7 +411,6 @@ export function ProviderList({
 
   return (
     <div className="mt-4 space-y-4">
-      {piStateErrorNotice}
       {codexStaleClients && (
         <CodexStaleClientsNotice staleClients={codexStaleClients} />
       )}
@@ -527,7 +526,9 @@ interface SortableProviderCardProps {
   isAutoFailoverEnabled: boolean;
   failoverPriority?: number;
   isInFailoverQueue: boolean;
-  onToggleFailover: (enabled: boolean) => void;
+  // 叠加模式下不给故障转移入口（两者互斥），调用点会传 undefined；
+  // ProviderCard 的同一 prop 也是可选的。
+  onToggleFailover?: (enabled: boolean) => void;
   activeProviderId?: string;
   isStackMode: boolean;
   stackMember?: ProxyStackMember;

@@ -255,6 +255,12 @@ export interface CodexCatalogModel {
   contextWindow?: string | number;
   reasoningLevels?: string[];
   defaultReasoningLevel?: string;
+  /**
+   * 这行模型接受的输入模态（`text` / `image` / …）。写进生成的 catalog 的
+   * `input_modalities`，覆盖后端按模型名自动判定的「纯文本」结论；后端
+   * `codex_config.rs` 会读它。由从 models.dev 取回的元数据填充。
+   */
+  inputModalities?: string[];
 }
 
 // Claude 认证字段类型

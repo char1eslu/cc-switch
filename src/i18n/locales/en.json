@@ -1241,6 +1241,8 @@
     "autoCompactLimitHint": "Auto-compacts history when context reaches this token limit",
     "modelMetadataAdvanced": "Model Metadata Advanced Options",
     "modelMetadataAdvancedHint": "Overrides Codex metadata for unknown models; clearing a field removes the matching config.toml entry.",
+    "defaultModelLabel": "Default Model",
+    "defaultModelPlaceholder": "e.g. gpt-5.6-sol",
     "modelMappingTitle": "Model Mapping",
     "modelMappingHint": "Generates Codex model_catalog_json so /model can show these third-party model names; entries are saved exactly as listed. Codex must be restarted to refresh the model list after changes.",
     "addCatalogModel": "Add Model",
