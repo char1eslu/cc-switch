@@ -655,11 +655,7 @@ mod tests {
                 "{app:?}: importing emptied the live file"
             );
             assert_eq!(
-                state
-                    .db
-                    .get_prompts(app.as_str())
-                    .expect("get prompts")[&imported_id]
-                    .content,
+                state.db.get_prompts(app.as_str()).expect("get prompts")[&imported_id].content,
                 hand_written
             );
 
@@ -706,5 +702,4 @@ mod tests {
             );
         }
     }
-
 }

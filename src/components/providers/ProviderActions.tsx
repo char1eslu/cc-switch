@@ -5,10 +5,12 @@ import {
   Copy,
   Edit,
   Loader2,
+  Minus,
   Play,
   Plus,
   Terminal,
   Trash2,
+  Zap,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -31,6 +33,11 @@ interface ProviderActionsProps {
   isAutoFailoverEnabled?: boolean;
   isInFailoverQueue?: boolean;
   onToggleFailover?: (enabled: boolean) => void;
+  // Stack 模式：主按钮是添加 / 移除，已添加的另有「设为默认」（onSwitch）。onToggleStack
+  // 为空的（官方账号）不能添加，只能设为默认。
+  isStackMode?: boolean;
+  isStackMember?: boolean;
+  onToggleStack?: (enabled: boolean) => void;
   isOfficialBlockedByProxy?: boolean;
 }
 
@@ -60,15 +67,31 @@ export function ProviderActions({
   isAutoFailoverEnabled = false,
   isInFailoverQueue = false,
   onToggleFailover,
+  isStackMode = false,
+  isStackMember = false,
+  onToggleStack,
   isOfficialBlockedByProxy = false,
 }: ProviderActionsProps) {
   const { t } = useTranslation();
   const iconButtonClass = "h-8 w-8 p-1";
 
   const isFailoverMode = isAutoFailoverEnabled && onToggleFailover;
+  const canStack = isStackMode && onToggleStack !== undefined;
+
+  // 「设为默认 / 当前默认」按钮（Stack 模式的默认供应商）
+  const defaultButtonClassName = (isDefault: boolean) =>
+    cn(
+      "w-fit px-2.5",
+      isDefault
+        ? "bg-gray-200 text-muted-foreground dark:bg-gray-700 opacity-60 cursor-not-allowed"
+        : "bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700",
+    );
 
   const handleMainButtonClick = () => {
-    if (isFailoverMode) {
+    if (canStack) {
+      // Stack 模式：添加 / 移除（默认那家的移除按钮是禁用的）
+      onToggleStack?.(!isStackMember);
+    } else if (isFailoverMode) {
       onToggleFailover(!isInFailoverQueue);
     } else {
       onSwitch();
@@ -76,6 +99,44 @@ export function ProviderActions({
   };
 
   const getMainButtonState = (): MainButtonState => {
+    // Stack 模式：已添加的可以移除（默认那家除外），没添加的可以添加
+    if (canStack) {
+      if (isStackMember) {
+        return {
+          disabled: isCurrent,
+          variant: "secondary" as const,
+          className: cn(
+            "bg-orange-100 text-orange-600 hover:bg-orange-200 dark:bg-orange-900/50 dark:text-orange-400 dark:hover:bg-orange-900/70",
+            isCurrent && "opacity-40 cursor-not-allowed",
+          ),
+          icon: <Minus className="h-4 w-4" />,
+          text: t("provider.removeFromConfig", { defaultValue: "移除" }),
+          title: isCurrent ? t("provider.stackDefaultCannotRemove") : undefined,
+        };
+      }
+      return {
+        disabled: false,
+        variant: "default" as const,
+        className:
+          "bg-emerald-500 hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-700",
+        icon: <Plus className="h-4 w-4" />,
+        text: t("provider.addToConfig", { defaultValue: "添加" }),
+      };
+    }
+
+    // Stack 模式下不能添加的（官方账号）只能设为默认
+    if (isStackMode && !isOfficialBlockedByProxy) {
+      return {
+        disabled: isCurrent,
+        variant: isCurrent ? ("secondary" as const) : ("default" as const),
+        className: defaultButtonClassName(isCurrent),
+        icon: <Zap className="h-4 w-4" />,
+        text: isCurrent
+          ? t("provider.isDefault", { defaultValue: "当前默认" })
+          : t("provider.setAsDefault", { defaultValue: "设为默认" }),
+      };
+    }
+
     if (isFailoverMode) {
       if (isInFailoverQueue) {
         return {
@@ -136,6 +197,21 @@ export function ProviderActions({
 
   return (
     <div className="flex items-center gap-1.5">
+      {canStack && isStackMember && (
+        <Button
+          size="sm"
+          variant={isCurrent ? "secondary" : "default"}
+          onClick={isCurrent ? undefined : onSwitch}
+          disabled={isCurrent}
+          className={defaultButtonClassName(isCurrent)}
+        >
+          <Zap className="h-4 w-4" />
+          {isCurrent
+            ? t("provider.isDefault", { defaultValue: "当前默认" })
+            : t("provider.setAsDefault", { defaultValue: "设为默认" })}
+        </Button>
+      )}
+
       {/* wrapper span 承接 hover：disabled 按钮自身 pointer-events:none，
           原生 title 与 cursor 都必须挂在未禁用的外层元素上才会生效 */}
       <span

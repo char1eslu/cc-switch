@@ -69,6 +69,7 @@ import { DeepLinkImportDialog } from "@/components/DeepLinkImportDialog";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { McpIcon } from "@/components/BrandIcons";
 import { Button } from "@/components/ui/button";
+import { isStackAppId } from "@/config/appConfig";
 
 // 按需加载的视图组件：仅在切换到对应视图时才下载对应 chunk，缩小首屏 bundle。
 // 这些组件都通过 renderContent 的 switch 懒加载，外层有 framer-motion 过渡兜底。
@@ -1055,12 +1056,17 @@ function App() {
               >
                 {activeApp === "claude-desktop" ? (
                   <ClaudeDesktopRouteToggle />
+                ) : settingsData?.enableStackMode && isStackAppId(activeApp) ? (
+                  // 设置里选了 Stack 模式：Claude Code、Codex 的开关换成 Stack 模式开关
+                  // （不做故障转移），回到路由模式恢复。
+                  <ProxyToggle activeApp={activeApp} stack />
                 ) : (
                   settingsData?.enableLocalProxy && (
                     <ProxyToggle activeApp={activeApp} />
                   )
                 )}
                 {activeApp !== "claude-desktop" &&
+                  !(settingsData?.enableStackMode && isStackAppId(activeApp)) &&
                   settingsData?.enableFailoverToggle && (
                     <FailoverToggle activeApp={activeApp} />
                   )}

@@ -317,7 +317,86 @@ fn last_lines(text: &str, n: usize) -> String {
     lines[start..].join("\n")
 }
 
-fn decode_command_output(bytes: &[u8]) -> String {
+/// 直接执行解析出来的工具可执行文件并等待它结束（可带超时），返回子进程的完整输出。
+///
+/// 与 `run_tool_lifecycle_silently` 的分工：那条路径把命令拼成 shell 脚本、只看成功
+/// 与否；这条路径需要拿到 stdout/stderr 交给调用方解析，并且可以指定工作目录与额外
+/// 环境变量（例如 `codex app-server daemon restart` 要带 `CODEX_HOME`）。
+///
+/// 上游同名函数由 `92ca95ff`（OpenCode / OMO 区）引入，fork 未搬该子系统，故按 fork
+/// 自己的原语（`VALID_TOOLS` + `resolve_path_default`）重新实现，语义对齐上游：
+/// 工具白名单校验、argv 字符校验、超时后击杀。
+pub(crate) fn run_detected_tool_command_with_timeout(
+    tool: &str,
+    args: &[&str],
+    timeout: Option<std::time::Duration>,
+    extra_env: &[(&str, String)],
+    working_dir: &Path,
+) -> Result<std::process::Output, String> {
+    use std::process::{Command, Stdio};
+
+    if !VALID_TOOLS.contains(&tool) {
+        return Err(format!("Unsupported tool: {tool}"));
+    }
+    // 这些参数会直接成为子进程的 argv：只放行字母数字与 `-_.`，
+    // 不接受任何 shell 元字符。
+    if args.iter().any(|arg| {
+        arg.is_empty()
+            || !arg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    }) {
+        return Err("Invalid tool command arguments".to_string());
+    }
+
+    let tool_path = resolve_path_default(tool).ok_or_else(|| format!("{tool} is not installed"))?;
+
+    let mut cmd = Command::new(&tool_path);
+    cmd.args(args)
+        .current_dir(working_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("启动 {tool} 失败: {e}"))?;
+
+    let Some(limit) = timeout else {
+        return child
+            .wait_with_output()
+            .map_err(|e| format!("等待 {tool} 结束失败: {e}"));
+    };
+
+    // 轮询 `try_wait` 而不是另起线程：`restart` 这条路径不常走，50ms 的粒度足够，
+    // 且退出后 `wait_with_output` 会直接取用已缓存的状态并读完管道。
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|e| format!("等待 {tool} 结束失败: {e}"))
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("Command timed out after {}s", limit.as_secs()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("等待 {tool} 结束失败: {e}")),
+        }
+    }
+}
+
+pub(crate) fn decode_command_output(bytes: &[u8]) -> String {
     #[cfg(target_os = "windows")]
     {
         decode_windows_command_output(bytes)
@@ -797,24 +876,14 @@ fn windows_cmd_double_quote_arg(value: &str) -> String {
 }
 
 /// 获取单个工具的版本信息（内部实现）
-async fn get_single_tool_version_impl(
+/// 本机工具的版本（只探测本地，不联网）。
+fn probe_local_version(
     tool: &str,
+    wsl_distro: Option<&str>,
     wsl_shell: Option<&str>,
     wsl_shell_flag: Option<&str>,
-) -> ToolVersion {
-    debug_assert!(
-        VALID_TOOLS.contains(&tool),
-        "unexpected tool name in get_single_tool_version_impl: {tool}"
-    );
-
-    // 判断该工具的运行环境 & WSL distro（如有）
-    let (env_type, wsl_distro) = tool_env_type_and_wsl_distro(tool);
-
-    // 使用全局 HTTP 客户端（已包含代理配置）
-    let client = crate::proxy::http_client::get();
-
-    // 1. 获取本地版本
-    let probe = if let Some(distro) = wsl_distro.as_deref() {
+) -> ShellProbe {
+    if let Some(distro) = wsl_distro {
         try_get_version_wsl(tool, distro, wsl_shell, wsl_shell_flag)
     } else {
         #[cfg(target_os = "windows")]
@@ -832,7 +901,36 @@ async fn get_single_tool_version_impl(
                 found => found,
             }
         }
-    };
+    }
+}
+
+/// 本机实际安装的工具版本（和「关于」页探测的是同一个）；拿不到为 `None`。
+pub(crate) fn local_tool_version(tool: &str) -> Option<String> {
+    let (_, wsl_distro) = tool_env_type_and_wsl_distro(tool);
+    match probe_local_version(tool, wsl_distro.as_deref(), None, None) {
+        ShellProbe::Found(version) => Some(version),
+        _ => None,
+    }
+}
+
+async fn get_single_tool_version_impl(
+    tool: &str,
+    wsl_shell: Option<&str>,
+    wsl_shell_flag: Option<&str>,
+) -> ToolVersion {
+    debug_assert!(
+        VALID_TOOLS.contains(&tool),
+        "unexpected tool name in get_single_tool_version_impl: {tool}"
+    );
+
+    // 判断该工具的运行环境 & WSL distro（如有）
+    let (env_type, wsl_distro) = tool_env_type_and_wsl_distro(tool);
+
+    // 使用全局 HTTP 客户端（已包含代理配置）
+    let client = crate::proxy::http_client::get();
+
+    // 1. 获取本地版本
+    let probe = probe_local_version(tool, wsl_distro.as_deref(), wsl_shell, wsl_shell_flag);
     let (local_version, local_error, installed_but_broken) = match probe {
         ShellProbe::Found(v) => (Some(v), None, false),
         ShellProbe::FoundButFailed(e) => (None, Some(e), true),

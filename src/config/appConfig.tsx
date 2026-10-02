@@ -30,6 +30,15 @@ export function isProxyAppId(appId: string): appId is ProxyAppId {
   return (PROXY_APP_IDS as string[]).includes(appId);
 }
 
+/** 支持 Stack 模式的应用（后端 `mode::stack::supports_stack` 的镜像）。 */
+export type StackAppId = Extract<ProxyAppId, "claude" | "codex">;
+
+export const STACK_APP_IDS: StackAppId[] = ["claude", "codex"];
+
+export function isStackAppId(appId: string): appId is StackAppId {
+  return (STACK_APP_IDS as string[]).includes(appId);
+}
+
 /** App IDs shown in Skills panels. */
 export const SKILLS_APP_IDS: AppId[] = ["claude", "codex"];
 
@@ -63,3 +72,7 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
       "bg-green-500/10 text-green-700 dark:text-green-300 hover:bg-green-500/20 border-0 gap-1.5",
   },
 };
+
+export function getAppLabel(appId: string): string {
+  return APP_ICON_MAP[appId as AppId]?.label ?? appId;
+}

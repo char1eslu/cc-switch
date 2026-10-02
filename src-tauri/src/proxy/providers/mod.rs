@@ -16,6 +16,7 @@ mod claude;
 mod codex;
 pub(crate) mod codex_chat_common;
 pub mod codex_chat_history;
+pub(crate) mod codex_compaction;
 pub mod codex_oauth_auth;
 pub(crate) mod codex_responses_sse;
 pub mod models;
@@ -44,9 +45,11 @@ pub use claude::{
 };
 pub use codex::CodexAdapter;
 pub use codex::{
-    apply_codex_chat_upstream_model, apply_codex_upstream_model, is_codex_official_provider,
+    apply_codex_chat_upstream_model, apply_codex_upstream_model,
+    codex_stack_upstream_rejects_web_search, is_codex_official_provider,
     resolve_codex_catalog_tool_profile, resolve_codex_chat_reasoning_config,
     should_convert_codex_responses_to_anthropic, should_convert_codex_responses_to_chat,
+    strip_codex_hosted_web_search,
 };
 
 /// 供应商类型枚举
