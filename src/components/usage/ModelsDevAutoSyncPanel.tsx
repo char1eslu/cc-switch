@@ -37,7 +37,11 @@ import {
   syncModelsDevPricing,
 } from "@/lib/modelsDevAutoSync";
 import {
-  fetchModelsDevPricing,
+  fetchModelsDev,
+  MODELS_DEV_QUERY_KEY,
+  MODELS_DEV_STALE_TIME_MS,
+} from "@/lib/modelsDev";
+import {
   flattenModels,
   formatPrice,
   getCommonModelKeys,
@@ -47,7 +51,6 @@ import { usageKeys } from "@/lib/query/usage";
 import type { ModelsDevSyncConfig, ModelsDevSyncState } from "@/types/usage";
 import { isTextEditableTarget } from "@/utils/domUtils";
 
-const MODELS_DEV_QUERY_KEY = ["models-dev-pricing"] as const;
 const DEFAULT_VISIBLE_ROWS = 80;
 const MAX_VISIBLE_ROWS = 300;
 
@@ -74,8 +77,8 @@ function AutoSyncDialog({ state, onClose, onSaved }: AutoSyncDialogProps) {
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: MODELS_DEV_QUERY_KEY,
-    queryFn: fetchModelsDevPricing,
-    staleTime: 60 * 60 * 1000,
+    queryFn: fetchModelsDev,
+    staleTime: MODELS_DEV_STALE_TIME_MS,
     retry: 1,
   });
   const entries = useMemo(() => (data ? flattenModels(data) : []), [data]);
