@@ -2,25 +2,25 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-10-01
+最后更新：2026-10-02
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `7c0d0fc6` |
-| 当前已验证代码 head | `7e6e5f78`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，远端 CI `36832727280` 两个 job 全绿，macOS Ad Hoc `36832735586` 构建与产物验收通过） |
-| 最近一轮已适配的上游改动 | **工具生命周期写入串行化 + 工具升级状态跨重挂载保留 + 代理重试循环记账重构**（`846de29c..7c0d0fc6`，11 个提交里只搬 3 个；fork 侧净变更 11 文件 / +2,347 / −565） |
+| 已完整评估到的上游基线 | `b9e96202` |
+| 当前已验证代码 head | `f134b387`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，前端 tsc / vitest / vite build / prettier 全绿，远端 CI `36976541170` 两个 job 逐步全绿，macOS Ad Hoc `36976899058` 构建与产物双路验收通过） |
+| 最近一轮已适配的上游改动 | **Stack mode 叠加模式架构批量**（`7c0d0fc6..b9e96202`，27 个提交里搬 22 个、跳 4 个、1 个部分搬；fork 侧净变更 94 文件 / +16,164 / −1,043） |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline 7c0d0fc6..upstream/main
+git log --oneline b9e96202..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
-  **用上表第一行那个基线值起算**（本轮是 `7c0d0fc6..upstream/main`）才是真实增量。
+  **用上表第一行那个基线值起算**（本轮是 `b9e96202..upstream/main`）才是真实增量。
 - ⚠️ 代码块里的基线值和上表第一行必须一起改。2026-08-18 曾发现两处不一致
   （表写 `1f38c838`，审计节已到 `a98829ba`），按表起算会把 35 个已审提交重算一遍。
 - 历轮增量范围与结论见下方「同步审计日志」，从新到旧。
@@ -367,6 +367,190 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-10-02（`7c0d0fc6..b9e96202`，27 个）
+
+**27 个提交里搬 22 个，跳过 4 个，1 个部分搬。** 分支 `sync-2026-10-02`
+（基于 fork `dev` `7ba98454`），合并提交 `f00b632b`（`git merge --no-ff`），
+fork 侧净变更 **94 文件 / +16,164 / −1,043**（23 新增、71 修改、0 删除）。
+**无 schema 迁移**：`SCHEMA_VERSION` 上游与 fork **同为 19**、
+`FORK_SCHEMA_VERSION` 保持 1；`src-tauri/src/database/schema.rs` 唯一的改动是
+`9be1ef7e` 加的一行 `gpt-6.1-sol` 定价种子（+3 行含注释），不涉及表结构。
+
+本轮的主体是上游的 **Stack mode 架构批量**（叠加模式）：把多家供应商挂到
+Claude Code / Codex 上，成员的模型并入客户端模型列表，带保留前缀
+`ccs-<app>-<provider>--<model>` 的请求解回该成员并换成上游模型名转发。
+该批量 11 个提交彼此修改同一批 ~20 个文件（`mode/state.rs`、`proxy/handlers.rs`、
+`proxy/forwarder.rs`、`codex_config.rs`、`ProviderForm.tsx` …），**在文件粒度上
+不可分割**，因此按同步守则合并为**单个 fork 提交** `fa18e29a`，`Upstream:`
+trailer 列出全部覆盖的 sha。
+
+#### 归属分布
+
+| 处置 | 提交 |
+| --- | --- |
+| **Stack 批量（1 个 fork 提交）** | `47d062fb` `73c187be` `d3acdc20` `81cc2f7b` `b925c2bb` `01230112` `5990d144` `52e0fa8a` `5a788d87` `850ba952` `1bc68e29` |
+| **逐个对应（1 提交 : 1 上游提交）** | `9be1ef7e`→`3aa4aed8`、`fff09fab`→`7a31c37b`、`8fbcea9f`→`a2c2a55a`、`882344b6`→`f00cd29e`、`e675d586`→`c7d9ccb3`、`40d3420f`→`fce52f5b`、`370d089b`→`5ef29855` |
+| **并入 Stack 批量（文件粒度不可分）** | `619c315b` `85bd8801` `d46478e8` `c6255cc9` `d0b57827` `67d1daa1` `e88437e7` |
+| **跳过** | `f11ac733`（Pi）、`882344b6` 的 Pi 部分、`b9e96202`（ETok 赞助位） |
+
+跳过依据：
+
+- **`f11ac733` feat(pi): fill capabilities of a fetched model from presets** ——
+  Pi 属裁剪边界，落点 `PiProviderForm.tsx` 与 `piPresetModelSources` 在 fork 里
+  都不存在，**无可搬内容**。
+- **`882344b6` feat(pi): fill thinkingLevelMap of a fetched model** —— Pi 本体跳过，
+  只搬两个通用件（`useModelMetadataFill` 的 `baseUrl` 参数、
+  `tests/lib/modelMetadata.test.ts` 的 effort 型 fixture）。fork 的
+  `modelMetadata.ts` 早就按 `option.type === "effort"` 过滤，所以上游那条断言
+  在 fork 里原本是空转的，补 fixture 后才真正生效。
+- **`b9e96202` chore(presets): remove ETok sponsor slot and presets** ——
+  sponsor / vendor preset 早已整体剥离，fork 的 `src/config/*.ts` 里
+  `track_id` 出现 0 次，**不存在可搬的落点**。
+
+#### 本轮的核心难点：从旧基线合并会「复活」fork 已删的代码
+
+`FORK_STATUS.md` 的同步基线是 `7c0d0fc6`，但它**不是 `dev` 的祖先**
+（`git merge-base dev upstream/main` = `81d6002a`）。fork 用新 SHA 重建上游提交，
+所以**所有合并都是内容级的，祖先关系测试全部无效**。
+
+后果：从 `7c0d0fc6` 起算的三方合并，其 base 里带着 fork 后来**故意删掉**的代码。
+base 有、theirs 有、mine 没有时，三方合并会判定为「mine 删了、theirs 改了」而
+**把 fork 已裁剪的符号原样带回**。本轮实证到的复活物：
+
+- `localProxyRequestOverrides` / `LocalProxyRequestOverridesField`
+  （base `7c0d0fc6` 出现 8 次，`dev` 0 次）—— 经**干净合并区**回到
+  `ClaudeFormFields.tsx` / `CodexFormFields.tsx`。
+- `promptCacheRouting`、`isXaiOauthPreset`、`isCodexOfficialProvider`。
+- `ReasoningLevelsEditor` + `36px` 的 `renderDefaultStar` 网格列 ——
+  该符号在 base、HEAD、`upstream/main` 里**都是 0 次**，是更晚的上游重构产物，
+  却出现在合并结果里。
+- `ProviderForm.tsx` 涨到 **1912 行**（`dev` 1009 行，增量本身只改 124 行）。
+
+**处置口径**：`ProviderForm.tsx` **从 `dev` 重建**，只嫁接 `01230112` 的 12 个
+Stack hunk；`CodexFormFields.tsx` 同样重写。判定「过带」用两个量化探针：
+
+```bash
+# 1. 逐文件对比：worktree 改动量 vs 增量自身改动量
+git diff --numstat HEAD
+git diff --numstat 7c0d0fc6 upstream/main
+# 2. 声明集对比：worktree 有、HEAD 没有、且增量 diff 里也没有的符号
+```
+
+只有 3 个文件的比值 >1.35×（`commands/misc.rs` 2.61×、
+`transform_codex_anthropic.rs` 1.62×、`appConfig.tsx` 1.56×），逐一复核后
+**全部为正当**：分别是 fork 对上游 OMO 区函数的自有改写、一条在 base 与
+`upstream/main` 都存在而 HEAD 缺失的测试（shape guard 仍在，属正确恢复）、
+以及保留的 `ProviderCard.tsx` 真正需要的 `getAppLabel`。
+
+#### 三处必须记下来的坑
+
+1. **`git merge-file` 的退出码是「冲突数」，不是成败。** `exit=$?` 读到 2 表示
+   2 个冲突块，不是失败。本轮多处 0 冲突的「干净合并」恰恰是最危险的
+   —— 上面那批复活物就是从 0 冲突区进来的。
+2. **手工解冲突时，替换文本不要把已匹配到的尾段再拼一次。**
+   本轮 `619c315b` 的 `services/proxy.rs` 就栽在这里：正则的 `group(0)` 已含
+   `group(3)`（`Err(_) => false,` + `},`），脚本又写成
+   `resolved + m.group(3)`，多出右括号 → `error: unexpected closing delimiter`
+   定位到 `impl` 的收尾行（492），离现场很远。**遇到括号不配先往冲突区里看。**
+3. **`server.rs` 解冲突要「只取到共享锚点」。** `619c315b` 的冲突块里，
+   theirs 在两个块**之间**插了新测试（`responses_websocket_handshake_is_answered_with_upgrade_required`），
+   改变了锚点位置；整体替换成 theirs 会把 mine 的 `image_upstream` mock 一起
+   卷走。正确做法是取 theirs 到共享锚点为止、其余保留 mine。
+
+#### 前端合并的额外注意
+
+- **`tsconfig.json` 开了 `noUnusedLocals` / `noUnusedParameters`**，所以任何
+  随合并带进来的未使用 import 都是硬报错。本轮清掉：`ProxyPanel.tsx` 的
+  `getAppLabel` / `PROXY_APP_IDS` / `ProxyAppId`、`tests/msw/handlers.ts` 的
+  `MODELS_DEV_API_URL`、`CodexFormFields.tsx` 里只定义未使用的
+  `defaultModelSuggestions`（上游的渲染点在 fork 已裁掉的区域里）。
+- **`ProviderList.test.tsx` 里的 `["gemini", true]` 用例必须删。** `AppId` 只有
+  `"claude" | "claude-desktop" | "codex"`，照抄是 TS 错误；`gemini` 在上游只是
+  「不支持 Stack 的 App」的占位。
+- **新增测试里不要 mock fork 不存在的 hook。** `ProviderForm.stackModels.test.tsx`
+  的 `forms/hooks` mock 原本带了 `useCopilotAuth` / `useXaiOauth`，fork 无此二者
+  （GitHub Copilot 与 xAI 托管 OAuth 都已裁），已删。
+- **用户可见文案不能点名已裁掉的产品。** 新增的
+  `settings.advanced.proxy.enableStackModeDescription` 上游拿 OpenCode 打比方，
+  fork 已删 OpenCode，中英文都已改写；两处注释里的 Grok Build 从句同理删掉。
+- **`prompt_live_sync.rs` 是 fork 首次引入。** `370d089b` 的上游测试覆盖
+  Claude / Codex / Hermes，fork 只跑前两个（无 `AppType::Hermes`，
+  `AppSettings` 也无 `hermes_config_dir`），改写成缩小版并加注说明。
+  顺带恢复 `pub use prompt::Prompt;` —— 上游与 base 都有，fork 的 `lib.rs` 在
+  某轮裁剪 `pub use` 清单时**漏掉了它**，导致集成测试拿不到 `Prompt` 类型。
+- **fork 的官方账号判定是显式 `category === "official"`，不是上游的「按身份认」。**
+  `ProviderList.test.tsx` 的托管账号 fixture 因此必须补 `category: "official"`，
+  否则 `onToggleStack` 不会被判成 `undefined`（`ProviderCard.tsx` 里写了三条
+  理由说明为何用显式 SSOT）。
+
+#### 第一轮 CI 红了：34 个 TS 错误，全部来自「复活物」
+
+首次派发（run `36974868975`，head `f00b632b`）：**Backend Checks 绿、
+Frontend Checks 红**，卡在 `8 TypeScript type check` —— **34 个错误分布在
+7 个文件**。根因就是上面那批复活物：合并把 fork 从未有过的上游重构符号带了进来。
+
+| 文件 | 错误数 | 根因 / 处置 |
+| --- | --- | --- |
+| `CodexFormFields.tsx` | 26 | 合并结果 1237 行（`dev` 830 行），重复的 `fillModelMetadata` / `catalogRowsRef` / `commitCatalogRows`，以及 `ReasoningLevelsEditor`、`onModelChange`、`hasRequestOverrides`、`apiKeySection`、`endpointSection`、`speedTestModal` 等**在 `dev` 与 `upstream/main` 里都不存在**的符号 —— 全部来自 base `7c0d0fc6`（1394 行）。**从 fork 自己的 `c7d9ccb3` 状态重建**，再手工嫁接 Stack 布局（★ 默认列、`variant: "classic" \| "stack"`、模型列表标题切换、空态分支）。 |
+| `ProviderList.tsx` | 2 | `onToggleFailover` 类型不匹配（改成可选）、`piStateErrorNotice` 未定义（删渲染点） |
+| `modelMetadataFill.ts` / `presetModelMetadata.ts` | 3 | `inputModalities` 不在 `CodexCatalogModel` 上（补类型；后端 `codex_config.rs` 本来就会读 `input_modalities`） |
+| `CodexStaleClientsNotice.tsx` | 1 | `ConfirmDialogProps` 缺 `pending`（恢复，base 与上游都有） |
+| `ProxyToggle.tsx` / `useProxyStatus.ts` | 2 | `isInitialStatusPending` 未导出 / `getAppLabel` 未 import（恢复） |
+
+修完 typecheck 后 `vitest` 又暴露 **7 个用例失败**：6 个在
+`ProviderForm.stackModels.test.tsx`（缺 ★ 默认模型列；catalog 只在
+`openai_chat` 下持久化，应按上游 `01230112` 对**所有非官方**供应商持久化）、
+1 个在 `ProviderList.test.tsx`（托管账号卡未被判为官方）。
+修复提交 `19e54a42`（10 文件 / +561 / −652），合并提交 `f134b387`。
+
+#### 验证（代码 head `f134b387`）
+
+- **本机隔离 Rust 工具链** `~/.rust-ci-iso`（rustup 1.95.0，与
+  `rust-toolchain.toml` 的 `channel = "1.95"` 一致）：`cargo fmt --all --check` /
+  `cargo clippy --all-targets -- -D warnings`（**比 CI 严格**，CI 不带
+  `--all-targets`）/ `cargo test` —— **三项退出码均为 0**，
+  `cargo test` **2117 passed / 0 failed / 2 ignored**，14 个 suite 全绿
+  （上一轮 1968 → **+149**）。
+- **本机前端工具链本轮首次跑通。** `pnpm install --frozen-lockfile
+  --node-linker=hoisted` 可用（早前以为沙箱禁止 symlink，实测该策略不适用），
+  `node_modules/` 与 `dist/` 均已 gitignore。于是前端四项都能在本机复现 CI 口径：
+  - `tsc --noEmit` **0 错误**；
+  - `vitest run` **71 文件 / 457 用例全过**；
+  - `vite build` 成功；
+  - `prettier --check "src/**/*.{js,jsx,ts,tsx,css,json}"` **全通过**。
+    ⚠️ **版本必须锁 3.6.2**（与 `pnpm-lock.yaml` 一致）：用 3.9.9 会把 10 个
+    未改动的 `dev` 文件也报成格式错误。`tests/**` 不在 CI 口径内，且 `dev` 基线
+    本就有 8 个未格式化文件（既有欠账）。
+- 静态复核：冲突标记全仓 0 处；自写 `noUnusedLocals` 近似检测在本轮改动过的
+  `.ts/.tsx` 上报 **0 未用 import、0 未用声明**（检测器已用负向样本自测会报警）；
+  i18n 键完整性 `en` / `zh` 各缺 18 个，**与 `dev` 基线完全一致**，即**零合并引入
+  的 i18n 回归**（那 18 个是 fork 既有欠账：`usage.*`、`proxy.server.*`、
+  `claudeDesktop.route.*`、`failover.tooltip.*`、`notifications.proxyReasonClaudeDesktop`）。
+- 裁剪边界扫描：新增行里 `openclaw` / `hermes` / `mcode` / `zh-TW` / `ja` 均 0 次；
+  残留命中全部是**出处注释**、**线格式名**（Chat Completions / Gemini 分块）
+  或**旧字段兼容说明**，无一是活的 AppType 引用。
+- **远端 CI**：run `36976541170`（head `f134b387`）**两个 job 全部 success**，
+  且**逐步**核对到 Backend 9 个业务步骤、Frontend 11 个业务步骤
+  （含此前失败的 `8 TypeScript type check`）**全为 `success`，无 `skipped`**。
+- **远端构建**：run `36976899058`（head `f134b387`）成功，产物
+  `CC-Switch-macOS-arm64-ad-hoc`（artifact `11214590506`，**11,973,768 bytes**）。
+  **双路验收**：① 远端 API 声明 `size_in_bytes` = 11,973,768、`expired=false`；
+  ② 本地下载后字节数**完全一致**（外层 sha256 `23db6c1f…`），两层 zip
+  `unzip -t` 均 `No errors detected`，`codesign --verify --deep --strict` 输出
+  `valid on disk` + `satisfies its Designated Requirement`，Mach-O **arm64 单架构**，
+  `CFBundleShortVersionString` = **3.16.3**，签名 `adhoc`。
+
+#### 收尾清理
+
+- **run 清理**：只保留最新一轮。删掉 `36974868975`（本轮首派 CI，失败）、
+  `36832735586`（上一轮构建）、`36832727280`（上一轮 CI），逐条回读断言 `404`；
+  保留 `36976541170`（CI）与 `36976899058`（构建），存活总数断言 = 2。
+- **分支清理**：`sync-2026-10-02` 已删除（远端从未推送过该分支），本地与远端
+  均只剩 `dev`；同步提交 `19e54a42` 仍是 `dev` 的祖先。
+- **临时缓存**：本轮 `/tmp` 下的冲突转储、三方合并中间件、检测脚本已用
+  `/bin/rm -rf` 清掉并逐项回读校验。
+- **worktree**：`/tmp/dev-wt`（用作 `dev` 基线对照）已 `git worktree remove`。
 
 ### 2026-10-01（`846de29c..7c0d0fc6`，11 个）
 
