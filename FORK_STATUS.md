@@ -2,21 +2,21 @@
 
 自用备忘：下次上游大更新时，先读这份文件再动手，避免重复评估和踩已知的坑。
 
-最后更新：2026-10-02
+最后更新：2026-10-03
 
 ## 同步基线
 
 | 项 | 值 |
 | --- | --- |
-| 已完整评估到的上游基线 | `b9e96202` |
-| 当前已验证代码 head | `f134b387`（已合入 `dev`；本机 Rust fmt / clippy / 全量测试全绿，前端 tsc / vitest / vite build / prettier 全绿，远端 CI `36976541170` 两个 job 逐步全绿，macOS Ad Hoc `36976899058` 构建与产物双路验收通过） |
-| 最近一轮已适配的上游改动 | **Stack mode 叠加模式架构批量**（`7c0d0fc6..b9e96202`，27 个提交里搬 22 个、跳 4 个、1 个部分搬；fork 侧净变更 94 文件 / +16,164 / −1,043） |
+| 已完整评估到的上游基线 | `bfaaba16` |
+| 当前已验证代码 head | `fa23c609`（已合入 `dev`；本机 Rust fmt / clippy（`--all-targets`，比 CI 严格）/ 全量测试全绿，远端 CI `37120211009` 两个 job 逐步全绿，macOS Ad Hoc `37120464638` 构建与产物双路验收通过。**本轮 diff 为 Rust-only，前端套件本机未跑** —— 理由见审计节） |
+| 最近一轮已适配的上游改动 | **Codex MCP 传输/容错三连 + 内联 think 剥离重构**（`b9e96202..bfaaba16`，4 个提交全部搬运；fork 侧净变更 12 文件 / +1,383 / −259） |
 
 **下次同步从这里开始**：
 
 ```bash
 git fetch upstream
-git log --oneline b9e96202..upstream/main
+git log --oneline bfaaba16..upstream/main
 ```
 
 - 不要用 `dev..upstream/main` 统计差异：选择性同步历史会夸大提交数。
@@ -118,32 +118,51 @@ Responses SSE 由它解析。fork 版本曾冻结在 2026-05-11（`aec055a1`）�
 计费回退到 `transform_responses.rs`。`server.rs` 区间内仅 Grok 路由与
 Alpha Search 注册，均不适用；`transform_responses.rs` 其余提交已在 fork 或属放弃区。
 
-### ⚠️ 未登记的漂移区（2026-09-18 发现，**尚未处理**）
+### ⚠️ 未登记的漂移区（2026-09-18 发现；2026-10-03 刷新行数并新增一项）
 
-与 `streaming_responses.rs` 同性质、但此前没有登记的文件：
+与 `streaming_responses.rs` 同性质、但此前没有登记的文件。下表行数已于
+**2026-10-03**（fork `fa23c609` vs 上游 `bfaaba16`）重测，左列是当前 fork：
 
-| 文件 | fork | 上游 `f3b18df1` | 上游 `06082e18` | 说明 |
-| --- | --- | --- | --- | --- |
-| `proxy/providers/transform_responses.rs` | **2294** | 5364 | 5475 | 活路径：承载 `api_format == "openai_responses"` 供应商的请求转换 |
-| `services/session_usage_codex.rs` | **1157** | 3218 | 3218 | 活路径：Codex 会话用量解析 |
-| `services/subscription.rs` | 827 → **893** | 1597 | 1597 | 本轮已搬 `bfbbf15c`，但漂移仍在 |
-| `proxy/providers/transform.rs` | 1797 | 1987 | 2034 | — |
+| 文件 | fork | 上游 `bfaaba16` | 说明 |
+| --- | --- | --- | --- |
+| `proxy/providers/transform_responses.rs` | **2359** | 5498 | 活路径：承载 `api_format == "openai_responses"` 供应商的请求转换 |
+| `services/session_usage_codex.rs` | **1321** | 3454 | 活路径：Codex 会话用量解析 |
+| `services/subscription.rs` | **1141** | 1687 | — |
+| `proxy/providers/transform.rs` | **1967** | 2174 | — |
+| `proxy/providers/streaming.rs` | 1825 | 1839 | **2026-10-03 新增**：只差 14 行，但缺的是实质功能，见下 |
+| `proxy/providers/streaming_responses.rs` | 2197 | 7180 | 放弃区地基（见上节） |
 
 `transform_responses.rs` 此前只被标为「websearch 部分属放弃区」，**整文件级漂移
-从未记录**。后果：本轮就有 3 个上游提交动该文件（`bd247a4a`、`746e2288`、
-`7726c834`），全部无法 `git apply -3`，只能逐 hunk 手工适配；漂移继续扩大则
-成本线性上升。
+从未记录**。后果：2026-09-18 轮就有 3 个上游提交动该文件（`bd247a4a`、
+`746e2288`、`7726c834`），全部无法 `git apply -3`，只能逐 hunk 手工适配；
+漂移继续扩大则成本线性上升。
 
-`session_usage_codex.rs` 是本轮新发现的：fork 1157 行 vs 上游 3218 行，
+`session_usage_codex.rs` 是 2026-09-18 轮新发现的：fork 1157 行 vs 上游 3218 行，
 且架构不同 —— 上游有 `ParsedCodexFile` / `CodexSyncPass` / byte-seek 三层，
 fork 没有。因此 `45f9e819` + `45b9a952` 无法 cherry-pick，只能按语义等价实现
-（见本轮审计条目 `b9922e2f`）。
+（见 2026-09-18 审计条目 `b9922e2f`）。
 
-**建议**：把这两个文件与 `streaming_responses.rs` 并列登记为漂移区，并在
-下一轮开工前单独立项评估是否整体追平（参照 2026-08-21 对
-`streaming_responses.rs` 的做法：先核实 fork 版本无独有定制，再整体替换到
-某个上游时点）。**在追平之前，凡涉及这两个文件的上游提交都要预留逐 hunk
-适配的工时。**
+**`streaming.rs` 是 2026-10-03 轮新发现的，性质不同：行数几乎相同（1825 vs 1839），
+所以不会在合并时报冲突，但缺的是功能。** 上游 `f991726f`（fix(usage): account for
+cache-write tokens across schema versions）把 `PromptTokensDetails` 加了
+`cache_write_tokens` 字段，并把两处取数改为带兜底的 `extract_cache_write_tokens()`
+（直接字段 → 嵌套 `prompt_tokens_details.cache_write_tokens`）。该提交在
+2026-08-21 轮只搬了 `transform_responses.rs` 那一半，`streaming.rs` 这半没搬：
+
+- `streaming.rs:81` 的 `PromptTokensDetails` 只有 `cached_tokens`；
+- `streaming.rs:107` 与 `:315` 仍直接读 `usage.cache_creation_input_tokens.unwrap_or(0)`。
+
+**后果**：Chat 兼容上游若只把 cache-write tokens 放在嵌套的 OpenAI 风格
+`prompt_tokens_details` 里（而不给顶层 `cache_creation_input_tokens`），Claude
+路径的 SSE usage 会把 `cache_creation_input_tokens` 记成 0，**成本少算**。
+与「零成本记账」是同一类问题。**本轮未修**（不在 `b9e96202..bfaaba16` 增量内，
+且属独立改动，需单独验证），列为下一轮候选。
+
+**建议**：`transform_responses.rs` / `session_usage_codex.rs` 与
+`streaming_responses.rs` 并列登记为漂移区，并在下一轮开工前单独立项评估是否整体
+追平（参照 2026-08-21 对 `streaming_responses.rs` 的做法：先核实 fork 版本无独有
+定制，再整体替换到某个上游时点）。**在追平之前，凡涉及这些文件的上游提交都要
+预留逐 hunk 适配的工时。** `streaming.rs` 的缺口小且独立，可优先单独补。
 
 ## 数据库版本与上游对齐，fork 迁移单独记账
 
@@ -367,6 +386,146 @@ gateway 模式下 Desktop 从 managed config 读 MCP，日志固定输出
 
 > 2026-08-18 起只保留最新一轮 CI / 构建 run，旧轮链接已随 run 删除失效，
 > run ID 留作文字记录。
+
+### 2026-10-03（`b9e96202..bfaaba16`，4 个）
+
+**4 个提交全部搬运，0 跳过。** 分支 `sync-2026-10-03`（基于 fork `dev`
+`ba4fe199`），合并提交 `fa23c609`（`git merge --no-ff`），fork 侧净变更
+**12 文件 / +1,383 / −259**（1 新增、10 修改、0 删除）。上游增量共触及 13 个
+文件，唯一未搬的是 `src-tauri/src/mcp/grokbuild.rs`（fork 无此文件，Grok Build
+属裁剪边界；该处改动亦仅是一句注释）。
+
+**无 schema 迁移**：增量**完全没碰** `src-tauri/src/database/`。
+`SCHEMA_VERSION` 上游与 fork **同为 19**、`FORK_SCHEMA_VERSION` 保持 1。
+
+本轮是最小的一轮（4 个提交），主体是 **Codex MCP 传输语义三连**（`type` 字段、
+传输专属字段、逐条容错）加一个 **内联 think 剥离重构**（新增共享模块
+`proxy/providers/inline_think.rs`）。
+
+#### 归属分布（1 提交 : 1 上游提交，无批量）
+
+| fork 提交 | 上游提交 | 内容 |
+| --- | --- | --- |
+| `4e0f66f6` | `4e46e6b6` | Codex MCP 不再写出 `type`（Codex 0.158+ 视为未知字段，`--strict-config` 拒启） |
+| `daf003c9` | `27e52822` | url-only 规范按 HTTP 写；stdio/url 两种传输的专属字段分离 |
+| `156958b9` | `81c0ff25` | 投影时单条失败不再中断其余服务器，聚合上报 |
+| `d040dc90` | `bfaaba16` | 内联 `<think>`/`<thinking>` 剥离，Claude + Codex 两路共用 `inline_think.rs` |
+
+#### 三处必须记下来的坑
+
+1. **「fork 已有该实现」要按符号核实到函数体，不能只看提交主题。**
+   `4e46e6b6` 与 `27e52822` 的**导入侧推断**（无 `type` 时按 `url` 判 http）
+   fork 早在 `infer_server_type_from_toml` 里实现了，连单测
+   （`infers_http_for_codex_url_only_entries`）都有；写出侧
+   `infer_server_type_from_json` 也已具备 url→http 兜底。若按上游 diff 逐行
+   照搬，会引入**重复的** `codex_entry_transport_type` 辅助函数与重复单测。
+   真正缺的只有两件事：**不写 `type`**、**传输专属字段分离**。本轮据此只落
+   这两处，`mcp/codex.rs` 的改动量因此是上游的 0.81×（少的那部分是刻意不搬的
+   重复件）。
+2. **上游的推断规则比 fork 的旧实现更严一档：显式 `stdio` 但没有 `command`、
+   且带 `url` 时，也必须按 HTTP 写。** fork 原实现让显式 `stdio` 无条件胜出，
+   于是会写出 `command = ""` + `url` —— 正是 `27e52822` 要修的形态。扩展
+   `infer_server_type_from_json` 时补上这一支（`matches!(explicit, None |
+   Some("stdio")) && !has("command") && has("url") → "http"`），并把 url 兜底
+   从 `is_some()` 收紧为「非空白」，与上游 `has()` 同口径。
+3. **`git apply -3` 的冲突会落在「模块清单/导入块」这类与语义无关的区域。**
+   本轮 7 个文件里 5 个干净，2 个冲突，且两处都是 fork 裁剪造成的：
+   `mod.rs` 的冲突块里上游顺带列出 `copilot_auth` / `copilot_model_map` /
+   `gemini*`（fork 全裁），`transform.rs` 的冲突块里上游把 `crate::proxy`
+   导入扩成含 `tool_media` 的多行块（fork 无该模块）。**解这类冲突要
+   「只取本次真正需要的增量」**：各取一行（`pub(crate) mod inline_think;`
+   与 `use super::inline_think::split_leading_think_block;`），其余保持 fork
+   形态，不要把上游的模块清单整块抄进来。
+
+#### 前端合并的额外注意
+
+**本轮 diff 是 Rust-only，前端套件本机未跑。** 已核实两件事：① 本轮
+`git diff dev..HEAD` 不含任何 `src/`、`tests/`、`package.json`、
+`pnpm-lock.yaml` 改动；② 整个上游增量（`b9e96202..upstream/main`）同样
+Rust-only。因此前端文件与 `dev` 逐字节相同，而 `dev` 的前端已由上一轮
+CI（`36976541170`）的 Frontend Checks 覆盖 —— 本机再跑一遍**不携带任何
+关于本轮改动的信息**，却要付一次 `pnpm install`（本环境有「装到一半杀进程会
+把整个 Bash 层搞死」的已知风险，见 skill `rust-ci-local-mirror`）。故本轮
+以远端 Frontend Checks 为门。**下一轮若触及前端文件，这条豁免不再成立，
+必须本机跑。**
+
+#### 验证（代码 head `fa23c609`）
+
+- **本机隔离 Rust 工具链** `~/.rust-ci-iso`（rustup 1.95.0，与
+  `rust-toolchain.toml` 的 `channel = "1.95"` 一致）：
+  `cargo fmt --all --check` / `cargo clippy --all-targets -- -D warnings`
+  （**比 CI 严格**，CI 不带 `--all-targets`）/ `cargo test` —— **三项退出码均为 0**。
+  `cargo test` **14 个 suite 全绿，合计 2148 passed / 0 failed / 2 ignored**
+  （上一轮 2117 → **+31**）。
+  ⚠️ **测试总数增量 == 本轮搬入的测试数（31），逐文件可对**：`mcp/codex.rs` 4、
+  `inline_think.rs` 10、`streaming.rs` 10、`streaming_codex_chat.rs` 2、
+  `transform.rs` 3、`tests/mcp_commands.rs` 2。这是「测试搬运无遗漏」的证据。
+- **端口 15721 本轮未构成干扰**：开工前确认用户装着的 CC Switch 正占用
+  `127.0.0.1:15721`（PID 97373），但套件仍全绿 —— fork 的代理测试用
+  `listen_port: 0` 并断言实际端口，不碰默认端口。**上一轮记的「占用即噪声」
+  风险在 fork 当前形态下不成立**；反之，若照抄上游测试里硬编码的
+  `http://127.0.0.1:15721/...`，以后每次本机跑都会挂。
+- **golden 套件确实执行了**（35 tests，全过）：`tests/golden/mcp_bytes.rs`
+  对 `snapshots/mcp/codex-config.toml` 与 `codex-section.toml` 做断言，
+  所以「不再写出 `type`」是被**端到端**验证的，不只是单测。
+- **两条复活探针（合并前后各跑一次，均通过）**：
+  - 探针 1（逐文件改动量 vs 增量自身）：**无一个文件 > 1.35×**。两个
+    **< 1.0** 的是刻意少搬：`mcp/codex.rs` 0.81（不搬重复的
+    `codex_entry_transport_type` 与其单测）、`services/mcp.rs` 0.83
+    （去掉 `AppType::Mcode` 分支，fork 无该 AppType）。
+  - 探针 2（声明集对比）：worktree 新增声明 **62 个，全部**能在增量的
+    自身 diff 里找到 → 0 复活物。
+  - 合并后 `git diff sync-2026-10-03 dev` 为空，即合并树与已验证的分支树
+    逐字节相同（`--no-ff` 的父拓扑已确认：`fa23c609` 的双亲是 `ba4fe199`
+    与 `d040dc90`）。
+- 静态复核：冲突标记全仓 0 处；裁剪边界扫描（新增行里 `openclaw` /
+  `hermes` / `mcode` / `zh-TW` / `gemini` / `grok` / `copilot`）**均 0 次**。
+- **远端 CI**：run `37120211009`（head `fa23c609`）**两个 job 全部 success**，
+  且**逐步**核对到 Backend 9 个业务步骤、Frontend 11 个业务步骤
+  **全为 `success`，无 `skipped`**。
+- **远端构建**：run `37120464638`（head `fa23c609`）成功，16 个业务步骤逐步
+  全绿。产物 `CC-Switch-macOS-arm64-ad-hoc`（artifact `11273375914`，
+  **11,978,531 bytes**）。**双路验收**：① 远端 API 声明
+  `size_in_bytes` = 11,978,531、`expired=false`；② 本地下载后字节数
+  **完全一致**（sha256 `5bf6d1a7…`），两层 zip `unzip -t` 均
+  `No errors detected`，`codesign --verify --deep --strict` 输出
+  `valid on disk` + `satisfies its Designated Requirement`，Mach-O
+  **arm64 单架构**（thin），`CFBundleShortVersionString` = **3.16.3**，
+  签名 `adhoc`。产物留存于
+  `~/Downloads/CC-Switch-macOS-arm64-ad-hoc-20261003-fa23c609.zip`。
+- 体积变化说明：相比上一轮 11,973,768 → 11,978,531（**+4,763 bytes**）。
+  本轮 +1,383 行里 **613 行是随包代码、770 行在 `#[cfg(test)]` 区内**
+  （`inline_think.rs` 216 随包 / 128 测试，`streaming.rs` 175 / 372 …），
+  且大量是「从 `codex_chat_common.rs` + `streaming_codex_chat.rs` 搬到
+  `inline_think.rs`」的位移而非净新增，故 +4.7 KB 属合理。
+
+#### 收尾清理
+
+- **run 清理**：只保留最新一轮。删掉 `36976899058`（上一轮构建）、
+  `36976541170`（上一轮 CI），逐条独立回读断言 `HTTP 404`；保留
+  `37120211009`（CI）与 `37120464638`（构建），存活总数断言 `total_count = 2`
+  且两条都指向 `fa23c609`。
+  ⚠️ **上一轮构建的产物（artifact `11214590506`，11,973,768 bytes）在本机
+  没有任何副本** —— 删除前已实测 `~/Downloads`、`~/.Trash`、`/tmp` 三处均无
+  `CC-Switch-macOS-arm64-ad-hoc*.zip`，故该产物随 run 永久消失。这是「只保留
+  最新一轮」的既定代价，非误删；**但下次不要像 2026-10-01 那样在台账里谎称
+  某产物「已留存」—— 必须在删除时刻实测磁盘**。
+- **分支清理**：`sync-2026-10-03` 已删除（远端从未推送过，`git ls-remote --heads
+  origin` 只有 `refs/heads/dev`）；本地 `git branch -d`（先
+  `merge-base --is-ancestor` 确认是 `dev` 祖先），fork 常态只保留 `dev`。
+- **临时缓存**：`/bin/rm -rf` 清掉 `~/.rust-ci-iso`（7.2 G）、
+  `~/Downloads/cc-switch/dist`、隔离 node workspace 的 `node_modules`（30 M）、
+  `/tmp/ccs-1003`（50 M）。三重校验：四路径均 `absent`、`~/.Trash` 无对应项、
+  `df` 由 317 GiB → 310 GiB（**实释放 ~7 GiB**）。
+  ⚠️ **`~/.zshenv` 与 `~/.profile` 的注入点这次真的被写进来了。**
+  rustup-init 默认追加**不带守卫**的 `. "$HOME/.rust-ci-iso/cargo/env"`；
+  本轮安装时漏了 `--no-modify-path`，两个文件各被追加一行（上一轮留下的
+  注释还在，行是新加的 —— 证明「上轮删过」不构成保护）。**已在 `rm -rf`
+  之前先删掉这两行**，删除后复验 `zsh -c 'echo ok'` / `bash -lc 'echo ok'` /
+  `zsh -lc 'echo ok'` 三者 stderr 均为空。**根治办法已写进 skill
+  `rust-ci-local-mirror`：安装时传 `--no-modify-path`。**
+- **worktree**：无（本轮未用 `git worktree`）。
+- `.fork-sync-tools/` 与 `PORT_PLAN_*.md` 按惯例保持未跟踪。
 
 ### 2026-10-02（`7c0d0fc6..b9e96202`，27 个）
 
