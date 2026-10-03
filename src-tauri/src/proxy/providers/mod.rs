@@ -19,6 +19,7 @@ pub mod codex_chat_history;
 pub(crate) mod codex_compaction;
 pub mod codex_oauth_auth;
 pub(crate) mod codex_responses_sse;
+pub(crate) mod inline_think;
 pub mod models;
 pub(crate) mod reasoning_bridge;
 pub mod streaming;
